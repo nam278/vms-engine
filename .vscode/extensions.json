@@ -1,0 +1,25 @@
+{
+  "recommendations": [
+    // ─── C++ ──────────────────────────────────────────────────────────────
+    "llvm-vs-code-extensions.vscode-clangd", // clangd — C++ language server
+    "xaver.clang-format", // clang-format integration
+    "ms-vscode.cpptools", // ms cpptools (debugging only, IntelliSense disabled)
+
+    // ─── CMake ────────────────────────────────────────────────────────────
+    "ms-vscode.cmake-tools", // CMake Tools (build/configure/debug)
+    "twxs.cmake", // CMake syntax highlighting
+
+    // ─── Remote / Container ───────────────────────────────────────────────
+    "ms-vscode-remote.remote-containers", // Dev Containers
+    "ms-vscode-remote.remote-ssh", // SSH into GPU machine
+
+    // ─── YAML (pipeline configs) ──────────────────────────────────────────
+    "redhat.vscode-yaml", // YAML language support
+
+    // ─── Utilities ────────────────────────────────────────────────────────
+    "streetsidesoftware.code-spell-checker", // Spell check in comments/docs
+    "usernamehw.errorlens", // Inline error/warning display
+    "gruntfuggly.todo-tree", // TODO/FIXME highlighting
+    "eamodio.gitlens" // Git blame inline
+  ]
+}

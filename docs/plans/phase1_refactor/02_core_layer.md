@@ -161,6 +161,51 @@ All concrete builders in `pipeline/block_builders/` and `pipeline/builders/` imp
 | `core/src/utils/logger.cpp`                                 | `core/src/utils/logger.cpp`                                   | Include path|
 | `core/src/utils/spdlog_logger.cpp`                          | `core/src/utils/spdlog_logger.cpp`                            | Include path|
 | `core/src/utils/uuid_v7_generator.cpp`                      | `core/src/utils/uuid_v7_generator.cpp`                        | Include path|
+| *(new file)*                                                | `core/include/engine/core/utils/gst_utils.hpp`               | **Create** — RAII helpers |
+
+#### New File: `gst_utils.hpp` (RAII Helpers)
+
+Create this header alongside `logger.hpp`. No `.cpp` needed — header-only.
+
+```cpp
+// core/include/engine/core/utils/gst_utils.hpp
+#pragma once
+#include <gst/gst.h>
+#include <glib.h>
+#include <memory>
+
+namespace engine::core::utils {
+
+/// @brief RAII guard for GstElement NOT yet added to a bin.
+/// After gst_bin_add() succeeds, call release() — bin takes ownership.
+using GstElementPtr = std::unique_ptr<GstElement, decltype(&gst_object_unref)>;
+
+inline GstElementPtr make_gst_element(const char* factory, const char* name) {
+    return GstElementPtr(gst_element_factory_make(factory, name), gst_object_unref);
+}
+
+/// @brief RAII guard for GstCaps (gst_caps_new_*, gst_caps_copy)
+using GstCapsPtr   = std::unique_ptr<GstCaps,   decltype(&gst_caps_unref)>;
+
+/// @brief RAII guard for GstPad (gst_element_get_static_pad / get_request_pad)
+using GstPadPtr    = std::unique_ptr<GstPad,    decltype(&gst_object_unref)>;
+
+/// @brief RAII guard for GstBus (gst_pipeline_get_bus)
+using GstBusPtr    = std::unique_ptr<GstBus,    decltype(&gst_object_unref)>;
+
+/// @brief RAII guard for GMainLoop
+using GMainLoopPtr = std::unique_ptr<GMainLoop, decltype(&g_main_loop_unref)>;
+
+/// @brief RAII guard for GError* out-param
+using GErrorPtr    = std::unique_ptr<GError,    decltype(&g_error_free)>;
+
+/// @brief RAII guard for gchar* (g_object_get, g_strdup)
+using GCharPtr     = std::unique_ptr<gchar,     decltype(&g_free)>;
+
+} // namespace engine::core::utils
+```
+
+**Why:** All element builders in `pipeline/` use this header to safely wrap `GstElement*` on error paths — no leak when `gst_bin_add()` fails or an early `return` occurs. See [Memory Management](../../architecture/ARCHITECTURE_BLUEPRINT.md#memory-management) for full patterns.
 
 ---
 
@@ -344,6 +389,7 @@ find . -name "*.hpp" | xargs sed -i \
 
 ```cmake
 # core/CMakeLists.txt
+# Note: gst_utils.hpp is header-only — no .cpp needed, just include the header
 add_library(vms_engine_core STATIC
     src/utils/logger.cpp
     src/utils/spdlog_logger.cpp
@@ -392,6 +438,7 @@ grep -rL "engine::" core/include/engine/ | head -20
 - [ ] `ihandler.hpp` — no static Redis member
 - [ ] Empty interfaces filled: `imessage_producer`, `istorage_manager`, `ievent_manager`, `ismart_record_controller`
 - [ ] Config types simplified (no `std::variant` wrappers)
+- [ ] **`gst_utils.hpp` created** — `GstElementPtr`, `GstPadPtr`, `GstCapsPtr`, `GstBusPtr`, `GMainLoopPtr`, `GErrorPtr`, `GCharPtr` + `make_gst_element()`
 - [ ] `core/CMakeLists.txt` updated
 - [ ] `vms_engine_core` library compiles
 - [ ] Zero `lantana` references in core/

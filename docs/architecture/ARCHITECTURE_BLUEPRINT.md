@@ -1715,6 +1715,73 @@ YAML Config ──► AnalyticsBuilder ──► Generated INI File ──► nv
 
 ---
 
+## Memory Management
+
+> **Full RAII guide → [`docs/architecture/RAII.md`](RAII.md)**  
+> Covers: heap memory, file handles, sockets, mutex/locks, timers, scope guards,
+> GStreamer resources, NvDs metadata rules, custom destructor classes, anti-patterns.
+
+### GStreamer / GLib Ownership Rules
+
+| Object | Obtained via | Release via | Notes |
+|---|---|---|---|
+| `GstElement*` (floating/unowned) | `gst_element_factory_make()` | `gst_object_unref()` | Caller owns until `gst_bin_add()` |
+| `GstElement*` in bin | `gst_bin_add(bin, elem)` | *(bin owns)* | **Do NOT unref after add** |
+| `GstPad*` | `gst_element_get_static_pad()` | `gst_object_unref()` | Must unref even read-only use |
+| `GstPad*` (request) | `gst_element_get_request_pad()` | `gst_element_release_request_pad()` + `gst_object_unref()` | Release before unref |
+| `GstCaps*` | `gst_caps_new_*()`, `gst_caps_copy()` | `gst_caps_unref()` | Reference-counted |
+| `GstBus*` | `gst_pipeline_get_bus()` | `gst_object_unref()` | |
+| `GMainLoop*` | `g_main_loop_new()` | `g_main_loop_unref()` | |
+| `GError*` | set by GStreamer (out param) | `g_error_free()` | Check non-null before freeing |
+| `gchar*` | `g_object_get()`, `g_strdup()` | `g_free()` | GLib heap allocation |
+| `NvDsBatchMeta*` | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE** | Owned by GstBuffer / pipeline |
+| `NvDsFrameMeta*` | iterated from `batch_meta` | **DO NOT FREE** | |
+| `NvDsObjectMeta*` | iterated from `frame_meta` | **DO NOT FREE** | |
+
+### RAII Strategy — `gst_utils.hpp`
+
+`core/include/engine/core/utils/gst_utils.hpp` (header-only — no `.cpp` needed):
+
+```cpp
+namespace engine::core::utils {
+
+// Elements — ONLY before gst_bin_add(); call release() after successful add.
+using GstElementPtr = std::unique_ptr<GstElement, decltype(&gst_object_unref)>;
+inline GstElementPtr make_gst_element(const char* factory, const char* name) {
+    return GstElementPtr(gst_element_factory_make(factory, name), gst_object_unref);
+}
+
+using GstCapsPtr   = std::unique_ptr<GstCaps,   decltype(&gst_caps_unref)>;
+using GstPadPtr    = std::unique_ptr<GstPad,    decltype(&gst_object_unref)>;
+using GstBusPtr    = std::unique_ptr<GstBus,    decltype(&gst_object_unref)>;
+using GMainLoopPtr = std::unique_ptr<GMainLoop, decltype(&g_main_loop_unref)>;
+using GErrorPtr    = std::unique_ptr<GError,    decltype(&g_error_free)>;
+using GCharPtr     = std::unique_ptr<gchar,     decltype(&g_free)>;
+
+} // namespace engine::core::utils
+```
+
+**Builder error-path pattern** — guard disarms on success, auto-cleans all failure paths:
+
+```cpp
+GstElement* SourceBuilder::build(const PipelineConfig& config, int index) {
+    auto src = engine::core::utils::make_gst_element("nvmultiurisrcbin", "src");
+    if (!src) { LOG_E("Failed to create nvmultiurisrcbin"); return nullptr; }
+
+    g_object_set(G_OBJECT(src.get()), "max-batch-size", (guint)config.sources.max_batch_size, nullptr);
+
+    if (!gst_bin_add(GST_BIN(pipeline_), src.get())) {
+        LOG_E("Failed to add src to pipeline");
+        return nullptr;  // ~GstElementPtr → gst_object_unref() automatically
+    }
+    return src.release();  // pipeline owns — disarm guard
+}
+```
+
+For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom destructor classes) → **[RAII.md](RAII.md)**.
+
+---
+
 ## Namespace Convention
 
 ### Root Namespace: `engine`
@@ -1762,6 +1829,9 @@ YAML Config ──► AnalyticsBuilder ──► Generated INI File ──► nv
 ---
 
 ## Build System
+
+> 📖 **Full CMake Reference** → [`docs/architecture/CMAKE.md`](CMAKE.md)  
+> Bao gồm: Configure commands, build types, dependency management, FetchContent, presets, custom targets, anti-patterns.
 
 ### CMake Structure
 
@@ -1949,6 +2019,27 @@ LOG_W("Warning: deprecated config field used");
 LOG_E("Error: Failed to create element: {}", name);
 LOG_C("Critical: Pipeline initialization failed");
 ```
+
+---
+
+## 📚 Detailed Documentation
+
+For deep-dive technical documentation on the DeepStream-specific implementation, see:
+
+| File | Topic |
+|------|-------|
+| [`docs/architecture/deepstream/README.md`](deepstream/README.md) | Index & reading order |
+| [`00_project_overview.md`](deepstream/00_project_overview.md) | Tech stack, pipeline diagram, conventions |
+| [`01_directory_structure.md`](deepstream/01_directory_structure.md) | Full project layout with file purposes |
+| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md) | All core interfaces (engine:: namespace) |
+| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md) | 5-phase build, tails_ map pattern |
+| [`04_linking_system.md`](deepstream/04_linking_system.md) | Static/dynamic pad linking, queue: {} |
+| [`05_configuration.md`](deepstream/05_configuration.md) | Full YAML schema, parser architecture |
+| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md) | GstBus, state machine, RTSP reconnect |
+| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md) | HandlerManager, probes, built-in handlers |
+| [`08_analytics.md`](deepstream/08_analytics.md) | nvdsanalytics ROI/line crossing/overcrowding |
+| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md) | Sinks, encoders, smart record API |
+| [`10_signal_vs_probe_deep_dive.md`](deepstream/10_signal_vs_probe_deep_dive.md) | When to use signal vs pad probe |
 
 ---
 

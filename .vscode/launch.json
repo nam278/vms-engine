@@ -1,0 +1,113 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // ─────────────────────────────────────────────────────────────────────
+    // Launch vms_engine với default config (Debug)
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "name": "vms_engine (default config)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/bin/vms_engine",
+      "args": ["-c", "configs/default.yml"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:${env:LD_LIBRARY_PATH}"
+        },
+        {
+          "name": "GST_DEBUG",
+          "value": "2"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for GDB",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "description": "Set disassembly flavor to Intel",
+          "text": "-gdb-set disassembly-flavor intel",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "CMake: Build"
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Launch với config file tùy chọn (prompt khi start debug)
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "name": "vms_engine (pick config)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/bin/vms_engine",
+      "args": ["-c", "${input:configFile}"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:${env:LD_LIBRARY_PATH}"
+        },
+        {
+          "name": "GST_DEBUG",
+          "value": "${input:gstDebugLevel}"
+        }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for GDB",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "CMake: Build"
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Attach to running process (khi binary đang chạy không qua VS Code)
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "name": "Attach to vms_engine",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "${workspaceFolder}/build/bin/vms_engine",
+      "processId": "${command:pickProcess}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for GDB",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ],
+
+  "inputs": [
+    {
+      "id": "configFile",
+      "type": "promptString",
+      "description": "Path to pipeline YAML config (relative to workspace)",
+      "default": "configs/default.yml"
+    },
+    {
+      "id": "gstDebugLevel",
+      "type": "pickString",
+      "description": "GST_DEBUG level",
+      "options": ["0", "1", "2", "3", "4", "5"],
+      "default": "2"
+    }
+  ]
+}

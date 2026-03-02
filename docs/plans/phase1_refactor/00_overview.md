@@ -84,6 +84,7 @@ Plans 03, 04, 05 can be worked on **in parallel** since they only depend on core
 3. **Remove `LANTANA_WITH_DEEPSTREAM` guards** — DeepStream is always on
 4. **Fix IHandler Redis coupling** — Remove `static redis_producer_` from base interface
 5. **Fix IPipelineManager backend leak** — Remove `#include` of deepstream headers in core
+6. **Apply RAII to all GStreamer resources** — Never leave raw `GstElement*`, `GstPad*`, `GstCaps*`, `GstBus*`, `gchar*` unguarded on error paths; use `GstElementPtr`, `GstPadPtr`, etc. from `engine::core::utils` (see [Memory Management](../../architecture/ARCHITECTURE_BLUEPRINT.md#memory-management))
 
 ### Verification After Each Plan
 

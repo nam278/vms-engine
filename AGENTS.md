@@ -41,6 +41,12 @@ The container mounts `.:/opt/lantana` — all source edits on the host are refle
 
 ## Build Commands
 
+> 📖 **Full CMake Reference** → [`docs/architecture/CMAKE.md`](docs/architecture/CMAKE.md)  
+> Bao gồm: build types, FetchContent, CMake Presets, generator expressions, custom targets, anti-patterns.
+
+> 📖 **DeepStream Architecture Docs** → [`docs/architecture/deepstream/README.md`](docs/architecture/deepstream/README.md)  
+> 11 files covering: pipeline building, linking, config system, runtime lifecycle, event handlers/probes, analytics, outputs, smart record, signal vs probe.
+
 All build commands run **inside the dev container** at `/opt/lantana`.
 
 ```bash
@@ -130,6 +136,10 @@ vms-engine/
 ├── plugins/           # Runtime-loadable .so plugin handlers
 ├── configs/           # YAML pipeline config files
 ├── docs/              # Architecture Blueprint + implementation plans
+│   ├── architecture/deepstream/  # Detailed DeepStream architecture docs (11 files)
+│   ├── architecture/RAII.md      # RAII guide for GStreamer/CUDA resources
+│   ├── architecture/CMAKE.md     # Build system reference
+│   └── configs/                  # Annotated YAML config examples
 └── dev/               # Runtime data dir (git-ignored)
 ```
 
@@ -360,6 +370,61 @@ LOG_C("Critical: Pipeline initialization failed");
 - **GStreamer resources**: wrap in `std::unique_ptr` with custom deleters or RAII wrappers
 - **Constructors**: prefer constructor injection for dependencies; avoid global state
 - **Error handling**: return `bool` for build/init operations with `LOG_E` before returning false; throw only in constructors when unrecoverable
+
+---
+
+## Memory Management & RAII
+
+> **Full RAII guide → [`docs/architecture/RAII.md`](docs/architecture/RAII.md)**  
+> Covers: heap, file handles, sockets, mutex/locks, timers, scope guards,
+> GStreamer resources, NvDs rules, custom destructor classes, Rule of Five,
+> GPU/CUDA resources, RAII in containers, `[[nodiscard]]`, exception safety.
+
+### GStreamer Ownership Quick Reference
+
+| Object | Created via | Release via | Notes |
+|---|---|---|---|
+| `GstElement*` (not in bin) | `gst_element_factory_make()` | `gst_object_unref()` | Caller owns until `gst_bin_add()` |
+| `GstElement*` in bin | `gst_bin_add(bin, elem)` | *(bin owns)* | **Do NOT unref after add** |
+| `GstPad*` | `gst_element_get_static_pad()` | `gst_object_unref()` | Must unref even read-only |
+| `GstCaps*` | `gst_caps_new_*()` / `gst_caps_copy()` | `gst_caps_unref()` | |
+| `GstBus*` | `gst_pipeline_get_bus()` | `gst_object_unref()` | |
+| `GMainLoop*` | `g_main_loop_new()` | `g_main_loop_unref()` | |
+| `GError*` | GStreamer out param | `g_error_free()` | |
+| `gchar*` | `g_object_get()` / `g_strdup()` | `g_free()` | |
+| `NvDsBatchMeta*` | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE** | pipeline owns |
+| `NvDsFrameMeta*` | iterated from `batch_meta` | **DO NOT FREE** | |
+| `NvDsObjectMeta*` | iterated from `frame_meta` | **DO NOT FREE** | |
+
+### RAII Helpers (`gst_utils.hpp`)
+
+```cpp
+#include "engine/core/utils/gst_utils.hpp"
+
+// Element guard — call release() after successful gst_bin_add()
+auto elem = engine::core::utils::make_gst_element("nvinfer", id.c_str());
+if (!elem) { LOG_E("Failed"); return nullptr; }  // auto-unref
+g_object_set(G_OBJECT(elem.get()), "config-file-path", cfg.c_str(), nullptr);
+if (!gst_bin_add(GST_BIN(bin_), elem.get())) return nullptr;  // auto-unref
+return elem.release();  // bin owns — disarm guard
+
+// Pad guard
+engine::core::utils::GstPadPtr pad(
+    gst_element_get_static_pad(element, "src"), gst_object_unref);
+gst_pad_add_probe(pad.get(), GST_PAD_PROBE_TYPE_BUFFER, my_cb, nullptr, nullptr);
+// gst_object_unref called automatically
+
+// String from g_object_get
+gchar* raw = nullptr;
+g_object_get(G_OBJECT(src), "uri", &raw, nullptr);
+engine::core::utils::GCharPtr uri(raw, g_free);
+LOG_I("URI: {}", uri.get());  // g_free called automatically
+```
+
+**Choosing the right tool:**
+- Single-call cleanup → `GstPadPtr`, `GstCapsPtr`, … (`unique_ptr` alias)
+- Multi-step cleanup (remove_watch → unref; set_state(NULL) → unref) → custom class with `~Destructor()`
+- See `GstBusGuard` and `GstPipelineOwner` in [RAII.md](docs/architecture/RAII.md#9-custom-raii-class-with-destructor)
 
 ---
 

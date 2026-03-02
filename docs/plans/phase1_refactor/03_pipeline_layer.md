@@ -336,6 +336,81 @@ class OutputsBuilder {
 - Tất cả `builders/*_builder` — signature: `void build(const PipelineConfig& config, int index = 0)`
 - `IElementBuilder` interface trong `core/builders/ielement_builder.hpp` cũng cập nhật theo (xem Plan 02)
 
+### Rework 6: Apply RAII to All Builder Error Paths
+
+All element builders in lantanav2 create `GstElement*` via `gst_element_factory_make()` and may
+return early before `gst_bin_add()`. Without RAII, these early returns silently leak memory.
+
+**Pattern to apply in every builder `.cpp`:**
+
+```cpp
+#include "engine/core/utils/gst_utils.hpp"  // add this include
+
+GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& config, int index) {
+    const auto& elem_cfg = config.processing.elements[index];
+
+    // ✅ RAII guard: auto-unref on any early return before gst_bin_add()
+    auto elem = engine::core::utils::make_gst_element("nvinfer", elem_cfg.id.c_str());
+    if (!elem) {
+        LOG_E("Failed to create nvinfer '{}'", elem_cfg.id);
+        return nullptr;  // ~GstElementPtr → gst_object_unref automatically
+    }
+
+    g_object_set(G_OBJECT(elem.get()),
+        "config-file-path", elem_cfg.config_file_path.c_str(),
+        nullptr);
+
+    if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
+        LOG_E("Failed to add nvinfer '{}' to bin", elem_cfg.id);
+        return nullptr;  // guard cleans up
+    }
+    return elem.release();  // bin owns — disarm guard
+}
+```
+
+**Pad access in probes and handlers:**
+
+```cpp
+// ✅ Always wrap: gst_element_get_static_pad increments refcount
+void MyHandler::register_callback() {
+    engine::core::utils::GstPadPtr pad(
+        gst_element_get_static_pad(element_, "sink"), gst_object_unref);
+    if (!pad) { LOG_E("Pad not found"); return; }
+    gst_pad_add_probe(pad.get(), GST_PAD_PROBE_TYPE_BUFFER, my_cb, this, nullptr);
+}  // gst_object_unref(pad) at end of scope automatically
+```
+
+**Multi-step cleanup — use a class, not just unique_ptr:**
+
+```cpp
+// PipelineManager holds the top-level GstPipeline — must set NULL before unref
+class GstPipelineOwner {
+public:
+    explicit GstPipelineOwner(const std::string& name)
+        : pipeline_(gst_pipeline_new(name.c_str())) {}
+    ~GstPipelineOwner() {
+        if (pipeline_) {
+            gst_element_set_state(pipeline_, GST_STATE_NULL);  // drain first
+            gst_object_unref(pipeline_);
+        }
+    }
+    GstPipelineOwner(const GstPipelineOwner&)            = delete;
+    GstPipelineOwner& operator=(const GstPipelineOwner&) = delete;
+    GstElement* get() const { return pipeline_; }
+private:
+    GstElement* pipeline_ = nullptr;
+};
+```
+
+**Files to review and update:**
+- All `pipeline/src/builders/*.cpp` — wrap `gst_element_factory_make()` return
+- All `pipeline/src/block_builders/*.cpp` — same
+- `pipeline/src/pipeline_manager.cpp` — wrap bus and top-level pipeline
+- `pipeline/src/event_handlers/*.cpp` — wrap `gst_element_get_static_pad()` returns
+- `pipeline/src/probes/*.cpp` — wrap `gst_element_get_static_pad()` returns
+
+> Reference: [Memory Management section in ARCHITECTURE_BLUEPRINT.md](../../architecture/ARCHITECTURE_BLUEPRINT.md#memory-management)
+
 ---
 
 ## Namespace Replacement
@@ -439,5 +514,8 @@ grep -rL "engine::pipeline" pipeline/include/ | head -20
 - [ ] Event handlers use injected `IMessageProducer*` (no static Redis)
 - [ ] All builders use `build(const PipelineConfig& config, ...)` — full config pattern (no sliced pass)
 - [ ] `IElementBuilder` interface updated in core (see Plan 02)
+- [ ] **RAII applied to all builders** — `make_gst_element()` + `elem.release()` after `gst_bin_add()`
+- [ ] **RAII applied to all pad accesses** — `GstPadPtr` wraps `gst_element_get_static_pad()`
+- [ ] **`GstPipelineOwner` class** in `PipelineManager` — `set_state(NULL)` before unref
 - [ ] `pipeline/CMakeLists.txt` updated
 - [ ] `vms_engine_pipeline` compiles against `vms_engine_core`

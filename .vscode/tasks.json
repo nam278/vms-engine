@@ -1,0 +1,164 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ─────────────────────────────────────────────────────────────────────
+    // Configure
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "CMake: Configure (Debug)",
+      "type": "shell",
+      "command": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream -G Ninja",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Configure (Release)",
+      "type": "shell",
+      "command": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream -G Ninja",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Build
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "CMake: Build",
+      "type": "shell",
+      "command": "cmake --build build -- -j$(nproc)",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "owner": "cpp",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      }
+    },
+    {
+      "label": "CMake: Build (verbose)",
+      "type": "shell",
+      "command": "cmake --build build -- -j$(nproc) -v 2>&1 | tee /tmp/build.log",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Clean
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "CMake: Clean",
+      "type": "shell",
+      "command": "cmake --build build --target clean",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Full Clean Rebuild",
+      "type": "shell",
+      "command": "rm -rf build && cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream -G Ninja && cmake --build build -- -j$(nproc)",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Run
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "Run: vms_engine (default config)",
+      "type": "shell",
+      "command": "./build/bin/vms_engine -c configs/default.yml",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "LD_LIBRARY_PATH": "/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64",
+          "GST_DEBUG": "2"
+        }
+      },
+      "group": "test",
+      "dependsOn": "CMake: Build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: vms_engine (GST_DEBUG=3)",
+      "type": "shell",
+      "command": "GST_DEBUG=3 ./build/bin/vms_engine -c configs/default.yml",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "LD_LIBRARY_PATH": "/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64"
+        }
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Format / Tidy
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "CMake: Format (clang-format)",
+      "type": "shell",
+      "command": "cmake --build build --target format",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Tidy (clang-tidy)",
+      "type": "shell",
+      "command": "cmake --build build --target tidy",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Docker
+    // ─────────────────────────────────────────────────────────────────────
+    {
+      "label": "Docker: Start dev container",
+      "type": "shell",
+      "command": "docker compose up -d",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: Shell into container",
+      "type": "shell",
+      "command": "docker compose exec app bash",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "new" }
+    },
+    {
+      "label": "Docker: Build image",
+      "type": "shell",
+      "command": "docker build -t vms-engine-dev:latest .",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

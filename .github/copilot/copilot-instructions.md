@@ -13,6 +13,28 @@ When generating code for this repository:
 
 ---
 
+## 📚 Architecture Documentation
+
+Before implementing anything DeepStream-related, consult the deep-dive docs in `docs/architecture/`:
+
+| Document | Topic |
+|---|---|
+| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md) | Index & reading order |
+| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md) | Tech stack, pipeline diagram, conventions |
+| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md) | All `I*` interfaces with `engine::` namespace |
+| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md) | 5-phase build, `tails_` map pattern |
+| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md) | Static/dynamic linking, `queue: {}` pattern |
+| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md) | Full YAML schema, parser architecture |
+| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md) | GstBus, state machine, RTSP reconnect |
+| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md) | HandlerManager, probes, built-in handlers |
+| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md) | nvdsanalytics ROI / line crossing |
+| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md) | Sinks, encoders, NvDsSR API |
+| [`10_signal_vs_probe_deep_dive.md`](../../docs/architecture/deepstream/10_signal_vs_probe_deep_dive.md) | Signal vs pad probe — when to use which |
+| [`RAII.md`](../../docs/architecture/RAII.md) | GStreamer / CUDA resource management |
+| [`CMAKE.md`](../../docs/architecture/CMAKE.md) | Build system reference |
+
+---
+
 ## Technology Version Detection
 
 | Technology | Version | Config File |
@@ -21,8 +43,10 @@ When generating code for this repository:
 | CMake | **3.16+** | `CMakeLists.txt` — `cmake_minimum_required(VERSION 3.16)` |
 | NVIDIA DeepStream | **8.0** | `Dockerfile` — `FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel` |
 | GStreamer | **1.0 / 1.14+** | `pkg_check_modules(GST gstreamer-1.0)` |
-| spdlog | **1.12+** | Fetched via `FetchContent` in CMakeLists |
-| yaml-cpp | Latest stable | Fetched via `FetchContent` in CMakeLists |
+| spdlog | **1.14.1** | Fetched via `FetchContent` in CMakeLists — `GIT_TAG v1.14.1` |
+| yaml-cpp | **0.8.0** | Fetched via `FetchContent` in CMakeLists — `GIT_TAG 0.8.0` |
+| hiredis | **1.3.0** | Fetched via `FetchContent` — Redis client |
+| nlohmann/json | **3.11.3** | Fetched via `FetchContent` — JSON parsing |
 | Build generator | **Ninja** | Preferred; fallback to Make |
 
 Do **not** use features beyond these versions.
@@ -417,6 +441,62 @@ static GstPadProbeReturn osd_probe_callback(GstPad*, GstPadProbeInfo* info, gpoi
     return GST_PAD_PROBE_OK;
 }
 ```
+
+---
+
+## Memory Management & RAII
+
+> **Full RAII guide → [`docs/architecture/RAII.md`](../../docs/architecture/RAII.md)**  
+> Covers: heap, file handles, sockets, mutex/locks, timers, scope guards,
+> GStreamer resources, NvDs rules, custom destructor classes, Rule of Five, GPU/CUDA resources, anti-patterns.
+
+### Ownership Rules (quick ref)
+
+```
+gst_element_factory_make()    → caller owns; call release() after gst_bin_add()
+gst_element_get_static_pad()  → gst_object_unref() when done (even read-only)
+gst_caps_new_*()              → gst_caps_unref() when done
+gst_pipeline_get_bus()        → gst_object_unref() when done
+g_main_loop_new()             → g_main_loop_unref() when done
+g_object_get(...gchar*...)    → g_free() the string
+NvDsBatchMeta / Frame / Object → DO NOT FREE — pipeline owns
+```
+
+### RAII Type Aliases (`gst_utils.hpp`)
+
+```cpp
+namespace engine::core::utils {
+    using GstElementPtr = std::unique_ptr<GstElement, decltype(&gst_object_unref)>;
+    inline GstElementPtr make_gst_element(const char* factory, const char* name);
+    using GstCapsPtr    = std::unique_ptr<GstCaps,    decltype(&gst_caps_unref)>;
+    using GstPadPtr     = std::unique_ptr<GstPad,     decltype(&gst_object_unref)>;
+    using GstBusPtr     = std::unique_ptr<GstBus,     decltype(&gst_object_unref)>;
+    using GMainLoopPtr  = std::unique_ptr<GMainLoop,  decltype(&g_main_loop_unref)>;
+    using GErrorPtr     = std::unique_ptr<GError,     decltype(&g_error_free)>;
+    using GCharPtr      = std::unique_ptr<gchar,      decltype(&g_free)>;
+}
+```
+
+### Builder Pattern (most common usage)
+
+```cpp
+// ✅ CORRECT — guard auto-unrefs on all failure paths
+auto elem = engine::core::utils::make_gst_element("nvinfer", id.c_str());
+if (!elem) { LOG_E("Failed"); return nullptr; }  // auto-unref
+g_object_set(G_OBJECT(elem.get()), "config-file-path", cfg.c_str(), nullptr);
+if (!gst_bin_add(GST_BIN(bin_), elem.get())) return nullptr;  // auto-unref
+return elem.release();  // bin owns — disarm guard
+
+// ❌ WRONG — leak on early return
+GstElement* e = gst_element_factory_make("nvinfer", id.c_str());
+if (!condition) return nullptr;   // leak: e never unref'd
+```
+
+**Multi-step cleanup** (remove_watch → unref; set_state(NULL) → unref):  
+Write a custom class with `~Destructor()`. See `GstBusGuard` and `GstPipelineOwner` in [`RAII.md`](../../docs/architecture/RAII.md#9-custom-raii-class-with-destructor).
+
+**Beyond GStreamer** (heap, file handles, sockets, mutex/locks, timers, scope guards):  
+See [`RAII.md`](../../docs/architecture/RAII.md).
 
 ---
 
