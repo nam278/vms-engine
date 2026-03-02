@@ -1,0 +1,17 @@
+name: "{{MODEL_NAME}}"
+platform: "tensorrt_plan"
+max_batch_size: 0
+input [
+  {
+    name: "input"
+    data_type: TYPE_UINT8
+    dims: [ -1, 64, 128, 3]
+  }
+]
+output [
+  {
+    name: "Identity:0"
+    data_type: TYPE_FP32
+    dims: [ -1, 9, 37]                  # [slots, classes] = [max_plate_slots, len(alphabet)]
+  }
+]

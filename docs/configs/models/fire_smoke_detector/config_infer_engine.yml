@@ -1,0 +1,33 @@
+property:
+  gpu-id: 0
+  # gie-unique-id: 1
+  batch-size: 4
+
+  onnx-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.onnx"
+  model-engine-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.plan"
+
+  # 0=FP32, 1=INT8, 2=FP16 (khớp với engine .plan)
+  network-mode: 2
+  # interval: 3
+  cluster-mode: 2
+  network-type: 0
+
+  # === Preprocess (tương đương preprocess trong infer_config cũ) ===
+  net-scale-factor: 0.00392156862745098
+  model-color-format: 0 # 0=RGB
+  maintain-aspect-ratio: 0
+  # process-mode: 1
+
+  # === Labels / classes ===
+  num-detected-classes: 2
+  labelfile-path: "{{COMPONENT_ROOT_DIR}}/labels.txt"
+
+  # === Parser YOLO custom ===
+  custom-lib-path: "{{WORKSPACE_PATH}}/plugins/libnvdsinfer_custom_impl_Yolo.so"
+  parse-bbox-func-name: "NvDsInferParseYolo"
+
+# === NMS / post-cluster (mapping từ nms{confidence, iou, topk}) ===
+class-attrs-all:
+  pre-cluster-threshold: 0.5 # ~ confidence_threshold
+  nms-iou-threshold: 0.5
+  topk: 300

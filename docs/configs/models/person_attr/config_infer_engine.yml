@@ -1,0 +1,38 @@
+property:
+  gpu-id: 0
+  # gie-unique-id: 1
+  batch-size: 8
+
+  onnx-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.onnx"
+  model-engine-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.plan"
+
+  # 0=FP32, 1=INT8, 2=FP16 (khớp với engine .plan)
+  network-mode: 2
+  # interval: 3
+  network-type: 1 # 1 = Classifier, 2 = Detector, 3 = Segmenter
+
+  # === Preprocess (tương đương preprocess trong infer_config cũ) ===
+  net-scale-factor: 1
+  model-color-format: 1 # 0=RGB 1=BGR
+  maintain-aspect-ratio: 0
+
+  # === Labels / classes ===
+  labelfile-path: "{{COMPONENT_ROOT_DIR}}/labels.txt"
+
+  # === Classifier behavior ===
+  classifier-threshold: 0.51
+  classifier-async-mode: 1 # tương đương input_control.async_mode (secondary only) :contentReference[oaicite:5]{index=5}
+  classifier-type: "person_attr"
+
+  # === Parser YOLO custom ===
+  custom-lib-path: "{{WORKSPACE_PATH}}/plugins/liblantana_person_attr_24label.so"
+  parse-classifier-func-name: "NvDsInferClassifierParseCustomPersonAttr24Label"
+
+  # =========================
+  # Secondary / operate-on-* (nếu dùng làm SGIE, bỏ comment)
+  # =========================
+  # process-mode=2                 # 1=Primary (full-frame), 2=Secondary (objects)
+  # operate-on-gie-id={{OPERATE_ON_PGIE_ID}}
+  # operate-on-class-ids={{OPERATE_ON_CLASS_IDS}}
+  # secondary-reinfer-interval=3
+  

@@ -1,0 +1,17 @@
+name: "{{MODEL_NAME}}"
+platform: "tensorrt_plan"
+max_batch_size: 0  # Tắt batching trong Triton, để TensorRT tự xử lý batch
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [-1, 3, 640, 640]  # Kích thước cố định như trong Netron
+  }
+]
+output [
+  {
+    name: "output"
+    data_type: TYPE_FP32
+    dims: [-1, 8400, 5]
+  }
+]

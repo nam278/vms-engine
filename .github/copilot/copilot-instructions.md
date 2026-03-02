@@ -1,0 +1,582 @@
+# GitHub Copilot Instructions — VMS Engine
+
+## Priority Guidelines
+
+When generating code for this repository:
+
+1. **Version Compatibility**: C++17 strictly. Never use C++20/23 features. DeepStream SDK 8.0 APIs only.
+2. **Architecture Compliance**: Enforce the dependency rule — inner layers never import outer layers.
+3. **Interface-First**: Always define/extend an `I*` interface in `core/` before implementing.
+4. **Namespace**: All code uses `engine::` namespace (NOT `lantana::` — that is the old project).
+5. **Config-Driven**: Pipeline behavior comes from `PipelineConfig`; builders receive the full config, not slices.
+6. **Codebase Patterns First**: When in doubt, scan existing files for patterns before inventing new ones.
+
+---
+
+## Technology Version Detection
+
+| Technology | Version | Config File |
+|---|---|---|
+| C++ | **C++17** | `CMakeLists.txt` — `set(CMAKE_CXX_STANDARD 17)` |
+| CMake | **3.16+** | `CMakeLists.txt` — `cmake_minimum_required(VERSION 3.16)` |
+| NVIDIA DeepStream | **8.0** | `Dockerfile` — `FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel` |
+| GStreamer | **1.0 / 1.14+** | `pkg_check_modules(GST gstreamer-1.0)` |
+| spdlog | **1.12+** | Fetched via `FetchContent` in CMakeLists |
+| yaml-cpp | Latest stable | Fetched via `FetchContent` in CMakeLists |
+| Build generator | **Ninja** | Preferred; fallback to Make |
+
+Do **not** use features beyond these versions.
+
+---
+
+## Strict Architecture Rules
+
+### Layer Dependency Map
+
+```
+app/          → depends on: core, pipeline, domain, infrastructure, services
+pipeline/     → depends on: core ONLY
+domain/       → depends on: core ONLY
+infrastructure/ → depends on: core ONLY
+services/     → depends on: core ONLY
+core/         → depends on: std library + GStreamer forward-declares ONLY
+```
+
+**Violations to avoid:**
+- `#include "engine/pipeline/..."` inside `core/` → ❌ FORBIDDEN
+- `#include "engine/infrastructure/..."` inside `pipeline/` → ❌ FORBIDDEN
+- `#include "engine/domain/..."` inside `pipeline/` → ❌ FORBIDDEN
+- Using `lantana::` namespace anywhere → ❌ WRONG (old project name)
+
+### Interface-First Pattern
+
+Every subsystem must have an interface in `core/` before any implementation:
+
+```cpp
+// ✅ CORRECT: Interface in core/
+// core/include/engine/core/messaging/imessage_producer.hpp
+namespace engine::core::messaging {
+class IMessageProducer {
+public:
+    virtual ~IMessageProducer() = default;
+    virtual bool connect() = 0;
+    virtual bool publish(const std::string& topic, const std::string& payload) = 0;
+};
+} // namespace engine::core::messaging
+
+// ✅ CORRECT: Implementation in infrastructure/
+// infrastructure/messaging/include/engine/infrastructure/messaging/redis_stream_producer.hpp
+#include "engine/core/messaging/imessage_producer.hpp"
+namespace engine::infrastructure::messaging {
+class RedisStreamProducer : public engine::core::messaging::IMessageProducer {
+    // ...
+};
+} // namespace engine::infrastructure::messaging
+```
+
+---
+
+## Naming Conventions
+
+```cpp
+// Namespaces — snake_case
+namespace engine::core::pipeline { }
+namespace engine::pipeline::builders { }
+
+// Interfaces — I + PascalCase
+class IPipelineManager { };
+class IElementBuilder { };
+class IMessageProducer { };
+
+// Concrete classes — PascalCase (no prefix)
+class PipelineManager : public IPipelineManager { };
+class SourceBuilder : public IElementBuilder { };
+
+// Methods — snake_case
+virtual bool initialize(PipelineConfig& config) = 0;
+GstElement* build(const PipelineConfig& config, int index = 0);
+
+// Member variables — snake_case with trailing underscore
+GstElement* pipeline_ = nullptr;
+PipelineConfig config_;
+std::vector<GstElement*> tails_;
+
+// Constants / enum values — PascalCase for values
+enum class PipelineState { Uninitialized, Ready, Playing, Paused, Stopped, Error };
+
+// Files — snake_case
+// pipeline_manager.hpp, source_builder.cpp, yaml_config_parser.hpp
+```
+
+---
+
+## Config Types — Core Patterns
+
+All config structs live in `core/include/engine/core/config/`. Builders receive `const engine::core::config::PipelineConfig&` — the full config, not slices.
+
+```cpp
+// PipelineConfig is the single root config
+struct PipelineConfig {
+    ApplicationConfig   application;
+    SourcesConfig       sources;
+    StreamMuxerConfig   stream_muxer;
+    ProcessingConfig    processing;
+    AnalyticsConfig     analytics;
+    VisualsConfig       visuals;
+    OutputsConfig       outputs;
+    SmartRecordConfig   smart_record;
+    MessagingConfig     message_queue_publisher;
+    StorageConfig       storage_configurations;
+    HandlerConfig       custom_handlers;
+    ExternalSvcsConfig  external_services;
+    RestApiConfig       rest_api;
+};
+
+// Element builders access via index:
+// config.processing.elements[index]
+// config.sources.cameras[index]
+```
+
+**No `std::variant` over backend types** — vms-engine is DeepStream-native. Do not use patterns from lantanav2 like `ProcessingBackendOptions` or `SourceBackendOptions`.
+
+---
+
+## Element Builder Pattern
+
+```cpp
+// ✅ CORRECT element builder pattern
+// pipeline/include/engine/pipeline/builders/my_element_builder.hpp
+#pragma once
+#include "engine/core/builders/ielement_builder.hpp"
+#include "engine/core/config/config_types.hpp"
+#include <gst/gst.h>
+
+namespace engine::pipeline::builders {
+
+class MyElementBuilder : public engine::core::builders::IElementBuilder {
+public:
+    GstElement* build(const engine::core::config::PipelineConfig& config,
+                      int index = 0) override;
+};
+
+} // namespace engine::pipeline::builders
+```
+
+```cpp
+// ✅ CORRECT implementation — property setting pattern
+#include "engine/pipeline/builders/my_element_builder.hpp"
+#include "engine/core/utils/logger.hpp"
+
+namespace engine::pipeline::builders {
+
+GstElement* MyElementBuilder::build(
+    const engine::core::config::PipelineConfig& config, int index)
+{
+    const auto& elem_cfg = config.processing.elements[index]; // access own section
+
+    GstElement* element = gst_element_factory_make("nvmyelement", elem_cfg.id.c_str());
+    if (!element) {
+        LOG_E("Failed to create nvmyelement '{}'", elem_cfg.id);
+        return nullptr;
+    }
+
+    // GStreamer properties — use g_object_set with C strings
+    g_object_set(G_OBJECT(element),
+                 "gpu-id",     static_cast<gint>(elem_cfg.gpu_id),
+                 "batch-size", static_cast<gint>(elem_cfg.batch_size),
+                 nullptr);  // ALWAYS terminate g_object_set with nullptr
+
+    LOG_I("Built element '{}' (type: nvmyelement)", elem_cfg.id);
+    return element;
+}
+
+} // namespace engine::pipeline::builders
+```
+
+---
+
+## GStreamer API Patterns
+
+```cpp
+// ✅ Always terminate g_object_set with nullptr
+g_object_set(G_OBJECT(element),
+             "property-name", value,
+             nullptr);
+
+// ✅ Use RAII for GstElement ownership in builders
+// Builders return raw GstElement* — ownership transferred to GstBin
+// PipelineBuilder adds to bin and manages lifecycle
+
+// ✅ Dynamic pad connections (nvmultiurisrcbin → muxer)
+g_signal_connect(source_bin, "pad-added",
+                 G_CALLBACK(on_pad_added_callback), muxer);
+
+// ✅ Probe pattern
+static GstPadProbeReturn probe_callback(GstPad* pad,
+                                         GstPadProbeInfo* info,
+                                         gpointer user_data) {
+    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buffer);
+    // ... process metadata
+    return GST_PAD_PROBE_OK;
+}
+
+gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+                  probe_callback, user_data, nullptr);
+```
+
+---
+
+## YAML Config Conventions
+
+YAML property names use `snake_case`. The parser maps them to GStreamer's `kebab-case`:
+
+```yaml
+# ✅ YAML uses snake_case
+sources:
+  cameras:
+    - id: "cam_01"
+      uri: "rtsp://host/stream"
+      smart_record: 1           # int enum, NOT string
+      smart_rec_dir_path: "dev/rec"
+
+processing:
+  elements:
+    - id: "pgie"
+      type: "nvinfer"
+      config_file_path: "configs/nvinfer/pgie.txt"
+      process_mode: 1           # int: 1=primary, 2=secondary
+      batch_size: 4
+      queue: {}                 # explicit queue inline
+
+    - id: "tracker"
+      type: "nvtracker"
+      ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+      ll_config_file: "configs/tracker/nvdcf_config.yml"
+      tracker_width: 960
+      tracker_height: 544
+      compute_hw: 1             # int: 0=default, 1=GPU, 2=VIC
+```
+
+- All `enum` values → **integers** in YAML (never strings)
+- GStreamer docs use hyphens (`ll-lib-file`) → YAML uses underscores (`ll_lib_file`)
+- Reference: `docs/configs/deepstream_default.yml`
+
+---
+
+## DeepStream Plugin Properties — g_object_set Reference
+
+When calling `g_object_set`, use the GStreamer **kebab-case** property name as a C string, with the correct GLib type. Always end with `nullptr`.
+
+### nvmultiurisrcbin
+
+```cpp
+g_object_set(G_OBJECT(src_bin),
+    "max-batch-size",           (gint)  config.sources.cameras.size(),
+    "uri-list",                 (const gchar*) uri_list_str.c_str(),
+    "gpu-id",                   (gint)  cfg.gpu_id,
+    "smart-record",             (gint)  cfg.smart_record,         // 0/1/2
+    "smart-rec-dir-path",       (const gchar*) cfg.smart_rec_dir_path.c_str(),
+    "smart-rec-file-prefix",    (const gchar*) cfg.smart_rec_file_prefix.c_str(),
+    "smart-rec-cache",          (gint)  cfg.smart_rec_cache,
+    "smart-rec-default-duration",(gint) cfg.smart_rec_default_duration,
+    "latency",                  (guint) cfg.latency,              // ms
+    "rtsp-reconnect-interval",  (gint)  cfg.rtsp_reconnect_interval,
+    "cudadec-memtype",          (gint)  cfg.cudadec_memtype,      // 0=device,1=pinned,2=unified
+    "width",                    (gint)  config.stream_muxer.width,
+    "height",                   (gint)  config.stream_muxer.height,
+    "batched-push-timeout",     (gint)  config.stream_muxer.batched_push_timeout, // µs
+    "live-source",              (gboolean) config.stream_muxer.live_source,
+    nullptr);
+```
+
+### nvinfer (PGIE)
+
+```cpp
+g_object_set(G_OBJECT(infer),
+    "config-file-path",   (const gchar*) elem_cfg.config_file_path.c_str(),
+    "process-mode",       (gint)  elem_cfg.process_mode,    // 1=primary, 2=secondary
+    "batch-size",         (gint)  elem_cfg.batch_size,
+    "interval",           (gint)  elem_cfg.interval,        // 0=every batch
+    "gpu-id",             (gint)  elem_cfg.gpu_id,
+    "gie-unique-id",      (gint)  elem_cfg.unique_id,
+    nullptr);
+
+// SGIE only — add these:
+g_object_set(G_OBJECT(sgie),
+    "operate-on-gie-id",    (gint)  elem_cfg.operate_on_gie_id,
+    "operate-on-class-ids", (const gchar*) elem_cfg.operate_on_class_ids.c_str(), // "0:2"
+    nullptr);
+```
+
+### nvtracker
+
+```cpp
+g_object_set(G_OBJECT(tracker),
+    "ll-lib-file",      (const gchar*) tracker_cfg.ll_lib_file.c_str(),
+    "ll-config-file",   (const gchar*) tracker_cfg.ll_config_file.c_str(),
+    "tracker-width",    (gint) tracker_cfg.tracker_width,
+    "tracker-height",   (gint) tracker_cfg.tracker_height,
+    "gpu-id",           (gint) tracker_cfg.gpu_id,
+    "compute-hw",       (gint) tracker_cfg.compute_hw,  // 0=default, 1=GPU, 2=VIC
+    "display-tracking-id", (gboolean) tracker_cfg.display_tracking_id,
+    nullptr);
+```
+
+### nvdsosd
+
+```cpp
+g_object_set(G_OBJECT(osd),
+    "process-mode",   (gint)     osd_cfg.process_mode,  // 0=CPU, 1=GPU, 2=HW
+    "display-bbox",   (gboolean) osd_cfg.display_bbox,
+    "display-text",   (gboolean) osd_cfg.display_text,
+    "display-mask",   (gboolean) osd_cfg.display_mask,
+    "border-width",   (gint)     osd_cfg.border_width,
+    "gpu-id",         (gint)     osd_cfg.gpu_id,
+    nullptr);
+```
+
+### nvmultistreamtiler
+
+```cpp
+g_object_set(G_OBJECT(tiler),
+    "rows",     (guint) tiler_cfg.rows,
+    "columns",  (guint) tiler_cfg.columns,
+    "width",    (guint) tiler_cfg.width,
+    "height",   (guint) tiler_cfg.height,
+    "gpu-id",   (gint)  tiler_cfg.gpu_id,
+    nullptr);
+```
+
+### nvdsanalytics
+
+```cpp
+g_object_set(G_OBJECT(analytics),
+    "config-file",            (const gchar*) analytics_cfg.config_file.c_str(),
+    "gpu-id",                 (gint)     analytics_cfg.gpu_id,
+    "enable-secondary-input", (gboolean) analytics_cfg.enable_secondary_input,
+    nullptr);
+```
+
+### nvmsgconv + nvmsgbroker
+
+```cpp
+// nvmsgconv
+g_object_set(G_OBJECT(msgconv),
+    "config",        (const gchar*) mq_cfg.msgconv_config.c_str(),
+    "payload-type",  (gint) mq_cfg.payload_type,  // 0=DEEPSTREAM, 1=MINIMAL
+    "comp-id",       (gint) mq_cfg.comp_id,
+    nullptr);
+
+// nvmsgbroker
+g_object_set(G_OBJECT(broker),
+    "proto-lib",  (const gchar*) mq_cfg.proto_lib.c_str(),
+    "conn-str",   (const gchar*) mq_cfg.conn_str.c_str(),
+    "topic",      (const gchar*) mq_cfg.topic.c_str(),
+    "config",     (const gchar*) mq_cfg.broker_config.c_str(),
+    "sync",       (gboolean) FALSE,
+    nullptr);
+// proto-lib paths: /opt/nvidia/deepstream/deepstream/lib/libnvds_kafka_proto.so
+//                  /opt/nvidia/deepstream/deepstream/lib/libnvds_redis_proto.so
+```
+
+### nvv4l2h264enc / nvv4l2h265enc
+
+```cpp
+g_object_set(G_OBJECT(encoder),
+    "bitrate",          (guint)    enc_cfg.bitrate,          // bps, e.g. 4000000
+    "iframeinterval",   (guint)    enc_cfg.iframeinterval,
+    "preset-level",     (gint)     enc_cfg.preset_level,     // 1=UltraFast...4=Medium
+    "insert-sps-pps",   (gboolean) TRUE,                     // REQUIRED for RTSP
+    "maxperf-enable",   (gboolean) enc_cfg.maxperf_enable,
+    nullptr);
+```
+
+### NvDs Metadata access in pad probes
+
+```cpp
+// Attach probe to a sink pad
+GstPad* pad = gst_element_get_static_pad(element, "sink");
+gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, osd_probe_callback, nullptr, nullptr);
+gst_object_unref(pad);
+
+// Inside probe callback
+static GstPadProbeReturn osd_probe_callback(GstPad*, GstPadProbeInfo* info, gpointer) {
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
+        NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)(l_frame->data);
+
+        for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next) {
+            NvDsObjectMeta* obj = (NvDsObjectMeta*)(l_obj->data);
+            // obj->class_id, obj->confidence, obj->object_id (tracker id)
+            // obj->rect_params.left/top/width/height
+        }
+    }
+    return GST_PAD_PROBE_OK;
+}
+```
+
+---
+
+## Logging
+
+Always use `LOG_*` macros. Never `std::cout`, `printf`, or raw `spdlog::` calls in library code.
+
+```cpp
+#include "engine/core/utils/logger.hpp"
+
+LOG_T("Trace: {}", detail);          // Verbose debug
+LOG_D("Debug: element '{}' ready", id);
+LOG_I("Info: Pipeline started, {} sources", count);
+LOG_W("Warning: field '{}' deprecated", name);
+LOG_E("Error: Failed to link {} → {}", src_name, sink_name);
+LOG_C("Critical: GStreamer init failed");
+```
+
+---
+
+## CMakeLists.txt Patterns
+
+```cmake
+# New library target pattern (follow existing CMakeLists):
+add_library(vms_engine_mylayer STATIC
+    src/my_file.cpp
+)
+
+target_include_directories(vms_engine_mylayer
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${DEEPSTREAM_INCLUDE_DIRS}
+        ${GSTREAMER_INCLUDE_DIRS}
+)
+
+target_link_libraries(vms_engine_mylayer
+    PUBLIC
+        vms_engine_core           # Layer dependency → core only
+    PRIVATE
+        ${GSTREAMER_LIBRARIES}
+)
+
+set_target_properties(vms_engine_mylayer PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+```
+
+---
+
+## Common Anti-Patterns to Avoid
+
+```cpp
+// ❌ Wrong namespace (old project)
+namespace lantana::core::pipeline { }
+
+// ❌ Include wrong project's headers
+#include "lantana/core/builders/ibuilder_factory.hpp"
+
+// ❌ pipeline/ including infrastructure/
+#include "engine/infrastructure/messaging/redis_stream_producer.hpp"  // inside pipeline/
+
+// ❌ Missing nullptr terminator in g_object_set
+g_object_set(G_OBJECT(el), "gpu-id", 0);  // BUG: missing nullptr
+
+// ❌ Returning config slices from builders
+GstElement* build(const InferenceConfig& slice); // WRONG — pass full PipelineConfig
+
+// ❌ std::variant for backend selection (lantanav2 pattern, removed in vms-engine)
+std::variant<DeepStreamOptions, DLStreamerOptions> backend_options;
+
+// ❌ std::cout in library code
+std::cout << "Building element: " << name << std::endl;  // use LOG_I instead
+
+// ❌ Global state
+static GstPipeline* g_pipeline = nullptr;  // avoid; use class members
+
+// ❌ C++20 features
+auto result = std::ranges::find(vec, val);  // ranges = C++20, NOT allowed
+std::format("hello {}", name);              // format = C++20, use fmt::format instead
+```
+
+---
+
+## Infrastructure Adapter Pattern
+
+```cpp
+// ✅ YAML parser section adds to PipelineConfig
+// infrastructure/config_parser/yaml_parser_processing.cpp
+namespace engine::infrastructure::config_parser {
+
+void YamlConfigParser::parse_processing(
+    const YAML::Node& node,
+    engine::core::config::ProcessingConfig& out)
+{
+    if (!node || !node.IsMap()) return;
+
+    if (node["elements"] && node["elements"].IsSequence()) {
+        for (const auto& elem_node : node["elements"]) {
+            engine::core::config::ElementConfig elem;
+            elem.id   = elem_node["id"].as<std::string>("");
+            elem.type = elem_node["type"].as<std::string>("");
+            // ... parse properties with snake_case keys
+            out.elements.push_back(std::move(elem));
+        }
+    }
+}
+
+} // namespace engine::infrastructure::config_parser
+```
+
+---
+
+## File Header Template
+
+```cpp
+// pipeline/include/engine/pipeline/builders/my_builder.hpp
+#pragma once
+
+#include "engine/core/builders/ielement_builder.hpp"
+#include "engine/core/config/config_types.hpp"
+
+#include <gst/gst.h>
+
+namespace engine::pipeline::builders {
+
+/**
+ * @brief Builds <element name> GStreamer element from pipeline config.
+ *
+ * Implements IElementBuilder for <gst-element-name> element.
+ * Relevant config section: config.processing.elements[index]
+ */
+class MyBuilder : public engine::core::builders::IElementBuilder {
+public:
+    GstElement* build(const engine::core::config::PipelineConfig& config,
+                      int index = 0) override;
+};
+
+} // namespace engine::pipeline::builders
+```
+
+---
+
+## Include Path Conventions
+
+```cpp
+// Project headers — angle brackets with full path from include root
+#include "engine/core/pipeline/ipipeline_manager.hpp"
+#include "engine/core/config/config_types.hpp"
+#include "engine/core/utils/logger.hpp"
+#include "engine/pipeline/pipeline_manager.hpp"
+
+// System / external headers — angle brackets
+#include <gst/gst.h>
+#include <nvds_meta.h>
+#include <glib.h>
+#include <string>
+#include <vector>
+#include <memory>
+```
+
+Order: project headers first → system/external headers.

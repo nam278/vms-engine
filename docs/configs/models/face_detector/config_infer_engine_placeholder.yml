@@ -1,0 +1,36 @@
+property:
+  gpu-id: {{gpu_id}}
+  gie-unique-id: {{gie_unique_id}}
+  batch-size: {{batch_size}}
+
+  onnx-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.onnx"
+  model-engine-file: "{{MODEL_REPO_ROOT_DIR}}/{{MODEL_NAME}}/{{MODEL_VERSION}}/model.onnx_b{{batch_size}}_gpu{{gpu_id}}_{{network_mode_name}}.engine"
+
+  # 0=FP32, 1=INT8, 2=FP16 (khớp với engine .plan)
+  network-mode: {{network_mode}}
+  interval: {{interval}}
+  cluster-mode: {{cluster_mode}}
+  network-type: {{network_type}}
+
+  # === Preprocess (tương đương preprocess trong infer_config cũ) ===
+  net-scale-factor: {{net_scale_factor}}
+  model-color-format: {{model_color_format}} # 0=RGB
+  maintain-aspect-ratio: {{maintain_aspect_ratio}}
+  # process-mode: 1
+  symmetric-padding: {{symmetric_padding}}
+
+  # === Labels / classes ===
+  num-detected-classes: {{num_detected_classes}}
+  labelfile-path: "{{COMPONENT_ROOT_DIR}}/labels.txt"
+  # Filter out detected objects belonging to specified class-ids (semicolon delimited)
+  filter-out-class-ids: {{filter_out_class_ids}}
+
+  # === Parser YOLO custom ===
+  custom-lib-path: "{{WORKSPACE_PATH}}/plugins/libnvdsinfer_custom_impl_Yolo_face.so"
+  parse-bbox-func-name: "NvDsInferParseYoloFace"
+
+# === NMS / post-cluster (mapping từ nms{confidence, iou, topk}) ===
+class-attrs-all:
+  pre-cluster-threshold: {{pre_cluster_threshold}} # ~ confidence_threshold
+  nms-iou-threshold: {{nms_iou_threshold}}
+  topk: {{topk}}

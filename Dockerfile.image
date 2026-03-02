@@ -1,0 +1,61 @@
+# Sử dụng image DeepStream 7.1 làm base
+# FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel
+FROM nvcr.io/nvidia/deepstream:8.0-triton-multiarch
+# FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
+# FROM nvcr.io/nvidia/deepstream:7.1-samples-multiarch
+
+# ép miss cache các layer sau FROM
+# ARG CACHE_BUST=prod
+# LABEL build.cachebust="${CACHE_BUST}"
+
+# Install tini - tiny but valid init for containers (fixes PID 1 problems)
+# Handles signal forwarding and zombie reaping properly
+# RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
+
+# Optional: cài thêm plugin GStreamer nếu bạn cần multimedia phong phú
+RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh
+# hoặc:
+# RUN apt-get update && apt-get install -y gstreamer1.0-plugins-{good,bad,ugly} gstreamer1.0-libav && rm -rf /var/lib/apt/lists/*
+
+# Tạo thư mục gốc cho ứng dụng bên trong container
+ARG APP_ROOT_DIR=/opt/lantana
+RUN mkdir -p ${APP_ROOT_DIR}
+
+EXPOSE 9000
+
+# Sao chép toàn bộ nội dung của thư mục build context (thư mục 'lantana')
+# vào thư mục APP_ROOT_DIR bên trong container.
+# Dockerfile này phải nằm trong thư mục gốc của dự án 'lantana'.
+COPY ./build/bin/ ${APP_ROOT_DIR}/
+
+# Đặt WORKDIR tới thư mục chứa file thực thi
+WORKDIR ${APP_ROOT_DIR}
+
+# Đảm bảo file thực thi 'lantana' có quyền execute.
+# Đường dẫn './lantana' là tương đối với WORKDIR hiện tại.
+RUN chmod +x ./lantana
+
+# (Tùy chọn) In ra thông báo
+RUN echo "Lantana application setup complete. Current directory: $(pwd). Ready to run ./lantana"
+
+# Lệnh mặc định để chạy khi container khởi động.
+# Nó sẽ chạy './lantana' từ thư mục WORKDIR hiện tại (${APP_ROOT_DIR}/build/bin).
+# Các đối số cho 'lantana' có thể được truyền vào khi chạy 'docker run'.
+# CRITICAL: Use tini as PID 1 to properly handle signals and reap zombie processes
+# This prevents memory leaks and ensures graceful shutdown
+# ENTRYPOINT ["/usr/bin/tini", "--", "./lantana"]
+ENTRYPOINT ["./lantana"]
+# ENTRYPOINT ["bash", "-c", "./lantana || (echo 'App crashed. Keeping container alive for debugging...' && tail -f /dev/null)"]
+
+# Ví dụ về cách truyền đối số mặc định nếu lantana cần một file config
+# và file config đó nằm ở ${APP_ROOT_DIR}/configs/default_config.txt
+# Từ WORKDIR (${APP_ROOT_DIR}/build/bin), đường dẫn tương đối sẽ là ../../configs/
+# CMD ["../../configs/default_lantana_config.txt"]
+# Nếu không có CMD, container sẽ chạy ENTRYPOINT mà không có đối số mặc định.
+# Nếu bạn muốn vào bash:
+# CMD ["bash"]
+
+# Keep container alive for debugging - can exec into it anytime
+# CMD ["tail", "-f", "/dev/null"]
+
+# docker build -f Dockerfile.image -t vms-engine:latest .
