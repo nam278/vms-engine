@@ -56,11 +56,15 @@ struct SourcesConfig {
     int select_rtp_protocol = 4;  ///< 0=multi, 4=TCP-only
     int rtsp_reconnect_interval = 10;
     int rtsp_reconnect_attempts = -1;
+    int init_rtsp_reconnect_interval = -1;  ///< -1=fallback to rtsp_reconnect_interval, 0=disable
     int latency = 400;
     int udp_buffer_size = 4194304;
+    bool file_loop = false;  ///< loop file:// sources after EOS
     bool disable_audio = false;
     bool disable_passthrough = false;
     bool drop_pipeline_eos = true;
+    bool async_handling = true;     ///< handle async state changes (default: true)
+    bool low_latency_mode = false;  ///< low-latency mode for I/IPPP bitstreams
 
     // Group 3 — nvstreammux passthrough
     int width = 1920;
@@ -76,7 +80,7 @@ struct SourcesConfig {
     int smart_record = 0;  ///< 0=disable, 1=cloud-only, 2=multi
     std::string smart_rec_dir_path;
     std::string smart_rec_file_prefix = "lsr";
-    int smart_rec_cache = 10;  ///< pre-event buffer (sec)
+    int smart_rec_cache = 10;  ///< pre-event audio+video buffer (sec)
     int smart_rec_default_duration = 20;
     int smart_rec_mode = 0;       ///< 0=audio+video, 1=video, 2=audio
     int smart_rec_container = 0;  ///< 0=mp4, 1=mkv

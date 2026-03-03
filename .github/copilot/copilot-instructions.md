@@ -17,20 +17,20 @@ When generating code for this repository:
 
 Before implementing anything DeepStream-related, consult the deep-dive docs in `docs/architecture/`:
 
-| Document                                                                                                | Topic                                         |
-| ------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md)                | Index & reading order                         |
-| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md)                   | Tech stack, pipeline diagram, conventions     |
-| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md)                     | All `I*` interfaces with `engine::` namespace |
-| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md)                 | 5-phase build, `tails_` map pattern           |
-| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)                       | Static/dynamic linking, `queue: {}` pattern   |
-| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                         | Full YAML schema, parser architecture         |
-| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)                 | GstBus, state machine, RTSP reconnect         |
-| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)         | Pad probes, ProbeHandlerManager, SmartRecord/CropObjects |
-| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                                 | nvdsanalytics ROI / line crossing             |
-| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)           | Sinks, encoders, NvDsSR API                   |
-| [`RAII.md`](../../docs/architecture/RAII.md)                                                            | GStreamer / CUDA resource management          |
-| [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                          | Build system reference                        |
+| Document                                                                                        | Topic                                                    |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md)        | Index & reading order                                    |
+| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md)           | Tech stack, pipeline diagram, conventions                |
+| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md)             | All `I*` interfaces with `engine::` namespace            |
+| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md)         | 5-phase build, `tails_` map pattern                      |
+| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)               | Static/dynamic linking, `queue: {}` pattern              |
+| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                 | Full YAML schema, parser architecture                    |
+| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)         | GstBus, state machine, RTSP reconnect                    |
+| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md) | Pad probes, ProbeHandlerManager, SmartRecord/CropObjects |
+| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                         | nvdsanalytics ROI / line crossing                        |
+| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)   | Sinks, encoders, NvDsSR API                              |
+| [`RAII.md`](../../docs/architecture/RAII.md)                                                    | GStreamer / CUDA resource management                     |
+| [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                  | Build system reference                                   |
 
 ---
 
@@ -383,6 +383,11 @@ g_object_set(G_OBJECT(src_bin),
     "latency",                  (guint) cfg.latency,              // ms
     "udp-buffer-size",          (guint) cfg.udp_buffer_size,
     "drop-pipeline-eos",        (gboolean) cfg.drop_pipeline_eos,
+    "disable-audio",            (gboolean) cfg.disable_audio,
+    "disable-passthrough",      (gboolean) cfg.disable_passthrough,
+    "file-loop",                (gboolean) cfg.file_loop,
+    "async-handling",           (gboolean) cfg.async_handling,
+    "low-latency-mode",         (gboolean) cfg.low_latency_mode,
     nullptr);
 
 // Group 3 — nvstreammux passthrough

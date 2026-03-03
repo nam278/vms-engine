@@ -32,11 +32,15 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
     out.select_rtp_protocol = yaml_int(node, "select_rtp_protocol", 4);
     out.rtsp_reconnect_interval = yaml_int(node, "rtsp_reconnect_interval", 10);
     out.rtsp_reconnect_attempts = yaml_int(node, "rtsp_reconnect_attempts", -1);
+    out.init_rtsp_reconnect_interval = yaml_int(node, "init_rtsp_reconnect_interval", -1);
     out.latency = yaml_int(node, "latency", 400);
     out.udp_buffer_size = yaml_int(node, "udp_buffer_size", 4194304);
+    out.file_loop = yaml_bool(node, "file_loop", false);
     out.disable_audio = yaml_bool(node, "disable_audio", false);
     out.disable_passthrough = yaml_bool(node, "disable_passthrough", false);
     out.drop_pipeline_eos = yaml_bool(node, "drop_pipeline_eos", true);
+    out.async_handling = yaml_bool(node, "async_handling", true);
+    out.low_latency_mode = yaml_bool(node, "low_latency_mode", false);
 
     // ── Section 3: nvstreammux passthrough ──
     out.width = yaml_int(node, "width", 1920);

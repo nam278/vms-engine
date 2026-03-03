@@ -273,9 +273,12 @@ Properties in 3 groups:
 | `rtsp_reconnect_attempts` | `rtsp-reconnect-attempts` | int  | reconnect attempts (-1=infinite)                   |
 | `latency`                 | `latency`                 | int  | RTSP jitter buffer latency (ms)                    |
 | `udp_buffer_size`         | `udp-buffer-size`         | int  | UDP receive buffer bytes (default 524288)          |
+| `file_loop`               | `file-loop`               | bool | loop file:// sources after EOS (default false)     |
 | `disable_audio`           | `disable-audio`           | bool | true = skip audio decode                           |
 | `disable_passthrough`     | `disable-passthrough`     | bool | disable passthrough mode                           |
 | `drop_pipeline_eos`       | `drop-pipeline-eos`       | bool | prevent single-source EOS from killing pipeline    |
+| `async_handling`          | `async-handling`          | bool | handle async state changes (default true)          |
+| `low_latency_mode`        | `low-latency-mode`        | bool | low-latency for I/IPPP bitstreams (default false)  |
 
 **Group 3 — nvstreammux passthrough:**
 
@@ -293,6 +296,9 @@ Properties in 3 groups:
 | ---------------------------- | ---------------------------- | ------ | ------------------------------------------- |
 | `smart_record`               | `smart-record`               | int    | **0**=off, **1**=cloud-only, **2**=multi    |
 | `smart_rec_dir_path`         | `smart-rec-dir-path`         | string | output directory for recordings             |
+| `smart_rec_file_prefix`      | `smart-rec-file-prefix`      | string | filename prefix                             |
+| `smart_rec_cache`            | `smart-rec-cache`            | int    | pre-event audio+video buffer (sec)          |
+| `smart_rec_video_cache`      | `smart-rec-video-cache`      | int    | DEPRECATED — use `smart_rec_cache`          |
 | `smart_rec_file_prefix`      | `smart-rec-file-prefix`      | string | filename prefix                             |
 | `smart_rec_cache`            | `smart-rec-cache`            | int    | pre-event circular buffer (sec)             |
 | `smart_rec_default_duration` | `smart-rec-default-duration` | int    | post-event recording length (sec)           |

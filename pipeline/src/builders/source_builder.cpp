@@ -36,13 +36,30 @@ GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& con
                  static_cast<gint>(src.rtsp_reconnect_attempts), "latency",
                  static_cast<guint>(src.latency), "udp-buffer-size",
                  static_cast<guint>(src.udp_buffer_size), "drop-pipeline-eos",
-                 static_cast<gboolean>(src.drop_pipeline_eos), nullptr);
+                 static_cast<gboolean>(src.drop_pipeline_eos), "disable-audio",
+                 static_cast<gboolean>(src.disable_audio), "disable-passthrough",
+                 static_cast<gboolean>(src.disable_passthrough), "file-loop",
+                 static_cast<gboolean>(src.file_loop), "async-handling",
+                 static_cast<gboolean>(src.async_handling), "low-latency-mode",
+                 static_cast<gboolean>(src.low_latency_mode), nullptr);
 
     // Group 3 — nvstreammux passthrough
     g_object_set(G_OBJECT(elem.get()), "width", static_cast<gint>(src.width), "height",
                  static_cast<gint>(src.height), "batched-push-timeout",
                  static_cast<gint>(src.batched_push_timeout), "live-source",
-                 static_cast<gboolean>(src.live_source), nullptr);
+                 static_cast<gboolean>(src.live_source), "sync-inputs",
+                 static_cast<gboolean>(src.sync_inputs), nullptr);
+
+    // init-rtsp-reconnect-interval: triggers reconnect on RTSP error (distinct from data-timeout).
+    // Lantanav2 pattern: if not explicitly set (-1), fall back to rtsp_reconnect_interval.
+    {
+        const int irri = src.init_rtsp_reconnect_interval >= 0 ? src.init_rtsp_reconnect_interval
+                                                               : src.rtsp_reconnect_interval;
+        if (irri > 0) {
+            g_object_set(G_OBJECT(elem.get()), "init-rtsp-reconnect-interval",
+                         static_cast<gint>(irri), nullptr);
+        }
+    }
 
     // Smart Record properties
     if (src.smart_record > 0) {
