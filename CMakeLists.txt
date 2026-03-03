@@ -54,6 +54,10 @@ endforeach()
 # ── FetchContent (pinned versions) ──────────────────────────────────
 include(FetchContent)
 
+# Static build — binary must be fully self-contained for production image.
+# Dockerfile.image only copies build/bin/, so no .so from build/lib/ is available
+# at runtime. All FetchContent deps must link statically into vms_engine.
+set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG        v1.14.1)
@@ -63,10 +67,13 @@ FetchContent_Declare(yaml-cpp
     GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
     GIT_TAG        0.8.0)
 
+# BUILD_SHARED_LIBS OFF forces hiredis → .a; PIC required when linked into shared .so plugins
+set(BUILD_SHARED_LIBS            OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
+set(DISABLE_TESTS                ON  CACHE BOOL "" FORCE)
 FetchContent_Declare(hiredis
     GIT_REPOSITORY https://github.com/redis/hiredis.git
     GIT_TAG        v1.3.0)
-set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
