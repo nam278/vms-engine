@@ -17,9 +17,12 @@ GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& conf
     }
 
     g_object_set(G_OBJECT(elem.get()), "config-file-path", elem_cfg.config_file.c_str(),
-                 "process-mode", static_cast<gint>(elem_cfg.process_mode), "batch-size",
-                 static_cast<gint>(elem_cfg.batch_size), "gpu-id",
+                 "process-mode", static_cast<gint>(elem_cfg.process_mode), "gpu-id",
                  static_cast<gint>(elem_cfg.gpu_id), nullptr);
+    if (elem_cfg.batch_size > 0) {
+        g_object_set(G_OBJECT(elem.get()), "batch-size", static_cast<gint>(elem_cfg.batch_size),
+                     nullptr);
+    }
     if (elem_cfg.unique_id > 0) {
         g_object_set(G_OBJECT(elem.get()), "gie-unique-id", static_cast<gint>(elem_cfg.unique_id),
                      nullptr);
@@ -31,11 +34,14 @@ GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& conf
     }
 
     // SGIE-only properties
+    // NOTE: GObject property is "infer-on-gie-id" (not "operate-on-gie-id" which is config-file
+    // only)
+    //       operate-on-class-ids uses colon-separated integers: "0:2:3"
     if (elem_cfg.process_mode == 2) {
-        g_object_set(G_OBJECT(elem.get()), "operate-on-gie-id",
+        g_object_set(G_OBJECT(elem.get()), "infer-on-gie-id",
                      static_cast<gint>(elem_cfg.operate_on_gie_id), nullptr);
         if (!elem_cfg.operate_on_class_ids.empty()) {
-            g_object_set(G_OBJECT(elem.get()), "operate-on-class-ids",
+            g_object_set(G_OBJECT(elem.get()), "infer-on-class-ids",
                          elem_cfg.operate_on_class_ids.c_str(), nullptr);
         }
     }

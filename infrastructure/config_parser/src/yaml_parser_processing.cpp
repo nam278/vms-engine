@@ -34,7 +34,8 @@ void YamlConfigParser::parse_processing(const void* node_ptr,
             elem.config_file = yaml_str(elem_node, "config_file");
             elem.process_mode = yaml_int(elem_node, "process_mode", 1);
             elem.interval = yaml_int(elem_node, "interval", 0);
-            elem.batch_size = yaml_int(elem_node, "batch_size", 4);
+            elem.batch_size = yaml_int(elem_node, "batch_size",
+                                       0);  // 0 = not set, let nvinfer config file control
             elem.gpu_id = yaml_int(elem_node, "gpu_id", 0);
             elem.operate_on_gie_id = yaml_int(elem_node, "operate_on_gie_id", -1);
             elem.operate_on_class_ids = yaml_str(elem_node, "operate_on_class_ids");

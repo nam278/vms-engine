@@ -42,8 +42,8 @@ GstPadProbeReturn SmartRecordProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
                 }
             }
 
-            // TODO: Trigger smart recording via SmartRecordController
-            // smart_record_controller->start_recording(
+            // TODO: Trigger smart recording via NvDsSRStart() on source bin
+            // NvDsSRStart(src_bin, source_id,
             //     frame_meta->source_id,
             //     self->pre_event_sec_,
             //     self->post_event_sec_);

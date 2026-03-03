@@ -1,13 +1,11 @@
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
+#include "engine/pipeline/probes/crop_object_handler.hpp"
+#include "engine/pipeline/probes/smart_record_probe_handler.hpp"
 #include "engine/core/utils/logger.hpp"
-
-#include <gstnvdsmeta.h>
 
 namespace engine::pipeline::probes {
 
-ProbeHandlerManager::ProbeHandlerManager(
-    std::shared_ptr<engine::core::handlers::IHandlerManager> handler_manager, GstElement* pipeline)
-    : handler_manager_(std::move(handler_manager)), pipeline_(pipeline) {}
+ProbeHandlerManager::ProbeHandlerManager(GstElement* pipeline) : pipeline_(pipeline) {}
 
 bool ProbeHandlerManager::attach_probes(
     const std::vector<engine::core::config::EventHandlerConfig>& configs) {
@@ -36,42 +34,32 @@ bool ProbeHandlerManager::attach_probes(
             return false;
         }
 
-        // Capture handler_manager raw pointer + trigger string for the C callback
-        struct ProbeUserData {
-            engine::core::handlers::IHandlerManager* mgr;
-            std::string trigger;
-        };
-        auto* udata = new ProbeUserData{handler_manager_.get(), cfg.trigger};
+        gulong probe_id = 0;
 
-        gulong probe_id = gst_pad_add_probe(
-            pad, GST_PAD_PROBE_TYPE_BUFFER,
-            [](GstPad* /*pad*/, GstPadProbeInfo* info, gpointer user_data) -> GstPadProbeReturn {
-                auto* data = static_cast<ProbeUserData*>(user_data);
-                GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-                NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
-                if (!batch_meta)
-                    return GST_PAD_PROBE_OK;
+        if (cfg.trigger == "smart_record") {
+            auto* handler = new SmartRecordProbeHandler();
+            handler->configure(cfg);
+            probe_id = gst_pad_add_probe(
+                pad, GST_PAD_PROBE_TYPE_BUFFER, SmartRecordProbeHandler::on_buffer, handler,
+                [](gpointer ud) { delete static_cast<SmartRecordProbeHandler*>(ud); });
 
-                for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame;
-                     l_frame = l_frame->next) {
-                    auto* frame_meta = static_cast<NvDsFrameMeta*>(l_frame->data);
+        } else if (cfg.trigger == "crop_objects") {
+            auto* handler = new CropObjectHandler();
+            handler->configure(cfg);
+            probe_id = gst_pad_add_probe(
+                pad, GST_PAD_PROBE_TYPE_BUFFER, CropObjectHandler::on_buffer, handler,
+                [](gpointer ud) { delete static_cast<CropObjectHandler*>(ud); });
 
-                    engine::core::handlers::HandlerContext ctx;
-                    ctx.event_type = data->trigger;
-                    ctx.source_id = static_cast<int>(frame_meta->source_id);
-                    ctx.frame_number = frame_meta->frame_num;
-                    // ctx.data could carry NvDsFrameMeta* for handlers
-                    data->mgr->dispatch(ctx);
-                }
-                return GST_PAD_PROBE_OK;
-            },
-            udata, [](gpointer user_data) { delete static_cast<ProbeUserData*>(user_data); });
+        } else {
+            LOG_W("ProbeHandlerManager: unknown trigger '{}' for handler '{}', skipping",
+                  cfg.trigger, cfg.id);
+            gst_object_unref(pad);
+            continue;
+        }
 
         probes_.push_back({element, pad, probe_id, cfg.id});
-        LOG_I(
-            "ProbeHandlerManager: attached probe on '{}' for handler '{}' "
-            "(probe_id={})",
-            cfg.probe_element, cfg.id, probe_id);
+        LOG_I("ProbeHandlerManager: attached '{}' probe on '{}' for handler '{}'", cfg.trigger,
+              cfg.probe_element, cfg.id);
     }
 
     LOG_I("ProbeHandlerManager: attached {} probes", probes_.size());

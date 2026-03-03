@@ -12,7 +12,7 @@ namespace engine::pipeline::probes {
  * @brief Pad probe handler that triggers smart recording on object detection.
  *
  * Attaches to the configured probe element's src pad, iterates NvDs metadata,
- * checks label_filter, and signals SmartRecordController to start recording
+ * checks label_filter, and calls NvDsSRStart() on the source bin
  * when matching objects are found.
  */
 class SmartRecordProbeHandler {

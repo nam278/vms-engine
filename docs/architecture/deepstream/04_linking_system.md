@@ -2,7 +2,7 @@
 
 ## 1. Tổng quan
 
-`PipelineLinker` (hay `LinkManager`) là component chuyên trách **kết nối** (link) các GstElement với nhau sau khi chúng được tạo và add vào pipeline. Đây là tầng trừu tượng trên `gst_element_link` và `gst_pad_link` của GStreamer.
+Pipeline linking thực hiện trực tiếp qua GStreamer API (`gst_element_link`, `gst_pad_link`) trong các block builder. Không có wrapper class — builders gọi thẳng GStreamer.
 
 Có hai loại linking:
 
@@ -11,56 +11,7 @@ Có hai loại linking:
 | **Static pad linking**  | `gst_element_link()`                  | Elements có fixed src/sink pads (nvinfer, nvtracker, osd, ...) |
 | **Dynamic pad linking** | `gst_pad_link()` + `pad-added` signal | nvstreamdemux (tạo src pads khi stream join)                   |
 
-## 2. PipelineLinker Interface và Implementation
-
-```cpp
-// pipeline/include/engine/pipeline/linking/pipeline_linker.hpp
-namespace engine::pipeline {
-
-class PipelineLinker {
-public:
-    explicit PipelineLinker(GstElement* pipeline);
-
-    /**
-     * @brief Link src → sink bằng static pad.
-     * Wrapper đơn giản cho gst_element_link với LOG_E khi fail.
-     */
-    bool link(GstElement* src, GstElement* sink);
-
-    /**
-     * @brief Link src → sink qua tên pad cụ thể.
-     * Dùng khi cần link vào named pad (tee src_%u, nvstreamdemux src_%u).
-     */
-    bool link_pads(GstElement* src, const std::string& src_pad,
-                   GstElement* sink, const std::string& sink_pad);
-
-    /**
-     * @brief Kết nối signal pad-added cho dynamic sources.
-     * Callback được gọi khi nvstreamdemux tạo pad mới.
-     */
-    void connect_pad_added(GstElement* element,
-                           std::function<void(GstPad*)> callback);
-
-    /**
-     * @brief Link nhiều elements theo thứ tự trong vector.
-     * Convenience: link_chain({src, q, nvinfer, nvtracker, ...})
-     */
-    bool link_chain(const std::vector<GstElement*>& elements);
-
-    /**
-     * @brief Insert queue trước sink, link src → queue → sink.
-     */
-    bool link_with_queue(GstElement* src, GstElement* sink,
-                         GstElement* queue);
-
-private:
-    GstElement* pipeline_;
-};
-
-} // namespace engine::pipeline
-```
-
-## 3. Static Pad Linking
+## 2. Static Pad Linking
 
 Đa số elements trong DeepStream pipeline có **static sink/src pads** và có thể link trực tiếp:
 
@@ -72,34 +23,16 @@ nvtracker.src → [queue] → nvinfer_sgie.sink
 ```
 
 ```cpp
-bool PipelineLinker::link(GstElement* src, GstElement* sink) {
-    if (!src || !sink) {
-        LOG_E("link: null element (src={}, sink={})",
-              src ? GST_ELEMENT_NAME(src) : "NULL",
-              sink ? GST_ELEMENT_NAME(sink) : "NULL");
-        return false;
-    }
-
-    if (!gst_element_link(src, sink)) {
-        LOG_E("gst_element_link failed: {} → {}",
-              GST_ELEMENT_NAME(src),
-              GST_ELEMENT_NAME(sink));
-        return false;
-    }
-
-    LOG_D("Linked: {} → {}", GST_ELEMENT_NAME(src), GST_ELEMENT_NAME(sink));
-    return true;
+// Trong block builders — gọi trực tiếp GStreamer API
+if (!gst_element_link(src, sink)) {
+    LOG_E("Failed to link '{}' → '{}'",
+          GST_ELEMENT_NAME(src), GST_ELEMENT_NAME(sink));
+    return false;
 }
-
-bool PipelineLinker::link_chain(const std::vector<GstElement*>& elements) {
-    for (size_t i = 0; i + 1 < elements.size(); ++i) {
-        if (!link(elements[i], elements[i + 1])) return false;
-    }
-    return true;
-}
+LOG_D("Linked: '{}' → '{}'", GST_ELEMENT_NAME(src), GST_ELEMENT_NAME(sink));
 ```
 
-## 4. Dynamic Pad Linking — nvstreamdemux
+## 3. Dynamic Pad Linking — nvstreamdemux
 
 `nvstreamdemux` là trường hợp đặc biệt: nó không tạo src pads ngay lập tức mà tạo chúng khi stream được demuxed (dynamic pads).
 
@@ -116,27 +49,9 @@ nvtracker.src → nvstreamdemux.sink
 ### Implementation
 
 ```cpp
-void PipelineLinker::connect_pad_added(
-    GstElement* demux,
-    std::function<void(GstPad*)> callback)
-{
-    struct CallbackData {
-        std::function<void(GstPad*)> fn;
-    };
-
-    auto* data = new CallbackData{std::move(callback)};
-
-    g_signal_connect_data(
-        G_OBJECT(demux),
-        "pad-added",
-        G_CALLBACK([](GstElement*, GstPad* new_pad, gpointer user_data) {
-            auto* d = static_cast<CallbackData*>(user_data);
-            d->fn(new_pad);
-        }),
-        data,
-        nullptr,   // GClosureNotify
-        static_cast<GConnectFlags>(0));
-}
+// Trong OutputsBlockBuilder — gọi trực tiếp g_signal_connect
+g_signal_connect(demux, "pad-added",
+                 G_CALLBACK(on_demux_pad_added), &context);
 ```
 
 ### Pattern sử dụng trong ProcessingBuilder/OutputsBuilder
@@ -187,7 +102,7 @@ static void on_demux_pad_added(GstElement* demux, GstPad* new_pad,
 }
 ```
 
-## 5. Queue Insertion — `queue: {}` Pattern
+## 4. Queue Insertion — `queue: {}` Pattern
 
 Trong YAML config, bất kỳ element nào có thêm key `queue: {}` sẽ được tự động insert một `GstQueue` trước nó. Đây là cách tách biệt processing threads trong GStreamer.
 
@@ -235,7 +150,7 @@ GstElement* build_queue_for(const ProcessingElementConfig& elem,
 }
 ```
 
-## 6. Tee Element — Multiple Outputs
+## 5. Tee Element — Multiple Outputs
 
 Khi một stream cần đi vào **nhiều sinks** (vừa display vừa record), cần insert `tee`:
 
@@ -248,26 +163,26 @@ Khi một stream cần đi vào **nhiều sinks** (vừa display vừa record), 
 // Link tee với 2 outputs
 GstElement* tee = gst_element_factory_make("tee", "output_tee_0");
 gst_bin_add(GST_BIN(pipeline), tee);
-linker_->link(osd_element, tee);
+gst_element_link(osd_element, tee);
 
 // Branch 1: RTSP sink
 auto* q1 = make_queue("rtsp_q_0");
 auto* enc1 = make_h264_encoder("enc_rtsp_0");
 auto* rtsp_sink = make_rtsp_sink("rtsp_0");
 gst_bin_add_many(GST_BIN(pipeline), q1, enc1, rtsp_sink, nullptr);
-linker_->link_chain({tee, q1, enc1, rtsp_sink});
+gst_element_link_many(tee, q1, enc1, rtsp_sink, nullptr);
 
 // Branch 2: File sink
 auto* q2 = make_queue("file_q_0");
 auto* enc2 = make_h264_encoder("enc_file_0");
 auto* file_sink = make_file_sink("file_0");
 gst_bin_add_many(GST_BIN(pipeline), q2, enc2, file_sink, nullptr);
-linker_->link_chain({tee, q2, enc2, file_sink});
+gst_element_link_many(tee, q2, enc2, file_sink, nullptr);
 ```
 
 Lưu ý: `tee` element tự động tạo src pads với pattern `src_%u` khi một sink được linked.
 
-## 7. RAII cho GStreamer Objects
+## 6. RAII cho GStreamer Objects
 
 Mọi GstElement\* được tạo bởi `gst_element_factory_make()` phải được quản lý qua RAII helpers:
 
@@ -302,7 +217,7 @@ engine::core::utils::GstCapsPtr caps(
 
 > Xem chi tiết RAII → [../RAII.md](../RAII.md)
 
-## 8. Debugging Links
+## 7. Debugging Links
 
 ```bash
 # Export DOT graph để visualize pipeline topology

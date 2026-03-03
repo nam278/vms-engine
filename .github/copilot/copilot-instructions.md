@@ -26,10 +26,9 @@ Before implementing anything DeepStream-related, consult the deep-dive docs in `
 | [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)                       | Static/dynamic linking, `queue: {}` pattern   |
 | [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                         | Full YAML schema, parser architecture         |
 | [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)                 | GstBus, state machine, RTSP reconnect         |
-| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)         | HandlerManager, probes, built-in handlers     |
+| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)         | Pad probes, ProbeHandlerManager, SmartRecord/CropObjects |
 | [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                                 | nvdsanalytics ROI / line crossing             |
 | [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)           | Sinks, encoders, NvDsSR API                   |
-| [`10_signal_vs_probe_deep_dive.md`](../../docs/architecture/deepstream/10_signal_vs_probe_deep_dive.md) | Signal vs pad probe — when to use which       |
 | [`RAII.md`](../../docs/architecture/RAII.md)                                                            | GStreamer / CUDA resource management          |
 | [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                          | Build system reference                        |
 
@@ -58,11 +57,10 @@ Do **not** use features beyond these versions.
 ### Layer Dependency Map
 
 ```
-app/          → depends on: core, pipeline, domain, infrastructure, services
+app/          → depends on: core, pipeline, domain, infrastructure
 pipeline/     → depends on: core ONLY
 domain/       → depends on: core ONLY
 infrastructure/ → depends on: core ONLY
-services/     → depends on: core ONLY
 core/         → depends on: std library + GStreamer forward-declares ONLY
 ```
 
@@ -144,12 +142,12 @@ When creating or refactoring C++ in this repository, use Doxygen comments as a h
 
 ```cpp
 /**
- * @brief Registers and activates event handlers defined in runtime configuration.
- * @param handlers_config Handler list parsed from YAML `event_handlers` block.
- * @return true if every enabled handler is validated and attached successfully.
+ * @brief Attaches pad probes for all enabled event handler configs.
+ * @param configs Handler list parsed from YAML `event_handlers` block.
+ * @return true if every enabled probe was attached successfully.
  */
-virtual bool register_event_handlers(
-    std::vector<engine::core::config::CustomHandlerConfig>& handlers_config) = 0;
+bool attach_probes(
+    const std::vector<engine::core::config::EventHandlerConfig>& configs);
 ```
 
 ```cpp
@@ -420,9 +418,11 @@ g_object_set(G_OBJECT(infer),
     nullptr);
 
 // SGIE only — add these:
+// NOTE: GObject property is "infer-on-gie-id" (config-file uses "operate-on-gie-id")
+//       operate-on-class-ids: colon-separated integers for GObject ("0:2"), semicolon in config file
 g_object_set(G_OBJECT(sgie),
-    "operate-on-gie-id",    (gint)  elem_cfg.operate_on_gie_id,
-    "operate-on-class-ids", (const gchar*) elem_cfg.operate_on_class_ids.c_str(), // "0:2"
+    "infer-on-gie-id",      (gint)  elem_cfg.operate_on_gie_id,
+    "infer-on-class-ids", (const gchar*) elem_cfg.operate_on_class_ids.c_str(), // "0:2"
     nullptr);
 ```
 

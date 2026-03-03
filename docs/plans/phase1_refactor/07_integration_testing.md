@@ -9,7 +9,7 @@
 
 - Plans 01–06 completed
 - `cmake --build build -- -j5` succeeds (full build)
-- All targets: `vms_engine_core`, `vms_engine_pipeline`, `vms_engine_domain`, `vms_engine_infrastructure`, `vms_engine_services`, `vms_engine` (binary), 7 plugin `.so` files
+- All targets: `vms_engine_core`, `vms_engine_pipeline`, `vms_engine_domain`, `vms_engine_infrastructure`, `vms_engine` (binary), 7 plugin `.so` files
 
 ---
 
@@ -20,7 +20,7 @@
 ```bash
 # Check entire source tree for any remaining lantana references
 grep -rn "lantana" \
-    core/ pipeline/ domain/ infrastructure/ services/ app/ plugins/ \
+    core/ pipeline/ domain/ infrastructure/ app/ plugins/ \
     --include="*.hpp" --include="*.cpp" --include="*.h" \
     | grep -v "// lantana" | grep -v "CHANGELOG" | grep -v ".md"
 # Expected: 0 results
@@ -30,7 +30,7 @@ grep -rn "lantana" \
 
 ```bash
 grep -rn "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER\|LANTANA_WITH_" \
-    core/ pipeline/ domain/ infrastructure/ services/ app/ \
+    core/ pipeline/ domain/ infrastructure/ app/ \
     --include="*.hpp" --include="*.cpp"
 # Expected: 0 results
 ```
@@ -40,7 +40,7 @@ grep -rn "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER\|LANTANA_WITH_" \
 ```bash
 grep -rn "dlstreamer\|DLStreamer\|DLSTREAMER\|dl_pipeline" \
     --include="*.hpp" --include="*.cpp" --include="*.cmake" --include="CMakeLists.txt" \
-    core/ pipeline/ domain/ infrastructure/ services/ app/
+    core/ pipeline/ domain/ infrastructure/ app/
 # Expected: 0 results
 ```
 
@@ -48,13 +48,13 @@ grep -rn "dlstreamer\|DLStreamer\|DLSTREAMER\|dl_pipeline" \
 
 ```bash
 # Check for ds_ prefixed file names
-find core/ pipeline/ domain/ infrastructure/ services/ app/ -name "ds_*"
+find core/ pipeline/ domain/ infrastructure/ app/ -name "ds_*"
 # Expected: 0 results
 
 # Check for Ds class name prefixes (excluding DeepStream SDK types like NvDs*)
 grep -rn "\bDs[A-Z][a-zA-Z]*Builder\|DsPipeline\|DsRuntime\|DsConfig\|DsSmart\|DsBuilder" \
     --include="*.hpp" --include="*.cpp" \
-    core/ pipeline/ domain/ infrastructure/ services/ app/
+    core/ pipeline/ domain/ infrastructure/ app/
 # Expected: 0 results
 ```
 
@@ -77,13 +77,13 @@ grep -rL "engine::domain" domain/include/ --include="*.hpp" | head -20
 ### 1.6 — Layer Dependency Compliance
 
 ```bash
-# Core must NOT include pipeline, infrastructure, or services headers
-grep -rn '#include "engine/pipeline\|#include "engine/infrastructure\|#include "engine/services' \
+# Core must NOT include pipeline or infrastructure headers
+grep -rn '#include "engine/pipeline\|#include "engine/infrastructure' \
     core/ --include="*.hpp" --include="*.cpp"
 # Expected: 0 results
 
-# Domain must NOT include pipeline, infrastructure, or services headers
-grep -rn '#include "engine/pipeline\|#include "engine/infrastructure\|#include "engine/services' \
+# Domain must NOT include pipeline or infrastructure headers
+grep -rn '#include "engine/pipeline\|#include "engine/infrastructure' \
     domain/ --include="*.hpp" --include="*.cpp"
 # Expected: 0 results
 ```
@@ -115,7 +115,6 @@ cmake --build build --target vms_engine_config_parser -- -j5
 cmake --build build --target vms_engine_messaging -- -j5
 cmake --build build --target vms_engine_storage -- -j5
 cmake --build build --target vms_engine_rest_api -- -j5
-cmake --build build --target vms_engine_services -- -j5
 cmake --build build --target vms_engine -- -j5
 ```
 
@@ -318,7 +317,7 @@ RUN cmake -S . -B build \
     && cmake --build build -- -j5
 
 # Run static checks
-RUN ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ \
+RUN ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ app/ \
     --include="*.hpp" --include="*.cpp" | grep -v "// lantana"
 ```
 
@@ -341,7 +340,7 @@ jobs:
           cmake --build build -- -j5
       - name: Static Checks
         run: |
-          ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ --include="*.hpp" --include="*.cpp" | grep -v "//"
+          ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ app/ --include="*.hpp" --include="*.cpp" | grep -v "//"
           ! grep -rn "LANTANA_WITH_" --include="*.hpp" --include="*.cpp" --include="CMakeLists.txt"
 ```
 

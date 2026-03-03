@@ -9,7 +9,7 @@ namespace engine::pipeline::builders {
  * @brief Builds nvstreamdemux element for multi-output stream demultiplexing.
  *
  * Creates a bare nvstreamdemux — pad connections are handled dynamically
- * by the OutputsBlockBuilder or PipelineLinker via request pads.
+ * by the OutputsBlockBuilder via request pads.
  */
 class DemuxerBuilder : public engine::core::builders::IElementBuilder {
    public:

@@ -100,11 +100,10 @@ app/            → depends on: pipeline, infrastructure, core
 pipeline/       → depends on: core ONLY
 infrastructure/ → depends on: core ONLY
 domain/         → depends on: core ONLY
-services/       → depends on: core ONLY
 core/           → NO external deps (only std + GStreamer fwd-declares)
 ```
 
-**Quy tắc tuyệt đối**: `core/` không bao giờ include header của `pipeline/`, `infrastructure/`, hay `services/`.
+**Quy tắc tuyệt đối**: `core/` không bao giờ include header của `pipeline/` hay `infrastructure/`.
 
 **Architecture docs đầy đủ:** [`docs/architecture/`](docs/architecture/)
 

@@ -40,7 +40,6 @@ Root CMakeLists.txt
   ├── add_subdirectory(pipeline)
   ├── add_subdirectory(domain)
   ├── add_subdirectory(infrastructure)
-  ├── add_subdirectory(services)
   └── add_subdirectory(app)  ← executable cuối cùng
 ```
 
@@ -48,12 +47,12 @@ Mỗi `add_subdirectory()` load file `CMakeLists.txt` của module đó và regi
 
 ### Nguyên tắc cốt lõi
 
-| Nguyên tắc | Ý nghĩa |
-|---|---|
-| **INTERFACE / PUBLIC / PRIVATE** | Kiểm soát propagation của include dirs và link libs |
-| **Target-based** (không dùng global variables) | Dùng `target_*` thay vì `include_directories()` global |
-| **Dependency-ordered subdirectories** | Thư viện phụ thuộc phải được add trước |
-| **Interface-first** | `core/` không phụ thuộc gì ngoài std + GStreamer forward-decl |
+| Nguyên tắc                                     | Ý nghĩa                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| **INTERFACE / PUBLIC / PRIVATE**               | Kiểm soát propagation của include dirs và link libs           |
+| **Target-based** (không dùng global variables) | Dùng `target_*` thay vì `include_directories()` global        |
+| **Dependency-ordered subdirectories**          | Thư viện phụ thuộc phải được add trước                        |
+| **Interface-first**                            | `core/` không phụ thuộc gì ngoài std + GStreamer forward-decl |
 
 ---
 
@@ -128,8 +127,6 @@ vms-engine/
 │   │   └── CMakeLists.txt
 │   └── storage/
 │       └── CMakeLists.txt
-└── services/
-    └── CMakeLists.txt
 ```
 
 ---
@@ -185,15 +182,15 @@ cat build/compile_commands.json | head -50
 
 ### Useful cmake flags
 
-| Flag | Ý nghĩa |
-|---|---|
-| `-DCMAKE_BUILD_TYPE=Debug` | Debug symbols, no optimizations (`-g -O0`) |
-| `-DCMAKE_BUILD_TYPE=Release` | Full optimizations (`-O3 -DNDEBUG`) |
-| `-DCMAKE_BUILD_TYPE=RelWithDebInfo` | Optimized + debug symbols |
-| `-G Ninja` | Dùng Ninja generator (nhanh hơn make ~2x) |
-| `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` | Tạo `compile_commands.json` cho LSP (clangd) |
-| `-DCMAKE_VERBOSE_MAKEFILE=ON` | In full compile commands (debug build issues) |
-| `--fresh` | Force reconfigure (CMake 3.24+) |
+| Flag                                 | Ý nghĩa                                       |
+| ------------------------------------ | --------------------------------------------- |
+| `-DCMAKE_BUILD_TYPE=Debug`           | Debug symbols, no optimizations (`-g -O0`)    |
+| `-DCMAKE_BUILD_TYPE=Release`         | Full optimizations (`-O3 -DNDEBUG`)           |
+| `-DCMAKE_BUILD_TYPE=RelWithDebInfo`  | Optimized + debug symbols                     |
+| `-G Ninja`                           | Dùng Ninja generator (nhanh hơn make ~2x)     |
+| `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` | Tạo `compile_commands.json` cho LSP (clangd)  |
+| `-DCMAKE_VERBOSE_MAKEFILE=ON`        | In full compile commands (debug build issues) |
+| `--fresh`                            | Force reconfigure (CMake 3.24+)               |
 
 ---
 
@@ -212,12 +209,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 ```
 
-| Type | Flags (GCC/Clang) | Dùng khi |
-|---|---|---|
-| `Debug` | `-g -O0` | Development — symbols đầy đủ, dễ debug với GDB |
-| `Release` | `-O3 -DNDEBUG` | Production — tối ưu tối đa, tắt assert |
-| `RelWithDebInfo` | `-O2 -g -DNDEBUG` | Profiling — optimized nhưng giữ symbols |
-| `MinSizeRel` | `-Os -DNDEBUG` | Embedded — tối ưu size |
+| Type             | Flags (GCC/Clang) | Dùng khi                                       |
+| ---------------- | ----------------- | ---------------------------------------------- |
+| `Debug`          | `-g -O0`          | Development — symbols đầy đủ, dễ debug với GDB |
+| `Release`        | `-O3 -DNDEBUG`    | Production — tối ưu tối đa, tắt assert         |
+| `RelWithDebInfo` | `-O2 -g -DNDEBUG` | Profiling — optimized nhưng giữ symbols        |
+| `MinSizeRel`     | `-Os -DNDEBUG`    | Embedded — tối ưu size                         |
 
 ### Custom flags per type
 
@@ -383,7 +380,6 @@ vms_engine (executable)
   │   └── CUDAToolkit::cudart
   ├── vms_engine_domain    (STATIC)
   ├── vms_engine_infra_*   (STATIC — config_parser, messaging, storage)
-  ├── vms_engine_services  (STATIC)
   ├── spdlog::spdlog
   ├── yaml-cpp::yaml-cpp
   ├── hiredis::hiredis
@@ -446,6 +442,7 @@ target_link_libraries(my_lib
 ```
 
 **Rule of thumb:**
+
 - `PUBLIC` → các consumer của lib **sẽ cần** sử dụng dependency này trong code của họ
 - `PRIVATE` → dependency chỉ dùng trong **implementation** của lib, không expose ra public API
 - `INTERFACE` → lib không tự dùng nhưng **consumer sẽ cần** (thường cho header-only)
@@ -824,6 +821,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)  # executable + .dll
 ```
 
 Sau khi build:
+
 ```
 build/
 ├── bin/
@@ -905,56 +903,56 @@ shared với team. CMake 3.19+.
 
 ```json
 {
-    "version": 6,
-    "configurePresets": [
-        {
-            "name": "debug",
-            "hidden": false,
-            "description": "Debug build with sanitizers",
-            "binaryDir": "${sourceDir}/build/debug",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE":              "Debug",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
-            }
-        },
-        {
-            "name": "release",
-            "hidden": false,
-            "description": "Optimized release build",
-            "binaryDir": "${sourceDir}/build/release",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE":              "Release",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
-                "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
-            }
-        },
-        {
-            "name": "relwithdebinfo",
-            "description": "Release with debug info (profiling)",
-            "binaryDir": "${sourceDir}/build/profile",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE":              "RelWithDebInfo",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
-            }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "debug",
-            "configurePreset": "debug",
-            "jobs": 0
-        },
-        {
-            "name": "release",
-            "configurePreset": "release",
-            "jobs": 0
-        }
-    ]
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "debug",
+      "hidden": false,
+      "description": "Debug build with sanitizers",
+      "binaryDir": "${sourceDir}/build/debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
+      }
+    },
+    {
+      "name": "release",
+      "hidden": false,
+      "description": "Optimized release build",
+      "binaryDir": "${sourceDir}/build/release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
+        "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
+      }
+    },
+    {
+      "name": "relwithdebinfo",
+      "description": "Release with debug info (profiling)",
+      "binaryDir": "${sourceDir}/build/profile",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "DEEPSTREAM_DIR": "/opt/nvidia/deepstream/deepstream"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "jobs": 0
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 0
+    }
+  ]
 }
 ```
 
@@ -987,6 +985,7 @@ CMake Error: By not providing "FindDeepStream.cmake" in CMAKE_MODULE_PATH
 ```
 
 **Fix**: Dùng `find_library` + `find_path` thủ công thay vì `find_package(DeepStream)`:
+
 ```cmake
 find_library(NVDS_META_LIB nvds_meta HINTS ${DEEPSTREAM_DIR}/lib REQUIRED)
 find_path(NVDS_INCLUDE_DIR nvdsgstutils.h HINTS ${DEEPSTREAM_DIR}/sources/includes REQUIRED)
@@ -999,11 +998,13 @@ undefined reference to `gst_element_factory_make'
 ```
 
 **Fix**: Thiếu link dependency. Kiểm tra `target_link_libraries`:
+
 ```cmake
 target_link_libraries(my_target PRIVATE PkgConfig::GST)  # thêm GST
 ```
 
 Hoặc thư viện cần được link theo đúng thứ tự (linker đọc left-to-right):
+
 ```cmake
 # ❌ SAI thứ tự — libA cần libB nhưng libB đến trước
 target_link_libraries(exec PRIVATE libA libB)  # có thể fail
@@ -1020,6 +1021,7 @@ network error: couldn't connect to server
 ```
 
 **Fix inside container**:
+
 ```bash
 # Kiểm tra DNS
 ping github.com
@@ -1031,6 +1033,7 @@ set(FETCHCONTENT_SOURCE_DIR_SPDLOG /opt/deps/spdlog CACHE PATH "")
 ### `double free` / `gst_object_unref: assertion 'object->ref_count > 0'`
 
 Triệu chứng của việc quên `release()` sau `gst_bin_add()`:
+
 ```cmake
 # Không phải CMake lỗi — xem RAII.md #11 anti-patterns
 ```
@@ -1042,6 +1045,7 @@ fatal error: engine/pipeline/builders/infer_builder.hpp: No such file or directo
 ```
 
 **Fix**: Kiểm tra `target_include_directories` visibility:
+
 ```cmake
 # Nếu consumer của lib không tìm được header → đổi từ PRIVATE sang PUBLIC
 target_include_directories(vms_engine_pipeline
@@ -1056,6 +1060,7 @@ CMake Error: find_package(CUDAToolkit) failed
 ```
 
 **Fix**:
+
 ```bash
 # Kiểm tra CUDA trong container
 nvidia-smi
@@ -1149,7 +1154,8 @@ rm -rf build && cmake -S . -B build ...                        # full clean rebu
 
 ---
 
-*See also:*
+_See also:_
+
 - [`RAII.md`](RAII.md) — C++ resource management patterns
 - [`ARCHITECTURE_BLUEPRINT.md`](ARCHITECTURE_BLUEPRINT.md) — overall architecture
 - [`AGENTS.md`](../../AGENTS.md) — build commands quick reference

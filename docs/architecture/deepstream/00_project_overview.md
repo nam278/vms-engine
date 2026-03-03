@@ -6,31 +6,30 @@
 
 Đây là **phiên bản refactor** của `lantanav2` với các cải tiến chính:
 
-| Mục | lantanav2 (cũ) | vms-engine (mới) |
-|-----|----------------|------------------|
-| Namespace | `lantana::` | `engine::` |
-| Include prefix | `lantana/core/` | `engine/core/` |
-| DeepStream SDK | 7.1 | **8.0** |
-| Backend | DeepStream + DLStreamer (multi-backend) | **DeepStream-native only** |
-| Config variants | `std::variant` cho backend options | Config struct trực tiếp (không variant) |
-| Pipeline layer | `backends/deepstream/` | `pipeline/` |
-| Executable | `lantana` | `vms_engine` |
+| Mục             | lantanav2 (cũ)                          | vms-engine (mới)                        |
+| --------------- | --------------------------------------- | --------------------------------------- |
+| Namespace       | `lantana::`                             | `engine::`                              |
+| Include prefix  | `lantana/core/`                         | `engine/core/`                          |
+| DeepStream SDK  | 7.1                                     | **8.0**                                 |
+| Backend         | DeepStream + DLStreamer (multi-backend) | **DeepStream-native only**              |
+| Config variants | `std::variant` cho backend options      | Config struct trực tiếp (không variant) |
+| Pipeline layer  | `backends/deepstream/`                  | `pipeline/`                             |
+| Executable      | `lantana`                               | `vms_engine`                            |
 
 ## 2. Tech Stack
 
-| Component | Technology | Phiên bản |
-|-----------|-----------|-----------|
-| Language | C++17 | - |
-| Build System | CMake + vcpkg | 3.16+ |
-| Video Framework | GStreamer | 1.0 |
-| AI Backend | NVIDIA DeepStream SDK | **8.0** |
-| GPU Inference | TensorRT, CUDA | - |
-| Ext. Inference | Triton Inference Server | - |
-| Configuration | YAML (yaml-cpp) | - |
-| Logging | spdlog + fmt | - |
-| Messaging | Redis Streams, Kafka | - |
-| Storage | Local FS, S3 (MinIO) | - |
-| REST API | Pistache HTTP | - |
+| Component       | Technology            | Phiên bản |
+| --------------- | --------------------- | --------- |
+| Language        | C++17                 | -         |
+| Build System    | CMake + vcpkg         | 3.16+     |
+| Video Framework | GStreamer             | 1.0       |
+| AI Backend      | NVIDIA DeepStream SDK | **8.0**   |
+| GPU Inference   | TensorRT, CUDA        | -         |
+| Configuration   | YAML (yaml-cpp)       | -         |
+| Logging         | spdlog + fmt          | -         |
+| Messaging       | Redis Streams, Kafka  | -         |
+| Storage         | Local FS, S3 (MinIO)  | -         |
+| REST API        | Pistache HTTP         | -         |
 
 ## 3. Tính năng chính
 
@@ -160,7 +159,7 @@ nvstreamdemux (tách batch → per-stream outputs)
 └────────────────────────────────────────────────────┘
 ```
 
-**Quy tắc tuyệt đối**: `core/` không bao giờ include header của `pipeline/`, `infrastructure/`, hay `services/`.
+**Quy tắc tuyệt đối**: `core/` không bao giờ include header của `pipeline/` hay `infrastructure/`.
 
 ## 7. Namespace convention
 
@@ -171,7 +170,6 @@ engine::core::config        → core/include/engine/core/config/
 engine::pipeline            → pipeline/include/engine/pipeline/
 engine::domain              → domain/include/engine/domain/
 engine::infrastructure      → infrastructure/include/engine/infrastructure/
-engine::services            → services/include/engine/services/
 ```
 
 Logging macros (dùng `LOG_*` với underscore — khác với lantanav2 dùng `LOG*`):

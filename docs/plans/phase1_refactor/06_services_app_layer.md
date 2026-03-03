@@ -1,6 +1,6 @@
-# Plan 06 — Services, Application Entry Point, and Plugins
+# Plan 06 — Application Entry Point and Plugins
 
-> Create external services (`services/`), write `app/main.cpp`, and create `plugins/`.
+> Write `app/main.cpp` and create `plugins/`.
 > This is the final implementation plan before integration testing.
 
 ---
@@ -11,49 +11,13 @@
 
 ## Deliverables
 
-- [ ] Triton inference client (1 header + 1 source) created
 - [ ] `app/main.cpp` written (DeepStream-only, `engine::` namespace throughout)
 - [ ] All 7 plugin source files created
 - [ ] Final binary links and compiles
 
 ---
 
-## Part A: External Services (Triton Client)
-
-### Files to Create
-
-| File                                                           | Purpose                                                                 |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `services/include/engine/services/triton_inference_client.hpp` | Declares `TritonInferenceClient`; implements `IExternalInferenceClient` |
-| `services/src/triton_inference_client.cpp`                     | HTTP/gRPC calls to Triton Inference Server                              |
-
-### Conventions
-
-- Namespace: `engine::services`
-- Implement `engine::core::services::IExternalInferenceClient`
-- Includes: `#include "engine/core/services/..."`
-
-### CMakeLists.txt
-
-```cmake
-# services/CMakeLists.txt
-add_library(vms_engine_services STATIC
-    src/triton_inference_client.cpp
-)
-
-target_include_directories(vms_engine_services
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(vms_engine_services
-    PUBLIC  vms_engine_core
-    PRIVATE CURL::libcurl    # or gRPC if Triton uses gRPC
-)
-```
-
----
-
-## Part B: Application Entry Point (main.cpp)
+## Part A: Application Entry Point (main.cpp)
 
 `app/main.cpp` is the single entry point (~450 lines). It is DeepStream-only — no `#ifdef` guards, no backend variants.
 
@@ -143,7 +107,6 @@ target_link_libraries(vms_engine
     PRIVATE vms_engine_pipeline
     PRIVATE vms_engine_infrastructure
     PRIVATE vms_engine_domain
-    PRIVATE vms_engine_services
     PRIVATE PkgConfig::GST
     PRIVATE PkgConfig::GLIB2
     PRIVATE spdlog::spdlog
@@ -154,7 +117,7 @@ target_link_libraries(vms_engine
 
 ---
 
-## Part C: Plugins (Custom Parsers)
+## Part B: Plugins (Custom Parsers)
 
 Plugins are shared libraries loaded at runtime by DeepStream via `custom-lib-path` in nvinfer config files. They depend only on DeepStream SDK headers and export C functions — they do not use core/domain/infrastructure.
 
@@ -206,26 +169,20 @@ endforeach()
 # Inside container: docker compose exec app bash
 cd /opt/vms_engine
 
-# 1. Compile services
-cmake --build build --target vms_engine_services -- -j5
-
-# 2. Compile main binary
+# 1. Compile main binary
 cmake --build build --target vms_engine -- -j5
 
-# 3. Compile all plugins
+# 2. Compile all plugins
 cmake --build build -- -j5
 
-# 4. Check engine:: namespace in services
-grep -r "engine::services" services/ --include="*.hpp" --include="*.cpp" | head -5
-
-# 5. Check no #ifdef backend guards
+# 3. Check no #ifdef backend guards
 grep -r "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER\|WITH_DLSTREAMER" app/ \
     --include="*.cpp" --include="*.hpp" && echo "FAIL" || echo "PASS"
 
-# 6. Verify binary exists
+# 4. Verify binary exists
 ls -la build/bin/vms_engine
 
-# 7. Verify plugins built
+# 5. Verify plugins built
 find build/ -name "*.so" | sort
 ```
 
@@ -233,7 +190,6 @@ find build/ -name "*.so" | sort
 
 ## Checklist
 
-- [ ] Services: 2 files created in `engine::services` namespace
 - [ ] `app/main.cpp`: Written without `#ifdef` guards (~450 lines)
 - [ ] `create_pipeline_manager()`: Direct construction (`make_shared<PipelineManager>()`)
 - [ ] Logger name: `"vms_engine"`

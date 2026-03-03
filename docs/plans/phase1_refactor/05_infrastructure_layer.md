@@ -45,7 +45,6 @@ Implements `engine::core::config::IConfigParser`.
 | `config_parser/src/yaml_parser_processing.cpp`                   | `processing:` section (elements list)             |
 | `config_parser/src/yaml_parser_queues.cpp`                       | `queue_defaults:` + inline `queue: {}` resolution |
 | `config_parser/src/yaml_parser_recording.cpp`                    | `sources.smart_record*` fields                    |
-| `config_parser/src/yaml_parser_services.cpp`                     | `services:` section (Triton)                      |
 | `config_parser/src/yaml_parser_sources.cpp`                      | `sources:` section (cameras list)                 |
 | `config_parser/src/yaml_parser_storage.cpp`                      | `storage_configurations:` section                 |
 | `config_parser/src/yaml_parser_utils.cpp`                        | Shared YAML node helpers                          |

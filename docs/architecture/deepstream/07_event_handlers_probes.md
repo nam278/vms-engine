@@ -1,436 +1,233 @@
-# 07. Event Handlers & Pad Probes
+# 07. Pad Probes & Event Handlers
 
 ## 1. Tổng quan
 
-vms-engine có hai cơ chế để can thiệp vào GStreamer pipeline:
+vms-engine dùng **GStreamer pad probes** để can thiệp vào pipeline buffer stream. Đây là cơ chế duy nhất cho event handling — signal-based handlers (`g_signal_connect`) đã bị loại bỏ.
 
-| Cơ chế | Khi nào | API |
-|--------|---------|-----|
-| **Signal-based (Event Handlers)** | Khi cần react theo GStreamer element events (new-sample, buffer, notify) | `g_signal_connect()` |
-| **Pad Probe** | Khi cần inspect/modify metadata ở buffer level trên pad | `gst_pad_add_probe()` |
+| Cơ chế        | API                   | Dùng khi nào                                                 |
+| ------------- | --------------------- | ------------------------------------------------------------ |
+| **Pad Probe** | `gst_pad_add_probe()` | Inspect/modify NvDs metadata ở buffer level trên element pad |
 
-Hai hệ thống này được quản lý độc lập bởi `HandlerManager` và `ProbeHandlerManager`.
+Pad probe chạy **trực tiếp trên pipeline streaming thread** — callback phải nhanh, không block I/O, không lock mutex lâu.
 
-> Xem so sánh chi tiết: [10_signal_vs_probe_deep_dive.md](10_signal_vs_probe_deep_dive.md)
+## 2. ProbeHandlerManager
 
-## 2. HandlerManager — Signal-based Handlers
-
-### Role
-
-`HandlerManager` quản lý lifecycle của tất cả `IEventHandler` implementations:
-- Load handler implementations (từ plugin `.so` hoặc built-in)
-- Connect signals lên target elements
-- Disconnect khi pipeline dừng
-
-```cpp
-// pipeline/include/engine/pipeline/event_handlers/handler_manager.hpp
-class HandlerManager {
-public:
-    explicit HandlerManager(GstElement* pipeline);
-
-    /// Đăng ký + connect một handler lên element
-    bool register_and_connect(
-        std::unique_ptr<engine::core::eventing::IEventHandler> handler,
-        const engine::core::config::CustomHandlerConfig& config);
-
-    /// Disconnect tất cả handlers (gọi khi stop pipeline)
-    void disconnect_all();
-
-    /// Lấy handler theo ID
-    IEventHandler* get_handler(const std::string& handler_id);
-
-private:
-    GstElement* pipeline_;
-    std::vector<std::unique_ptr<IEventHandler>> handlers_;
-    std::unordered_map<std::string, IEventHandler*> handler_map_;
-};
-```
-
-### IEventHandler Interface
-
-```cpp
-// core/include/engine/core/eventing/ievent_handler.hpp
-class IEventHandler {
-public:
-    virtual ~IEventHandler() = default;
-
-    virtual bool connect(
-        GstElement* element,
-        const engine::core::config::CustomHandlerConfig& config) = 0;
-
-    virtual void disconnect() = 0;
-    virtual std::string name() const = 0;
-};
-```
-
-## 3. Built-in Event Handlers
-
-### 3.1 CropDetectedObjHandler
-
-Lấy frames từ `appsink`, crop các detected objects và lưu ảnh JPEG.
-
-```cpp
-// pipeline/include/engine/pipeline/event_handlers/crop_detected_obj_handler.hpp
-class CropDetectedObjHandler : public IEventHandler {
-public:
-    bool connect(GstElement* appsink, const CustomHandlerConfig& cfg) override {
-        config_ = cfg;
-        storage_ = resolve_storage(cfg);
-
-        // Connect new-sample signal
-        signal_id_ = g_signal_connect(
-            G_OBJECT(appsink), "new-sample",
-            G_CALLBACK(on_new_sample_static), this);
-
-        return signal_id_ != 0;
-    }
-
-    void disconnect() override {
-        if (appsink_ && signal_id_ != 0) {
-            g_signal_handler_disconnect(G_OBJECT(appsink_), signal_id_);
-            signal_id_ = 0;
-        }
-    }
-
-private:
-    static GstFlowReturn on_new_sample_static(GstElement* sink, gpointer data) {
-        return static_cast<CropDetectedObjHandler*>(data)->on_new_sample(sink);
-    }
-
-    GstFlowReturn on_new_sample(GstElement* sink) {
-        // 1. Pull sample
-        GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
-        if (!sample) return GST_FLOW_EOS;
-
-        GstBuffer* buf = gst_sample_get_buffer(sample);
-        if (!buf) {
-            gst_sample_unref(sample);
-            return GST_FLOW_OK;
-        }
-
-        // 2. Get NvDs metadata
-        NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
-        if (!batch_meta) {
-            gst_sample_unref(sample);
-            return GST_FLOW_OK;
-        }
-
-        // 3. Iterate frames
-        for (NvDsFrameMetaList* fl = batch_meta->frame_meta_list; fl; fl = fl->next) {
-            auto* frame_meta = static_cast<NvDsFrameMeta*>(fl->data);
-
-            // 4. Iterate objects
-            for (NvDsObjectMetaList* ol = frame_meta->obj_meta_list; ol; ol = ol->next) {
-                auto* obj_meta = static_cast<NvDsObjectMeta*>(ol->data);
-
-                if (obj_meta->confidence < config_.min_confidence) continue;
-                if (!should_crop_class(obj_meta->class_id, config_.class_ids)) continue;
-
-                // 5. Crop và save
-                crop_and_save(buf, frame_meta, obj_meta);
-            }
-        }
-
-        gst_sample_unref(sample);
-        return GST_FLOW_OK;
-    }
-
-    void crop_and_save(GstBuffer* buf, NvDsFrameMeta* frame_meta,
-                       NvDsObjectMeta* obj_meta);
-
-    GstElement* appsink_ = nullptr;
-    gulong signal_id_ = 0;
-    CustomHandlerConfig config_;
-    std::shared_ptr<IStorageManager> storage_;
-};
-```
-
-### 3.2 SmartRecordHandler
-
-Quản lý nvdssmartrecordbin bắt đầu/dừng recording.
-
-```cpp
-class SmartRecordHandler : public IEventHandler {
-public:
-    bool connect(GstElement* src, const CustomHandlerConfig& cfg) override {
-        // Connect signal "sr-done" → nvmultiurisrcbin
-        g_signal_connect(G_OBJECT(src), "sr-done",
-            G_CALLBACK(on_sr_done_static), this);
-        return true;
-    }
-
-    /// Trigger smart record start (gọi từ REST API hoặc probe)
-    bool start_record(int stream_id, int duration_sec) {
-        NvDsSRSessionId session_id;
-        NvDsSRStart(nvsr_ctx_, &session_id, stream_id, duration_sec, nullptr);
-        return true;
-    }
-
-    bool stop_record(NvDsSRSessionId session_id) {
-        NvDsSRStop(nvsr_ctx_, session_id);
-        return true;
-    }
-
-private:
-    static void on_sr_done_static(GstElement*, NvDsSRRecordingInfo* info, gpointer d) {
-        auto* self = static_cast<SmartRecordHandler*>(d);
-        LOG_I("Smart record done: file={}, duration={}s",
-              info->filename, info->duration);
-        // Upload to storage nếu config.upload = true
-        if (self->config_.upload_after_record) {
-            self->storage_->upload(info->filename);
-        }
-    }
-};
-```
-
-### 3.3 ExtProcHandler
-
-Gửi frames tới external HTTP processor (POST multipart/form-data).
-
-```cpp
-class ExtProcHandler : public IEventHandler {
-public:
-    bool connect(GstElement* appsink, const CustomHandlerConfig& cfg) override {
-        http_client_ = std::make_shared<engine::services::TritonHttpClient>(
-            cfg.get_config("base_url"), cfg.get_config_int("timeout_ms", 500));
-
-        g_signal_connect(G_OBJECT(appsink), "new-sample",
-            G_CALLBACK(on_new_sample_static), this);
-        return true;
-    }
-
-private:
-    GstFlowReturn on_new_sample(GstElement* sink) {
-        auto sample = pull_sample_safe(sink);
-        if (!sample) return GST_FLOW_EOS;
-
-        // Async HTTP POST (không block pipeline thread)
-        auto frame_data = extract_frame_jpeg(sample.get());
-        if (frame_data) {
-            thread_pool_.submit([this, data = std::move(*frame_data)] {
-                http_client_->post("/process", data);
-            });
-        }
-        return GST_FLOW_OK;
-    }
-
-    std::shared_ptr<IExternalInferenceClient> http_client_;
-    ThreadPool thread_pool_{4};
-};
-```
-
-## 4. ProbeHandlerManager — Pad Probes
-
-### Role
-
-`ProbeHandlerManager` attach GStreamer pad probes lên các elements đã được build. Probes được chạy trực tiếp trên **pipeline streaming thread** — phải nhanh, không block.
+`ProbeHandlerManager` là coordinator đọc `EventHandlerConfig` từ YAML, tạo probe handler phù hợp với `trigger`, và attach lên `probe_element`'s src pad.
 
 ```cpp
 // pipeline/include/engine/pipeline/probes/probe_handler_manager.hpp
+namespace engine::pipeline::probes {
+
 class ProbeHandlerManager {
 public:
     explicit ProbeHandlerManager(GstElement* pipeline);
 
-    /// Attach probe handler lên pad của element ID
-    bool attach(std::unique_ptr<IProbeHandler> handler,
-                const std::string& element_id,
-                const std::string& pad_name,
-                GstPadProbeType probe_type = GST_PAD_PROBE_TYPE_BUFFER);
+    /// Attach probes từ event_handler configs.
+    bool attach_probes(const std::vector<engine::core::config::EventHandlerConfig>& configs);
 
-    /// Remove tất cả probes
+    /// Remove tất cả probes (gọi trước pipeline teardown).
     void detach_all();
-
-private:
-    GstElement* pipeline_;
-    std::vector<std::unique_ptr<IProbeHandler>> handlers_;
 };
-```
-
-## 5. Built-in Probe Handlers
-
-### 5.1 ClassIdNamespaceHandler
-
-Resolves class ID conflicts khi có nhiều SGIE với overlapping class IDs.
-
-```cpp
-// pipeline/include/engine/pipeline/probes/class_id_namespace_handler.hpp
-class ClassIdNamespaceHandler : public IProbeHandler {
-public:
-    bool attach(GstElement* nvinfer_sgie, const std::string& pad_name,
-                GstPadProbeType type) override {
-        GstPad* pad = gst_element_get_static_pad(nvinfer_sgie, pad_name.c_str());
-        if (!pad) return false;
-
-        probe_id_ = gst_pad_add_probe(
-            pad, type,
-            [](GstPad*, GstPadProbeInfo* info, gpointer d) {
-                return static_cast<ClassIdNamespaceHandler*>(d)->on_buffer(
-                    nullptr, info);
-            }, this, nullptr);
-
-        gst_object_unref(pad);
-        return probe_id_ != 0;
-    }
-
-    GstPadProbeReturn on_buffer(GstPad*, GstPadProbeInfo* info) override {
-        GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-        NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
-        if (!batch_meta) return GST_PAD_PROBE_RETURN(GST_PAD_PROBE_OK);
-
-        for (auto* fl = batch_meta->frame_meta_list; fl; fl = fl->next) {
-            auto* frame = static_cast<NvDsFrameMeta*>(fl->data);
-            for (auto* ol = frame->obj_meta_list; ol; ol = ol->next) {
-                auto* obj = static_cast<NvDsObjectMeta*>(ol->data);
-                // Offset class_id để tránh conflict với primary gie
-                if (obj->unique_component_id == sgie_unique_id_) {
-                    obj->class_id += class_id_offset_;
-                }
-            }
-        }
-        return GST_PAD_PROBE_OK;
-    }
-
-private:
-    gulong probe_id_ = 0;
-    int sgie_unique_id_;
-    int class_id_offset_;
-};
-```
-
-### 5.2 SmartRecordProbeHandler
-
-Tự động trigger smart record khi phát hiện object trong ROI.
-
-```cpp
-class SmartRecordProbeHandler : public IProbeHandler {
-public:
-    GstPadProbeReturn on_buffer(GstPad*, GstPadProbeInfo* info) override {
-        auto* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-        auto* meta = gst_buffer_get_nvds_batch_meta(buf);
-        if (!meta) return GST_PAD_PROBE_OK;
-
-        for (auto* fl = meta->frame_meta_list; fl; fl = fl->next) {
-            auto* frame = static_cast<NvDsFrameMeta*>(fl->data);
-
-            for (auto* ol = frame->obj_meta_list; ol; ol = ol->next) {
-                auto* obj = static_cast<NvDsObjectMeta*>(ol->data);
-
-                if (should_trigger(obj)) {
-                    LOG_D("Auto-triggering smart record for stream {}",
-                          frame->source_id);
-                    sr_handler_->start_record(frame->source_id,
-                                              config_.default_duration_sec);
-                }
-            }
-        }
-        return GST_PAD_PROBE_OK;
-    }
-
-private:
-    bool should_trigger(NvDsObjectMeta* obj) {
-        return obj->confidence >= config_.min_confidence &&
-               std::ranges::contains(config_.class_ids, obj->class_id);
-    }
-
-    SmartRecordHandler* sr_handler_;
-    SmartRecordAutoTriggerConfig config_;
-};
-```
-
-### 5.3 CropObjectProbeHandler
-
-Crop detected objects và upload lên storage — phiên bản probe (nhanh hơn, không cần `appsink`).
-
-```cpp
-class CropObjectProbeHandler : public IProbeHandler {
-public:
-    GstPadProbeReturn on_buffer(GstPad* pad, GstPadProbeInfo* info) override {
-        auto* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-        NvDsBatchMeta* meta = gst_buffer_get_nvds_batch_meta(buf);
-
-        // Map buffer để truy cập CUDA memory
-        NvBufSurface* surface = nullptr;
-        if (NvBufSurfaceMap(get_surface_from_buffer(buf), &surface) != 0) {
-            return GST_PAD_PROBE_OK;
-        }
-
-        // Process objects
-        for (auto* fl = meta->frame_meta_list; fl; fl = fl->next) {
-            auto* frame = static_cast<NvDsFrameMeta*>(fl->data);
-            for (auto* ol = frame->obj_meta_list; ol; ol = ol->next) {
-                auto* obj = static_cast<NvDsObjectMeta*>(ol->data);
-                if (obj->confidence >= config_.min_confidence) {
-                    async_save_crop(surface, frame, obj);
-                }
-            }
-        }
-
-        NvBufSurfaceUnMap(surface);
-        return GST_PAD_PROBE_OK;  // Không modify, cho buffer đi qua
-    }
-};
-```
-
-## 6. Attach Probe vs Connect Handler (Quyết định)
-
-```
-Cần modify/drop buffer?
-    YES → Pad Probe
-    NO  ┐
-        ├── Cần frame raw data (crop)?
-        │   YES → Signal (appsink new-sample) OR Probe (trong src pad)
-        │   Rec: Probe nếu cần ít overhead, Signal nếu cần full sample context
-        │
-        ├── Cần react theo file path/time (smart record done)?
-        │   YES → Signal (sr-done từ nvmultiurisrcbin)
-        │
-        └── Cần inspect NvDs metadata?
-            YES → Pad Probe (src pad của nvinfer hoặc nvtracker)
-```
-
-## 7. Custom Handler Loading từ Config
-
-```yaml
-# config.yml
-custom_handlers:
-  - id: "my_crop_handler"
-    type: "crop_detected_obj"
-    target_element: "osd_0"
-    config:
-      output_dir: "dev/rec/objects"
-      min_confidence: 0.75
-      class_ids: [0, 2, 3]
-      upload_to: "local_storage"
-```
-
-```cpp
-// PipelineManager::register_event_handlers()
-bool PipelineManager::register_event_handlers(
-    std::vector<CustomHandlerConfig>& handlers_config)
-{
-    for (auto& h_cfg : handlers_config) {
-        // Resolve target element
-        GstElement* target = gst_bin_get_by_name(
-            GST_BIN(pipeline_), h_cfg.target_element.c_str());
-
-        if (!target) {
-            LOG_W("Handler '{}': target element '{}' not found",
-                  h_cfg.id, h_cfg.target_element);
-            continue;
-        }
-
-        // Create handler từ type string
-        auto handler = handler_registry_.create(h_cfg.type);
-        if (!handler) {
-            LOG_E("Unknown handler type: {}", h_cfg.type);
-            gst_object_unref(target);
-            continue;
-        }
-
-        handler_manager_->register_and_connect(std::move(handler), h_cfg);
-        gst_object_unref(target);
-    }
-    return true;
 }
 ```
+
+### Dispatch logic
+
+`attach_probes()` nhìn vào `cfg.trigger` để tạo đúng handler:
+
+```cpp
+if (cfg.trigger == "smart_record") {
+    auto* handler = new SmartRecordProbeHandler();
+    handler->configure(cfg);
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        SmartRecordProbeHandler::on_buffer, handler,
+        [](gpointer ud) { delete static_cast<SmartRecordProbeHandler*>(ud); });
+
+} else if (cfg.trigger == "crop_objects") {
+    auto* handler = new CropObjectHandler();
+    handler->configure(cfg);
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        CropObjectHandler::on_buffer, handler,
+        [](gpointer ud) { delete static_cast<CropObjectHandler*>(ud); });
+}
+```
+
+Ownership của handler instance được transfer sang GStreamer qua `GDestroyNotify` callback — không cần lifecycle management thêm.
+
+---
+
+## 3. Built-in Probe Handlers
+
+### 3.1 SmartRecordProbeHandler
+
+Trigger smart recording khi phát hiện object khớp `label_filter`.
+
+```cpp
+// pipeline/include/engine/pipeline/probes/smart_record_probe_handler.hpp
+class SmartRecordProbeHandler {
+public:
+    void configure(const engine::core::config::EventHandlerConfig& config);
+
+    static GstPadProbeReturn on_buffer(GstPad* pad,
+                                       GstPadProbeInfo* info,
+                                       gpointer user_data);
+private:
+    std::vector<std::string> label_filter_;
+    int pre_event_sec_ = 2;
+    int post_event_sec_ = 20;
+    std::string save_dir_;
+};
+```
+
+**Typical flow inside `on_buffer`:**
+
+1. `gst_buffer_get_nvds_batch_meta(buf)` → get batch metadata
+2. Iterate frame → object metadata
+3. Check `obj_meta->obj_label` against `label_filter_`
+4. On match → call `NvDsSRStart()` directly on the source bin
+
+### 3.2 CropObjectHandler
+
+Crop detected objects từ GPU frame và lưu JPEG.
+
+```cpp
+// pipeline/include/engine/pipeline/probes/crop_object_handler.hpp
+class CropObjectHandler {
+public:
+    void configure(const engine::core::config::EventHandlerConfig& config);
+
+    static GstPadProbeReturn on_buffer(GstPad* pad,
+                                       GstPadProbeInfo* info,
+                                       gpointer user_data);
+private:
+    std::vector<std::string> label_filter_;
+    std::string save_dir_;
+    int capture_interval_sec_ = 5;
+    int image_quality_ = 85;
+    bool save_full_frame_ = true;
+    std::unordered_map<int, int64_t> last_capture_time_;  // throttle per source
+};
+```
+
+**Typical flow:**
+
+1. Map NvBufSurface via `NvBufSurfaceMap()`
+2. Extract ROI from `obj_meta->rect_params`
+3. Encode to JPEG, save to `save_dir_/source_{id}/frame_{num}_{obj_id}.jpg`
+4. `NvBufSurfaceUnMap()`
+
+---
+
+## 4. EventHandlerConfig — YAML Schema
+
+```yaml
+event_handlers:
+  - id: smart_record # Unique identifier
+    enable: true # false = skip entirely
+    type: on_detect # Event category (informational)
+    probe_element: tracker # GstElement name to attach probe to
+    trigger: smart_record # Handler type: "smart_record" | "crop_objects"
+    label_filter: # Object labels that activate this handler
+      - car
+      - person
+      - truck
+
+  - id: crop_objects
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: crop_objects
+    label_filter: [car, person]
+    save_dir: "/opt/engine/data/rec/objects"
+    capture_interval_sec: 10
+    image_quality: 85
+    save_full_frame: false
+```
+
+**Field reference:**
+
+| Field                  | Type     | Required | Notes                                            |
+| ---------------------- | -------- | -------- | ------------------------------------------------ |
+| `id`                   | string   | ✅       | Unique across all handlers                       |
+| `enable`               | bool     | ✅       | false = handler skipped entirely                 |
+| `type`                 | string   | ✅       | Event category, e.g. `on_detect`                 |
+| `probe_element`        | string   | ✅       | Element name in pipeline to attach probe to      |
+| `trigger`              | string   | ✅       | `"smart_record"` or `"crop_objects"`             |
+| `label_filter`         | string[] | optional | Empty = all labels match                         |
+| `save_dir`             | string   | optional | Output dir for recorded files / crop images      |
+| `capture_interval_sec` | int      | optional | Crop throttle (default: 5s)                      |
+| `image_quality`        | int      | optional | JPEG quality 1–100 (default: 85)                 |
+| `save_full_frame`      | bool     | optional | `true` = save whole frame instead of object crop |
+
+---
+
+## 5. Adding a New Probe Handler
+
+1. **Header** — `pipeline/include/engine/pipeline/probes/my_probe_handler.hpp`
+
+```cpp
+#pragma once
+#include "engine/core/config/config_types.hpp"
+#include <gst/gst.h>
+
+namespace engine::pipeline::probes {
+
+/**
+ * @brief Pad probe handler for <task description>.
+ */
+class MyProbeHandler {
+public:
+    /**
+     * @brief Configure handler from EventHandlerConfig.
+     * @param config  Parsed YAML event_handlers entry.
+     */
+    void configure(const engine::core::config::EventHandlerConfig& config);
+
+    /**
+     * @brief GStreamer pad probe callback.
+     * Must be fast — runs on pipeline streaming thread.
+     */
+    static GstPadProbeReturn on_buffer(GstPad* pad,
+                                       GstPadProbeInfo* info,
+                                       gpointer user_data);
+private:
+    std::vector<std::string> label_filter_;
+    std::string save_dir_;
+};
+
+}  // namespace engine::pipeline::probes
+```
+
+2. **Implementation** — `pipeline/src/probes/my_probe_handler.cpp`
+
+3. **Register in ProbeHandlerManager** — add `else if (cfg.trigger == "my_trigger")` block in `attach_probes()` in `pipeline/src/probes/probe_handler_manager.cpp`
+
+4. **YAML** — add entry under `event_handlers:` with `trigger: my_trigger`
+
+---
+
+## 6. Probe Callback Rules
+
+```cpp
+static GstPadProbeReturn on_buffer(GstPad*, GstPadProbeInfo* info, gpointer user_data) {
+    auto* self = static_cast<MyProbeHandler*>(user_data);
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* meta = gst_buffer_get_nvds_batch_meta(buf);
+    if (!meta) return GST_PAD_PROBE_OK;
+
+    for (NvDsMetaList* fl = meta->frame_meta_list; fl; fl = fl->next) {
+        auto* frame = static_cast<NvDsFrameMeta*>(fl->data);
+        // process frame...
+    }
+
+    return GST_PAD_PROBE_OK;  // ✅ Always return OK unless intentionally dropping
+}
+```
+
+**Rules:**
+
+- ✅ Return `GST_PAD_PROBE_OK` unless you're intentionally dropping the buffer
+- ✅ Use `GST_PAD_PROBE_INFO_BUFFER(info)` to get the buffer — do NOT take ownership
+- ✅ `NvDsBatchMeta`, `NvDsFrameMeta`, `NvDsObjectMeta` — **DO NOT FREE** these
+- ❌ No blocking I/O (file write, HTTP, mutex wait) on the probe callback directly — offload to a worker thread
+- ❌ Do not call `gst_buffer_ref()` on the probe buffer without matching `gst_buffer_unref()`

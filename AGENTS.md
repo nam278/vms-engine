@@ -128,18 +128,16 @@ vms-engine/
 │   ├── include/engine/core/builders/       # IPipelineBuilder, IBuilderFactory, IElementBuilder
 │   ├── include/engine/core/config/         # PipelineConfig + all sub-config types
 │   ├── include/engine/core/pipeline/       # IPipelineManager
-│   ├── include/engine/core/eventing/       # IEventHandler, IEventManager
+│   ├── include/engine/core/eventing/       # event_types.hpp — event name constants (ON_EOS, ON_DETECT, …)
 │   ├── include/engine/core/messaging/      # IMessageProducer, IMessageConsumer
 │   ├── include/engine/core/storage/        # IStorageManager
 │   └── include/engine/core/utils/          # logger.hpp (LOG_* macros), uuid, thread queue
 ├── pipeline/          # DeepStream builder implementations
 │   ├── include/engine/pipeline/block_builders/  # Phase builders (Source/Processing/Visuals/Outputs)
 │   ├── include/engine/pipeline/builders/        # Element builders (per GstElement type)
-│   ├── include/engine/pipeline/probes/          # GStreamer pad probe implementations
-│   └── include/engine/pipeline/event_handlers/  # Signal-based event handlers
+│   └── include/engine/pipeline/probes/          # GStreamer pad probe implementations (SmartRecord, CropObjects)
 ├── domain/            # Business rules — metadata parsing, event filtering, runtime params
 ├── infrastructure/    # Adapters — YAML parser, Redis/Kafka, S3/local storage, REST API
-├── services/          # External clients — Triton Inference Server
 ├── plugins/           # Runtime-loadable .so plugin handlers
 ├── configs/           # YAML pipeline config files
 ├── docs/              # Architecture Blueprint + implementation plans
@@ -161,7 +159,6 @@ These rules are **strictly enforced**. Violations break the architecture:
    - `pipeline/` → depends on `core/` only
    - `domain/` → depends on `core/` only
    - `infrastructure/` → depends on `core/` only
-   - `services/` → depends on `core/` only
    - `app/` → may depend on all layers
 
 2. **Interface-first** — define interface in `core/` before implementing in other layers. Never skip the interface step.
@@ -304,17 +301,17 @@ Properties in 3 groups:
 
 ### nvinfer (TensorRT inference)
 
-| YAML key               | GStreamer              | Type   | Notes                                            |
-| ---------------------- | ---------------------- | ------ | ------------------------------------------------ |
-| `config_file`          | `config-file-path`     | string | points to nvinfer YAML/txt config                |
-| `role`                 | _(vms-engine only)_    | string | `primary_inference` / `secondary_inference`      |
-| `unique_id`            | `gie-unique-id`        | int    | unique ID for this infer element                 |
-| `process_mode`         | `process-mode`         | int    | **1**=PGIE (full frame), **2**=SGIE (per-object) |
-| `batch_size`           | `batch-size`           | int    | must match muxer batch                           |
-| `interval`             | `interval`             | int    | skip N batches between inferences (0=every)      |
-| `gpu_id`               | `gpu-id`               | int    |                                                  |
-| `operate_on_gie_id`    | `operate-on-gie-id`    | int    | SGIE only — PGIE's unique-id                     |
-| `operate_on_class_ids` | `operate-on-class-ids` | string | SGIE — colon-separated class ids                 |
+| YAML key               | GStreamer            | Type   | Notes                                                                                 |
+| ---------------------- | -------------------- | ------ | ------------------------------------------------------------------------------------- |
+| `config_file`          | `config-file-path`   | string | points to nvinfer YAML/txt config                                                     |
+| `role`                 | _(vms-engine only)_  | string | `primary_inference` / `secondary_inference`                                           |
+| `unique_id`            | `gie-unique-id`      | int    | unique ID for this infer element                                                      |
+| `process_mode`         | `process-mode`       | int    | **1**=PGIE (full frame), **2**=SGIE (per-object)                                      |
+| `batch_size`           | `batch-size`         | int    | must match muxer batch                                                                |
+| `interval`             | `interval`           | int    | skip N batches between inferences (0=every)                                           |
+| `gpu_id`               | `gpu-id`             | int    |                                                                                       |
+| `operate_on_gie_id`    | `infer-on-gie-id`    | int    | SGIE only — PGIE's unique-id (GObject property; config-file uses `operate-on-gie-id`) |
+| `operate_on_class_ids` | `infer-on-class-ids` | string | SGIE — colon-separated class ids                                                      |
 
 nvinfer `.txt` config key fields: `network-type` (0=Detector, 1=Classifier, 2=Segmentation), `gie-unique-id`, `model-engine-file`, `labelfile-path`, `batch-size`, `input-dims`.
 
@@ -536,12 +533,13 @@ LOG_I("URI: {}", uri.get());  // g_free called automatically
 5. Add config struct to `core/include/engine/core/config/config_types.hpp` if new config section needed
 6. Add YAML parser section in `infrastructure/config_parser/yaml_parser_*.cpp`
 
-### New Event Handler
+### New Probe Handler
 
-1. Create `pipeline/include/engine/pipeline/event_handlers/my_handler.hpp` — implement `IEventHandler`
-2. Create `pipeline/src/event_handlers/my_handler.cpp`
-3. Register in `HandlerManager`
-4. Add YAML under `event_handlers:` + update handler config parser if new fields
+1. Create `pipeline/include/engine/pipeline/probes/my_probe_handler.hpp`
+2. Create `pipeline/src/probes/my_probe_handler.cpp`
+3. Implement `configure(const EventHandlerConfig&)` + `static GstPadProbeReturn on_buffer(…)`
+4. Register trigger string in `ProbeHandlerManager::attach_probes()` dispatch block
+5. Add YAML under `event_handlers:` with appropriate `trigger:` value
 
 ### New Infrastructure Adapter
 

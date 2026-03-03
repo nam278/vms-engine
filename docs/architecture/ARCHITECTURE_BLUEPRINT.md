@@ -114,7 +114,7 @@ Inner layers NEVER depend on outer layers. The core defines interfaces; infrastr
 ┌───────────────▼──────────────────────────┐
 │     Core Layer (Interfaces / Ports)      │  ◄── Center (no external deps)
 │     IPipelineManager, IBuilderFactory    │
-│     IElementBuilder, IHandler, IProbe    │
+│     IElementBuilder, IProbeHandler       │
 │     Config types, Logger                 │
 └──────────────────────────────────────────┘
                 ▲
@@ -151,7 +151,7 @@ Inner layers NEVER depend on outer layers. The core defines interfaces; infrastr
 
 **Key Concepts:**
 
-- **Ports** (Interfaces): `IPipelineManager`, `IBuilderFactory`, `IElementBuilder`, `IHandler`, `IProbeHandler`, `IStorageManager`, `IMessageProducer`, `IConfigParser`
+- **Ports** (Interfaces): `IPipelineManager`, `IBuilderFactory`, `IElementBuilder`, `IProbeHandler`, `IStorageManager`, `IMessageProducer`, `IConfigParser`
 - **Driving Adapters** (Input): `main.cpp`, REST API — push commands into the system
 - **Driven Adapters** (Output): Redis, Kafka, S3, Local FS — system pushes data out
 
@@ -200,23 +200,18 @@ vms-engine/
 │   ├── builders/            #   Builder interfaces (IPipelineBuilder, IElementBuilder...)
 │   ├── config/              #   Configuration data types (value objects)
 │   ├── pipeline/            #   Pipeline management interface (IPipelineManager)
-│   ├── eventing/            #   Event handling interfaces (IEventHandler, IEventManager)
+│   ├── eventing/            #   event_types.hpp — event name constants (ON_EOS, ON_DETECT, …)
 │   ├── probes/              #   Probe handler interface (IProbeHandler)
-│   ├── handlers/            #   Base handler interface (IHandler)
 │   ├── messaging/           #   Message producer/consumer interfaces
 │   ├── storage/             #   Storage manager interface
-│   ├── recording/           #   Smart record controller interface
 │   ├── runtime/             #   Runtime param/stream manager interfaces
-│   ├── services/            #   External service interfaces (Triton)
 │   └── utils/               #   Logger, UUID, thread-safe queue
 ├── pipeline/                # Pipeline Layer — DeepStream builder implementations
 │   ├── builders/            #   Element builders (source, infer, tracker, sink...)
 │   ├── block_builders/      #   Phase builders (SourceBuilder, ProcessingBuilder...)
 │   ├── linking/             #   Element linking & tee management
-│   ├── probes/              #   GStreamer probe implementations
-│   ├── event_handlers/      #   Signal-based event handlers
+│   ├── probes/              #   GStreamer probe implementations (SmartRecord, CropObjects)
 │   ├── config/              #   Config validation
-│   └── services/            #   Pipeline-level services (ext processing)
 ├── domain/                  # Domain Layer — Business rules & metadata processing
 │   ├── runtime_params/      #   Runtime parameter rules
 │   ├── metadata/            #   Metadata parsing & enrichment
@@ -226,8 +221,6 @@ vms-engine/
 │   ├── messaging/           #   Redis, Kafka message producers
 │   ├── storage/             #   Local FS, S3 storage implementations
 │   └── rest_api/            #   HTTP API server (Pistache)
-├── services/                # Services Layer — External service clients
-│   └── triton/              #   Triton Inference Server client
 ├── plugins/                 # Plugins — Runtime-loadable .so handlers
 ├── configs/                 # Configuration Files — YAML pipeline configs
 ├── dev/                     # Runtime data dir — git-ignored (only .gitkeep tracked)
@@ -239,12 +232,11 @@ vms-engine/
 
 | Layer               | Can Depend On                             | Cannot Depend On             |
 | ------------------- | ----------------------------------------- | ---------------------------- |
-| **app/**            | core, pipeline, infrastructure, services  | ∅                            |
-| **core/**           | ∅ (only std lib + GStreamer fwd-declares) | pipeline, infra, services    |
-| **pipeline/**       | core                                      | infra, services (directly)   |
+| **app/**            | core, pipeline, infrastructure            | ∅                            |
+| **core/**           | ∅ (only std lib + GStreamer fwd-declares) | pipeline, infra              |
+| **pipeline/**       | core                                      | infra (directly)             |
 | **domain/**         | core                                      | pipeline, infra              |
 | **infrastructure/** | core                                      | pipeline, domain             |
-| **services/**       | core                                      | pipeline, domain, infra      |
 | **plugins/**        | core                                      | pipeline (linked at runtime) |
 
 ---
@@ -293,29 +285,18 @@ vms-engine/
 │   │       │   ├── pipeline_state.hpp      # PipelineState enum
 │   │       │   └── pipeline_info.hpp       # PipelineInfo struct
 │   │       ├── eventing/
-│   │       │   ├── ievent_handler.hpp      # IEventHandler (signal-based)
-│   │       │   ├── ievent_manager.hpp      # IEventManager (handler registration)
-│   │       │   ├── ievent_listener.hpp     # IEventListener (event subscription)
-│   │       │   └── event_types.hpp         # Event type constants
+│   │       │   └── event_types.hpp         # Event name constants (ON_EOS, ON_DETECT, …)
 │   │       ├── probes/
 │   │       │   └── iprobe_handler.hpp      # IProbeHandler (pad probe)
-│   │       ├── handlers/
-│   │       │   ├── ihandler.hpp            # Base IHandler interface
-│   │       │   └── handler_registry.hpp    # Handler discovery & registration
 │   │       ├── messaging/
 │   │       │   ├── imessage_producer.hpp   # IMessageProducer (publish events)
 │   │       │   └── imessage_consumer.hpp   # IMessageConsumer (receive commands)
 │   │       ├── storage/
 │   │       │   ├── istorage_manager.hpp    # IStorageManager (save snapshots)
 │   │       │   └── storage_types.hpp       # StorageTarget, StoragePath types
-│   │       ├── recording/
-│   │       │   ├── ismart_record_controller.hpp # ISmartRecordController
-│   │       │   └── recording_status.hpp    # RecordingStatus enum
 │   │       ├── runtime/
 │   │       │   ├── iruntime_param_manager.hpp   # IRuntimeParamManager
 │   │       │   └── iruntime_stream_manager.hpp  # IRuntimeStreamManager
-│   │       ├── services/
-│   │       │   └── iexternal_inference_client.hpp # IExternalInferenceClient
 │   │       └── utils/
 │   │           ├── logger.hpp              # LOG_T/D/I/W/E/C macros
 │   │           ├── spdlog_logger.hpp       # spdlog initialization
@@ -361,27 +342,15 @@ vms-engine/
 │   │       │   ├── msgconv_broker_builder.hpp # nvmsgconv + nvmsgbroker
 │   │       │   └── queue_builder.hpp       # queue elements
 │   │       │
-│   │       ├── linking/                    # Element linking utilities
-│   │       │   └── pipeline_linker.hpp     # PipelineLinker (auto queue, dynamic pads)
-│   │       │
 │   │       ├── probes/                     # GStreamer pad probe implementations
 │   │       │   ├── probe_handler_manager.hpp     # ProbeHandlerManager
 │   │       │   ├── class_id_namespace_handler.hpp # class_id offset/restore
 │   │       │   ├── crop_object_handler.hpp       # Object crop capture
 │   │       │   └── smart_record_probe_handler.hpp # Smart record triggers
 │   │       │
-│   │       ├── event_handlers/             # Signal-based event handlers
-│   │       │   ├── handler_manager.hpp     # HandlerManager (handler lifecycle)
-│   │       │   ├── crop_detected_obj_handler.hpp # Object crop on detection
-│   │       │   ├── ext_proc_handler.hpp    # External processing (HTTP)
-│   │       │   └── smart_record_handler.hpp # Smart record signal handler
-│   │       │
 │   │       ├── config/
 │   │       │   └── config_validator.hpp    # ConfigValidator : IConfigValidator
 │   │       │
-│   │       └── services/
-│   │           └── ext_proc_service.hpp    # External processing HTTP client
-│   │
 │   └── src/
 │       ├── pipeline_manager.cpp
 │       ├── builder_factory.cpp
@@ -407,18 +376,11 @@ vms-engine/
 │       │   ├── smart_record_builder.cpp
 │       │   ├── msgconv_broker_builder.cpp
 │       │   └── queue_builder.cpp
-│       ├── linking/
-│       │   └── pipeline_linker.cpp
 │       ├── probes/
 │       │   ├── probe_handler_manager.cpp
 │       │   ├── class_id_namespace_handler.cpp
 │       │   ├── crop_object_handler.cpp
 │       │   └── smart_record_probe_handler.cpp
-│       └── event_handlers/
-│           ├── handler_manager.cpp
-│           ├── crop_detected_obj_handler.cpp
-│           ├── ext_proc_handler.cpp
-│           └── smart_record_handler.cpp
 │
 ├── domain/                                 # ═══ DOMAIN LAYER (Business Rules) ═══
 │   ├── CMakeLists.txt
@@ -451,7 +413,6 @@ vms-engine/
 │   │       ├── yaml_parser_messaging.cpp   # message_queue_publisher: section
 │   │       ├── yaml_parser_storage.cpp     # storage_configurations: section
 │   │       ├── yaml_parser_handlers.cpp    # custom_handlers: section
-│   │       ├── yaml_parser_services.cpp    # external_services: section
 │   │       ├── yaml_parser_api.cpp         # rest_api: section
 │   │       └── yaml_parser_helpers.hpp     # Shared parsing utilities
 │   ├── messaging/
@@ -476,14 +437,6 @@ vms-engine/
 │       │       └── pistache_server.hpp        # PistacheServer (runtime HTTP API)
 │       └── src/
 │           └── pistache_server.cpp
-│
-├── services/                               # ═══ SERVICES LAYER (External Clients) ═══
-│   ├── CMakeLists.txt
-│   ├── include/
-│   │   └── engine/services/
-│   │       └── triton_inference_client.hpp  # TritonClient : IExternalInferenceClient
-│   └── src/
-│       └── triton_inference_client.cpp
 │
 ├── plugins/                                # ═══ PLUGIN SYSTEM ═══
 │   ├── CMakeLists.txt
@@ -541,8 +494,6 @@ public:
     // Lifecycle
     virtual bool initialize(PipelineConfig& config,
                            GMainLoop* main_loop_context = nullptr) = 0;
-    virtual bool register_event_handlers(
-        std::vector<CustomHandlerConfig>& handlers) = 0;
     virtual bool start() = 0;
     virtual bool stop() = 0;
     virtual bool pause() = 0;
@@ -608,11 +559,6 @@ public:
     /// type: "rtsp_client" | "filesink" | "appsink" | "display"
     virtual std::unique_ptr<IElementBuilder> create_output_builder(
         const std::string& type) = 0;
-
-    /// Create a builder for an event handler identified by trigger type.
-    /// trigger: "smart_record" | "crop_object"
-    virtual std::unique_ptr<IElementBuilder> create_event_handler_builder(
-        const std::string& trigger) = 0;
 };
 
 } // namespace engine::core::builders
@@ -640,57 +586,13 @@ public:
 } // namespace engine::core::builders
 ```
 
-### IHandler — Base Handler Interface
-
-```cpp
-// core/include/engine/core/handlers/ihandler.hpp
-namespace engine::core::handlers {
-
-class IHandler {
-public:
-    virtual ~IHandler() = default;
-
-    virtual bool init_context(const std::string& config) = 0;
-    virtual bool init_context(const std::string& config, const std::any& extra) {
-        return init_context(config);  // Default fallback
-    }
-    virtual void destroy_context() = 0;
-    virtual void register_callback() = 0;
-    virtual std::string get_handler_name() const = 0;
-    virtual std::vector<std::string> get_supported_event_types() const = 0;
-};
-
-} // namespace engine::core::handlers
-```
-
-### IEventHandler — Signal-Based Event Processing
-
-```cpp
-// core/include/engine/core/eventing/ievent_handler.hpp
-namespace engine::core::events {
-
-class IEventHandler : public engine::core::handlers::IHandler {
-public:
-    virtual ~IEventHandler() = default;
-
-    virtual void process_event(GstSample* sample,
-                               const std::string& event_type,
-                               std::any* batch_meta,
-                               std::any* frame_meta,
-                               std::any* object_meta,
-                               std::any* analytics_meta) = 0;
-};
-
-} // namespace engine::core::events
-```
-
 ### IProbeHandler — Pad Probe Processing
 
 ```cpp
 // core/include/engine/core/probes/iprobe_handler.hpp
 namespace engine::core::probes {
 
-class IProbeHandler : public engine::core::handlers::IHandler {
+class IProbeHandler {
 public:
     virtual ~IProbeHandler() = default;
 
@@ -766,15 +668,9 @@ public:
                     │  IElementBuilder    │──────────── builds ──▶ GstElement*
                     └─────────────────────┘
 
-                    ┌─────────────────────┐
-                    │  IHandler (base)    │
-                    └─────────┬───────────┘
-                              │ extends
-                    ┌─────────┴───────────┐
-                    │                     │
-              ┌─────▼────┐         ┌──────▼──────┐
-              │IEventHdlr│         │IProbeHandler│
-              └──────────┘         └─────────────┘
+              ┌─────────────────────┐
+              │    IProbeHandler    │  (pad probe — no base class)
+              └─────────────────────┘
 
     ┌──────────────┬──────────────┬──────────────┐
     │IMessageProdr │IStorageMgr   │IConfigParser │
@@ -1425,22 +1321,9 @@ private:
 
 ### Two Metadata Access Mechanisms
 
-| Mechanism  | Access Point          | Can Modify? | Latency | Use Case                         |
-| ---------- | --------------------- | ----------- | ------- | -------------------------------- |
-| **Signal** | appsink (end of pipe) | Read-only   | Higher  | Event publishing, HTTP calls     |
-| **Probe**  | Any pad in pipeline   | Read+Write  | Minimal | Metadata modification, real-time |
-
-### Signal Flow (Event Handler)
-
-```
-Camera → Decoder → Infer → Tracker → Tiler → OSD → appsink → new-sample signal
-                                                                    │
-                                                            IEventHandler
-                                                            ├── Read NvDsBatchMeta
-                                                            ├── Filter by label/confidence
-                                                            ├── Publish to Redis/Kafka
-                                                            └── HTTP call for processing
-```
+| Mechanism | Access Point        | Can Modify? | Latency | Use Case                         |
+| --------- | ------------------- | ----------- | ------- | -------------------------------- |
+| **Probe** | Any pad in pipeline | Read+Write  | Minimal | Metadata modification, real-time |
 
 ### Probe Flow (Probe Handler)
 
@@ -1450,28 +1333,6 @@ Camera → Decoder → Infer →[PROBE]→ Tracker →[PROBE]→ OSD → Sink
                     IProbeHandler         IProbeHandler
                     ├── Modify class_id   ├── Restore class_id
                     └── Crop objects      └── Trigger recording
-```
-
-### Handler Manager Architecture
-
-```cpp
-// pipeline/include/engine/pipeline/event_handlers/handler_manager.hpp
-namespace engine::pipeline::event_handlers {
-
-class HandlerManager {
-public:
-    void register_element(const std::string& id, GstElement* element);
-    template<typename T, typename... Args>
-    T* create_handler(Args&&... args);
-    bool connect_all();
-    void shutdown_all();
-
-private:
-    std::vector<std::unique_ptr<IHandler>> handlers_;
-    std::unordered_map<std::string, GstElement*> element_registry_;
-};
-
-} // namespace engine::pipeline::event_handlers
 ```
 
 ### class_id Namespacing (Around Tracker)
@@ -1544,8 +1405,6 @@ POST /api/v1/pipeline/pause        → PipelineManager::pause()
 GET  /api/v1/pipeline/status       → PipelineManager::get_info()
 POST /api/v1/streams/add           → RuntimeStreamManager::add_stream()
 POST /api/v1/streams/remove        → RuntimeStreamManager::remove_stream()
-POST /api/v1/record/start          → SmartRecordController::start_recording()
-POST /api/v1/record/stop           → SmartRecordController::stop_recording()
 GET  /api/v1/health                → Health check
 ```
 
@@ -1588,10 +1447,7 @@ auto manager = std::make_unique<PipelineManager>(builder, handler_manager);
 // 4. Initialization (builds pipeline graph)
 manager->initialize(config, main_loop);
 
-// 5. Event Handler Registration
-manager->register_event_handlers(config.custom_handlers);
-
-// 6. Start (PLAYING state)
+// 5. Start (PLAYING state)
 manager->start();
 
 // 7. Main Loop (blocks until signal)
@@ -1613,7 +1469,7 @@ The `PipelineManager` installs a bus watch to process asynchronous GStreamer mes
 | `GST_MESSAGE_ERROR`         | Log error, transition to ERROR state, quit loop |
 | `GST_MESSAGE_WARNING`       | Log warning                                     |
 | `GST_MESSAGE_STATE_CHANGED` | Log state transitions, export DOT file          |
-| `GST_MESSAGE_ELEMENT`       | Forward to HandlerManager for custom processing |
+| `GST_MESSAGE_ELEMENT`       | Ignore or forward to probe handlers if needed   |
 
 ---
 
@@ -1661,7 +1517,7 @@ smart_record:
 **Smart Record Flow:**
 
 ```
-Probe detects event ─► SmartRecordController::start_recording()
+Probe detects event ─► NvDsSRStart() on source bin
                             │
                             ▼
                     GstSmartRecordBin (nv-specific)
@@ -1705,7 +1561,7 @@ YAML Config ──► AnalyticsBuilder ──► Generated INI File ──► nv
 | **Builder**                 | `block_builders/`, `builders/`            | Sequential pipeline construction from config      |
 | **Abstract Factory**        | `IBuilderFactory` / `BuilderFactory`      | Create typed element builders (no config slice)   |
 | **Full Config Pattern**     | All `IElementBuilder::build()` impls      | Each builder reads what it needs from full config |
-| **Strategy**                | `IHandler` / `IProbeHandler`              | Interchangeable event/probe processing            |
+| **Strategy**                | `IProbeHandler`                           | Interchangeable probe processing                  |
 | **Observer**                | GstBus watch, `pad-added` signals         | Async event notification                          |
 | **Chain of Responsibility** | `ProcessingBuilder` flow items            | Sequential processing stages                      |
 | **Template Method**         | `BaseBuilder.build()`                     | Common build flow with customizable steps         |
@@ -1798,7 +1654,7 @@ For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom 
 | `engine::core::handlers`                | `core/include/engine/core/handlers/`  |
 | `engine::core::messaging`               | `core/include/engine/core/messaging/` |
 | `engine::core::storage`                 | `core/include/engine/core/storage/`   |
-| `engine::core::recording`               | `core/include/engine/core/recording/` |
+
 | `engine::core::runtime`                 | `core/include/engine/core/runtime/`   |
 | `engine::core::utils`                   | `core/include/engine/core/utils/`     |
 | `engine::pipeline`                      | `pipeline/include/engine/pipeline/`   |
@@ -1806,13 +1662,11 @@ For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom 
 | `engine::pipeline::builders`            | `pipeline/.../builders/`              |
 | `engine::pipeline::linking`             | `pipeline/.../linking/`               |
 | `engine::pipeline::probes`              | `pipeline/.../probes/`                |
-| `engine::pipeline::event_handlers`      | `pipeline/.../event_handlers/`        |
 | `engine::domain`                        | `domain/include/engine/domain/`       |
 | `engine::infrastructure::config_parser` | `infrastructure/config_parser/`       |
 | `engine::infrastructure::messaging`     | `infrastructure/messaging/`           |
 | `engine::infrastructure::storage`       | `infrastructure/storage/`             |
 | `engine::infrastructure::rest_api`      | `infrastructure/rest_api/`            |
-| `engine::services`                      | `services/include/engine/services/`   |
 
 ### Naming Conventions
 
@@ -1820,7 +1674,7 @@ For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom 
 | ----------- | ------------------------------------------ | ----------------------------------- |
 | Namespaces  | `snake_case`                               | `engine::core::pipeline`            |
 | Classes     | `PascalCase`                               | `PipelineManager`, `BuilderFactory` |
-| Interfaces  | `IPascalCase`                              | `IPipelineManager`, `IHandler`      |
+| Interfaces  | `IPascalCase`                              | `IPipelineManager`, `IProbeHandler` |
 | Methods     | `snake_case`                               | `build_pipeline()`, `get_state()`   |
 | Member vars | `snake_case_`                              | `pipeline_`, `config_`, `tails_`    |
 | Constants   | `UPPER_SNAKE_CASE`                         | `DEFAULT_MBROKER_PORT`              |
@@ -1844,7 +1698,6 @@ CMakeLists.txt (root)
 ├── pipeline/CMakeLists.txt        # vms_engine_pipeline static library
 ├── domain/CMakeLists.txt          # vms_engine_domain static library
 ├── infrastructure/CMakeLists.txt  # vms_engine_infrastructure static library
-├── services/CMakeLists.txt        # vms_engine_services static library
 └── plugins/CMakeLists.txt         # Plugin shared libraries
 ```
 
@@ -1857,9 +1710,7 @@ vms_engine (executable)
   │   └── depends on: vms_engine_core
   ├── vms_engine_domain            # Business rules
   │   └── depends on: vms_engine_core
-  ├── vms_engine_infrastructure    # YAML parser, Redis, S3
-  │   └── depends on: vms_engine_core
-  └── vms_engine_services          # Triton client
+  └── vms_engine_infrastructure    # YAML parser, Redis, S3
       └── depends on: vms_engine_core
 ```
 
@@ -1948,9 +1799,7 @@ build/
 | `backends/deepstream/include/.../ds_builder_factory.hpp`      | `pipeline/include/engine/pipeline/builder_factory.hpp`         |
 | `backends/deepstream/include/.../block_builders/*.hpp`        | `pipeline/include/engine/pipeline/block_builders/*.hpp`        |
 | `backends/deepstream/include/.../builders/ds_*.hpp`           | `pipeline/include/engine/pipeline/builders/*.hpp`              |
-| `backends/deepstream/include/.../linking/pipeline_linker.hpp` | `pipeline/include/engine/pipeline/linking/pipeline_linker.hpp` |
 | `backends/deepstream/include/.../probes/*.hpp`                | `pipeline/include/engine/pipeline/probes/*.hpp`                |
-| `backends/deepstream/include/.../event_handlers/*.hpp`        | `pipeline/include/engine/pipeline/event_handlers/*.hpp`        |
 | `infrastructure/config_parser/...`                            | `infrastructure/config_parser/...`                             |
 | `infrastructure/messaging/...`                                | `infrastructure/messaging/...`                                 |
 | `infrastructure/storage/...`                                  | `infrastructure/storage/...`                                   |
@@ -1984,7 +1833,6 @@ build/
 | Export DOT graph          | Set `dot_file_dir` in YAML; auto-exported                    |
 | View DOT graph            | `dot -Tpng graph.dot -o graph.png`                           |
 | Add new element builder   | Create in `pipeline/builders/`, register in `BuilderFactory` |
-| Add new event handler     | Implement `IEventHandler`, register in `HandlerManager`      |
 | Add new probe             | Implement `IProbeHandler`, register in `ProbeHandlerManager` |
 | Add new messaging adapter | Implement `IMessageProducer` in `infrastructure/messaging/`  |
 | Add new storage backend   | Implement `IStorageManager` in `infrastructure/storage/`     |
@@ -2000,14 +1848,13 @@ build/
 6. Add config struct to `core/include/engine/core/config/config_types.hpp`
 7. Add YAML parser section in `infrastructure/config_parser/`
 
-### Adding a New Event Handler
+### Adding a New Probe Handler
 
-1. Create header: `pipeline/include/engine/pipeline/event_handlers/my_handler.hpp`
-2. Create source: `pipeline/src/event_handlers/my_handler.cpp`
-3. Implement `IEventHandler` interface
-4. Register handler type in `HandlerManager`
-5. Add YAML config section under `custom_handlers:`
-6. Update handler config parser if new fields needed
+1. Create header: `pipeline/include/engine/pipeline/probes/my_probe_handler.hpp`
+2. Create source: `pipeline/src/probes/my_probe_handler.cpp`
+3. Implement `configure(const EventHandlerConfig&)` + `static GstPadProbeReturn on_buffer(…)`
+4. Register trigger string in `ProbeHandlerManager::attach_probes()` dispatch block
+5. Add YAML entry under `event_handlers:` with appropriate `trigger:` value
 
 ### Logging Macros
 
@@ -2028,20 +1875,19 @@ LOG_C("Critical: Pipeline initialization failed");
 
 For deep-dive technical documentation on the DeepStream-specific implementation, see:
 
-| File                                                                            | Topic                                        |
-| ------------------------------------------------------------------------------- | -------------------------------------------- |
-| [`docs/architecture/deepstream/README.md`](deepstream/README.md)                | Index & reading order                        |
-| [`00_project_overview.md`](deepstream/00_project_overview.md)                   | Tech stack, pipeline diagram, conventions    |
-| [`01_directory_structure.md`](deepstream/01_directory_structure.md)             | Full project layout with file purposes       |
-| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md)                     | All core interfaces (engine:: namespace)     |
-| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md)                 | 5-phase build, tails\_ map pattern           |
-| [`04_linking_system.md`](deepstream/04_linking_system.md)                       | Static/dynamic pad linking, queue: {}        |
-| [`05_configuration.md`](deepstream/05_configuration.md)                         | Full YAML schema, parser architecture        |
-| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md)                 | GstBus, state machine, RTSP reconnect        |
-| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md)         | HandlerManager, probes, built-in handlers    |
-| [`08_analytics.md`](deepstream/08_analytics.md)                                 | nvdsanalytics ROI/line crossing/overcrowding |
-| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)           | Sinks, encoders, smart record API            |
-| [`10_signal_vs_probe_deep_dive.md`](deepstream/10_signal_vs_probe_deep_dive.md) | When to use signal vs pad probe              |
+| File                                                                    | Topic                                                              |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`docs/architecture/deepstream/README.md`](deepstream/README.md)        | Index & reading order                                              |
+| [`00_project_overview.md`](deepstream/00_project_overview.md)           | Tech stack, pipeline diagram, conventions                          |
+| [`01_directory_structure.md`](deepstream/01_directory_structure.md)     | Full project layout with file purposes                             |
+| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md)             | All core interfaces (engine:: namespace)                           |
+| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md)         | 5-phase build, tails\_ map pattern                                 |
+| [`04_linking_system.md`](deepstream/04_linking_system.md)               | Static/dynamic pad linking, queue: {}                              |
+| [`05_configuration.md`](deepstream/05_configuration.md)                 | Full YAML schema, parser architecture                              |
+| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md)         | GstBus, state machine, RTSP reconnect                              |
+| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md) | GStreamer pad probes, ProbeHandlerManager, SmartRecord/CropObjects |
+| [`08_analytics.md`](deepstream/08_analytics.md)                         | nvdsanalytics ROI/line crossing/overcrowding                       |
+| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)   | Sinks, encoders, smart record API                                  |
 
 ---
 

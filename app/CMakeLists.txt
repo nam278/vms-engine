@@ -5,7 +5,6 @@ target_link_libraries(vms_engine
     PRIVATE vms_engine_pipeline
     PRIVATE vms_engine_domain
     PRIVATE vms_engine_infrastructure
-    PRIVATE vms_engine_services
     PRIVATE Threads::Threads
 )
 

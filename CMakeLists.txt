@@ -86,7 +86,6 @@ add_subdirectory(core)
 add_subdirectory(pipeline)
 add_subdirectory(domain)
 add_subdirectory(infrastructure)
-add_subdirectory(services)
 add_subdirectory(plugins)
 add_subdirectory(app)
 
@@ -98,7 +97,6 @@ if(CLANG_FORMAT)
         pipeline/include/*.hpp pipeline/src/*.cpp
         domain/include/*.hpp domain/src/*.cpp
         infrastructure/*/include/*.hpp infrastructure/*/src/*.cpp
-        services/include/*.hpp services/src/*.cpp
         app/*.cpp)
     add_custom_target(vms_format
         COMMAND ${CLANG_FORMAT} -i ${ALL_SOURCES}

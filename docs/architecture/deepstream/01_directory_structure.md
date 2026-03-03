@@ -122,16 +122,9 @@ core/
 │   │   ├── istorage_manager.hpp        # IStorageManager (snapshots)
 │   │   └── storage_types.hpp           # StorageTarget, StoragePath
 │   │
-│   ├── recording/
-│   │   ├── ismart_record_controller.hpp # ISmartRecordController
-│   │   └── recording_status.hpp        # RecordingStatus enum
-│   │
 │   ├── runtime/
 │   │   ├── iruntime_param_manager.hpp  # IRuntimeParamManager
 │   │   └── iruntime_stream_manager.hpp # IRuntimeStreamManager
-│   │
-│   ├── services/
-│   │   └── iexternal_inference_client.hpp # IExternalInferenceClient (Triton)
 │   │
 │   └── utils/
 │       ├── logger.hpp                  # LOG_T/D/I/W/E/C macros
@@ -185,9 +178,6 @@ pipeline/
 │   │   ├── msgconv_broker_builder.hpp  # nvmsgconv + nvmsgbroker
 │   │   └── queue_builder.hpp           # GstQueue element
 │   │
-│   ├── linking/
-│   │   └── pipeline_linker.hpp         # PipelineLinker (static + dynamic pad linking)
-│   │
 │   ├── probes/                         # GStreamer pad probe implementations
 │   │   ├── probe_handler_manager.hpp   # ProbeHandlerManager
 │   │   ├── class_id_namespace_handler.hpp  # class_id offset (multi-SGIE)
@@ -231,18 +221,11 @@ pipeline/
     │   ├── smart_record_builder.cpp
     │   ├── msgconv_broker_builder.cpp
     │   └── queue_builder.cpp
-    ├── linking/
-    │   └── pipeline_linker.cpp
     ├── probes/
     │   ├── probe_handler_manager.cpp
     │   ├── class_id_namespace_handler.cpp
     │   ├── crop_object_handler.cpp
     │   └── smart_record_probe_handler.cpp
-    └── event_handlers/
-        ├── handler_manager.cpp
-        ├── crop_detected_obj_handler.cpp
-        ├── ext_proc_handler.cpp
-        └── smart_record_handler.cpp
 ```
 
 ## 5. Domain Layer (`domain/`)
@@ -298,19 +281,7 @@ infrastructure/
         └── pistache_server.cpp
 ```
 
-## 7. Services Layer (`services/`)
-
-```
-services/
-├── CMakeLists.txt
-└── triton/
-    ├── include/engine/services/
-    │   └── triton_inference_client.hpp # TritonClient : IExternalInferenceClient
-    └── src/
-        └── triton_inference_client.cpp
-```
-
-## 8. Configuration Files (`configs/`)
+## 7. Configuration Files (`configs/`)
 
 ```
 configs/
@@ -329,7 +300,7 @@ configs/
 
 > **Tài liệu config YAML đầy đủ** → [`../../configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
 
-## 9. Runtime Data (`dev/`)
+## 8. Runtime Data (`dev/`)
 
 ```
 dev/
@@ -357,7 +328,7 @@ dot -Tpng dev/logs/de1_build_graph.dot -o pipeline.png
 xdot dev/logs/de1_build_graph.dot
 ```
 
-## 10. Build Output (`build/`)
+## 9. Build Output (`build/`)
 
 ```
 build/

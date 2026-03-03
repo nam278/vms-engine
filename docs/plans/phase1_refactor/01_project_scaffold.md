@@ -31,7 +31,7 @@
 cd /opt/vms_engine
 
 # ── Core Layer ──────────────────────────────────────────────────────
-mkdir -p core/include/engine/core/{builders,config,pipeline,eventing,handlers,messaging,storage,recording,runtime,services,utils}
+mkdir -p core/include/engine/core/{builders,config,pipeline,eventing,handlers,messaging,storage,recording,runtime,utils}
 mkdir -p core/src/utils
 
 # ── Pipeline Layer (DeepStream element builders + linking) ──────────
@@ -49,10 +49,6 @@ mkdir -p infrastructure/messaging/include/engine/infrastructure/messaging
 mkdir -p infrastructure/messaging/src
 mkdir -p infrastructure/storage/include/engine/infrastructure/storage
 mkdir -p infrastructure/storage/src
-
-# ── Services Layer (external inference clients, etc.) ───────────────
-mkdir -p services/include/engine/services
-mkdir -p services/src
 
 # ── Application entry point ─────────────────────────────────────────
 mkdir -p app
@@ -146,7 +142,6 @@ add_subdirectory(core)
 add_subdirectory(pipeline)
 add_subdirectory(domain)
 add_subdirectory(infrastructure)
-add_subdirectory(services)
 add_subdirectory(app)
 
 # ── clang-format target (optional) ──────────────────────────────────
@@ -157,7 +152,6 @@ if(CLANG_FORMAT)
         pipeline/include/*.hpp pipeline/src/*.cpp
         domain/include/*.hpp domain/src/*.cpp
         infrastructure/*/include/*.hpp infrastructure/*/src/*.cpp
-        services/include/*.hpp services/src/*.cpp
         app/*.cpp)
     add_custom_target(format
         COMMAND ${CLANG_FORMAT} -i ${ALL_SOURCES}
@@ -263,27 +257,6 @@ set_target_properties(vms_engine_infrastructure PROPERTIES
     CXX_STANDARD_REQUIRED ON)
 ```
 
-#### services/CMakeLists.txt
-
-```cmake
-add_library(vms_engine_services STATIC
-    src/placeholder.cpp
-)
-
-target_include_directories(vms_engine_services
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(vms_engine_services
-    PUBLIC  vms_engine_core
-    PRIVATE PkgConfig::CURL
-)
-
-set_target_properties(vms_engine_services PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON)
-```
-
 #### app/CMakeLists.txt
 
 ```cmake
@@ -294,7 +267,6 @@ target_link_libraries(vms_engine
     PRIVATE vms_engine_pipeline
     PRIVATE vms_engine_domain
     PRIVATE vms_engine_infrastructure
-    PRIVATE vms_engine_services
     PRIVATE Threads::Threads
 )
 
@@ -324,9 +296,6 @@ echo '// placeholder — replaced in Plan 04' > domain/src/placeholder.cpp
 echo '// placeholder — replaced in Plan 05' > infrastructure/config_parser/src/placeholder.cpp
 echo '// placeholder — replaced in Plan 05' > infrastructure/messaging/src/placeholder.cpp
 echo '// placeholder — replaced in Plan 05' > infrastructure/storage/src/placeholder.cpp
-
-# services
-echo '// placeholder — replaced in Plan 06' > services/src/placeholder.cpp
 ```
 
 ### 1.5 Create Minimal main.cpp Stub
