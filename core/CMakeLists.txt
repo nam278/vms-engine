@@ -1,5 +1,6 @@
 add_library(vms_engine_core STATIC
     src/utils/spdlog_logger.cpp
+    src/utils/uuid_v7_generator.cpp
 )
 
 target_include_directories(vms_engine_core

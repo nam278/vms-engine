@@ -57,6 +57,7 @@ All build commands run **inside the dev container** at `/opt/vms_engine`.
 # Configure (Debug — default for development)
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
     -G Ninja
 
@@ -74,7 +75,11 @@ cmake -S . -B build \
 cmake --build build -- -j5
 
 # Clean rebuild
-rm -rf build && cmake -S . -B build ... && cmake --build build -- -j5
+rm -rf build && cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
+    -G Ninja && cmake --build build -- -j5
 ```
 
 **`DEEPSTREAM_DIR`** is automatically set to `/opt/nvidia/deepstream/deepstream` inside the container via the `ENV` in Dockerfile. Can be overridden.
@@ -546,6 +551,11 @@ LOG_I("URI: {}", uri.get());  // g_free called automatically
 3. Implement `configure(const EventHandlerConfig&)` + `static GstPadProbeReturn on_buffer(…)`
 4. Register trigger string in `ProbeHandlerManager::attach_probes()` dispatch block
 5. Add YAML under `event_handlers:` with appropriate `trigger:` value
+6. Set `pad_name: sink` if probe must run on the **input** pad of the element (e.g., before tracker processes metadata); default is `pad_name: src`
+
+> 📖 **Probe ordering**: GStreamer FIFO — entries order in `event_handlers:` determines registration order on the same pad. See [`docs/architecture/probes/class_id_namespacing_handler.md`](docs/architecture/probes/class_id_namespacing_handler.md) for a real example.
+
+> 📖 **Existing probe deep-dives**: [`docs/architecture/probes/smart_record_probe_handler.md`](docs/architecture/probes/smart_record_probe_handler.md) · [`docs/architecture/probes/crop_object_handler.md`](docs/architecture/probes/crop_object_handler.md) · [`docs/architecture/probes/ext_proc_svc.md`](docs/architecture/probes/ext_proc_svc.md)
 
 ### New Infrastructure Adapter
 

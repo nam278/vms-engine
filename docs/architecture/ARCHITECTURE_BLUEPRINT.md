@@ -210,7 +210,7 @@ vms-engine/
 │   ├── builders/            #   Element builders (source, infer, tracker, sink...)
 │   ├── block_builders/      #   Phase builders (SourceBuilder, ProcessingBuilder...)
 │   ├── linking/             #   Element linking & tee management
-│   ├── probes/              #   GStreamer probe implementations (SmartRecord, CropObjects)
+│   ├── probes/              #   GStreamer probe implementations (SmartRecord, CropObjects, ClassIdNamespace)
 │   ├── config/              #   Config validation
 ├── domain/                  # Domain Layer — Business rules & metadata processing
 │   ├── runtime_params/      #   Runtime parameter rules
@@ -343,10 +343,10 @@ vms-engine/
 │   │       │   └── queue_builder.hpp       # queue elements
 │   │       │
 │   │       ├── probes/                     # GStreamer pad probe implementations
-│   │       │   ├── probe_handler_manager.hpp     # ProbeHandlerManager
-│   │       │   ├── class_id_namespace_handler.hpp # class_id offset/restore
-│   │       │   ├── crop_object_handler.hpp       # Object crop capture
-│   │       │   └── smart_record_probe_handler.hpp # Smart record triggers
+│   │       │   ├── probe_handler_manager.hpp          # ProbeHandlerManager — dispatch by trigger
+│   │       │   ├── class_id_namespace_handler.hpp     # class_id offset/restore (multi-GIE)
+│   │       │   ├── crop_object_handler.hpp            # Object crop capture (JPEG)
+│   │       │   └── smart_record_probe_handler.hpp     # Smart record triggers
 │   │       │
 │   │       ├── config/
 │   │       │   └── config_validator.hpp    # ConfigValidator : IConfigValidator
@@ -466,7 +466,15 @@ vms-engine/
 │
 ├── docs/                                   # ═══ DOCUMENTATION ═══
 │   ├── architecture/
-│   │   └── ARCHITECTURE_BLUEPRINT.md       # This file
+│   │   ├── ARCHITECTURE_BLUEPRINT.md       # This file
+│   │   ├── RAII.md                         # GStreamer / CUDA RAII patterns
+│   │   ├── CMAKE.md                        # Build system reference
+│   │   ├── deepstream/                     # DeepStream deep-dive docs (00–09)
+│   │   │   ├── README.md                   # Index & reading order
+│   │   │   ├── 07_event_handlers_probes.md # Probe system overview
+│   │   │   └── ...
+│   │   └── probes/                         # Probe handler reference docs
+│   │       └── class_id_namespacing_handler.md  # Multi-GIE class_id namespacing
 │   └── plans/
 │       └── phase1_refactor/
 │
@@ -1644,29 +1652,29 @@ For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom 
 
 ### Root Namespace: `engine`
 
-| Namespace                               | Maps To                               |
-| --------------------------------------- | ------------------------------------- |
-| `engine::core::pipeline`                | `core/include/engine/core/pipeline/`  |
-| `engine::core::builders`                | `core/include/engine/core/builders/`  |
-| `engine::core::config`                  | `core/include/engine/core/config/`    |
-| `engine::core::events`                  | `core/include/engine/core/eventing/`  |
-| `engine::core::probes`                  | `core/include/engine/core/probes/`    |
-| `engine::core::handlers`                | `core/include/engine/core/handlers/`  |
-| `engine::core::messaging`               | `core/include/engine/core/messaging/` |
-| `engine::core::storage`                 | `core/include/engine/core/storage/`   |
+| Namespace                 | Maps To                               |
+| ------------------------- | ------------------------------------- |
+| `engine::core::pipeline`  | `core/include/engine/core/pipeline/`  |
+| `engine::core::builders`  | `core/include/engine/core/builders/`  |
+| `engine::core::config`    | `core/include/engine/core/config/`    |
+| `engine::core::events`    | `core/include/engine/core/eventing/`  |
+| `engine::core::probes`    | `core/include/engine/core/probes/`    |
+| `engine::core::handlers`  | `core/include/engine/core/handlers/`  |
+| `engine::core::messaging` | `core/include/engine/core/messaging/` |
+| `engine::core::storage`   | `core/include/engine/core/storage/`   |
 
-| `engine::core::runtime`                 | `core/include/engine/core/runtime/`   |
-| `engine::core::utils`                   | `core/include/engine/core/utils/`     |
-| `engine::pipeline`                      | `pipeline/include/engine/pipeline/`   |
-| `engine::pipeline::block_builders`      | `pipeline/.../block_builders/`        |
-| `engine::pipeline::builders`            | `pipeline/.../builders/`              |
-| `engine::pipeline::linking`             | `pipeline/.../linking/`               |
-| `engine::pipeline::probes`              | `pipeline/.../probes/`                |
-| `engine::domain`                        | `domain/include/engine/domain/`       |
-| `engine::infrastructure::config_parser` | `infrastructure/config_parser/`       |
-| `engine::infrastructure::messaging`     | `infrastructure/messaging/`           |
-| `engine::infrastructure::storage`       | `infrastructure/storage/`             |
-| `engine::infrastructure::rest_api`      | `infrastructure/rest_api/`            |
+| `engine::core::runtime` | `core/include/engine/core/runtime/` |
+| `engine::core::utils` | `core/include/engine/core/utils/` |
+| `engine::pipeline` | `pipeline/include/engine/pipeline/` |
+| `engine::pipeline::block_builders` | `pipeline/.../block_builders/` |
+| `engine::pipeline::builders` | `pipeline/.../builders/` |
+| `engine::pipeline::linking` | `pipeline/.../linking/` |
+| `engine::pipeline::probes` | `pipeline/.../probes/` |
+| `engine::domain` | `domain/include/engine/domain/` |
+| `engine::infrastructure::config_parser` | `infrastructure/config_parser/` |
+| `engine::infrastructure::messaging` | `infrastructure/messaging/` |
+| `engine::infrastructure::storage` | `infrastructure/storage/` |
+| `engine::infrastructure::rest_api` | `infrastructure/rest_api/` |
 
 ### Naming Conventions
 
@@ -1791,19 +1799,19 @@ build/
 
 ### File Mapping (Key Files)
 
-| lantanav2 Path                                                | vms-engine Path                                                |
-| ------------------------------------------------------------- | -------------------------------------------------------------- |
-| `core/include/lantana/core/pipeline/ipipeline_manager.hpp`    | `core/include/engine/core/pipeline/ipipeline_manager.hpp`      |
-| `core/include/lantana/core/builders/ibuilder_factory.hpp`     | `core/include/engine/core/builders/ibuilder_factory.hpp`       |
-| `backends/deepstream/include/.../ds_pipeline_manager.hpp`     | `pipeline/include/engine/pipeline/pipeline_manager.hpp`        |
-| `backends/deepstream/include/.../ds_builder_factory.hpp`      | `pipeline/include/engine/pipeline/builder_factory.hpp`         |
-| `backends/deepstream/include/.../block_builders/*.hpp`        | `pipeline/include/engine/pipeline/block_builders/*.hpp`        |
-| `backends/deepstream/include/.../builders/ds_*.hpp`           | `pipeline/include/engine/pipeline/builders/*.hpp`              |
-| `backends/deepstream/include/.../probes/*.hpp`                | `pipeline/include/engine/pipeline/probes/*.hpp`                |
-| `infrastructure/config_parser/...`                            | `infrastructure/config_parser/...`                             |
-| `infrastructure/messaging/...`                                | `infrastructure/messaging/...`                                 |
-| `infrastructure/storage/...`                                  | `infrastructure/storage/...`                                   |
-| `domain/include/lantana/domain/...`                           | `domain/include/engine/domain/...`                             |
+| lantanav2 Path                                             | vms-engine Path                                           |
+| ---------------------------------------------------------- | --------------------------------------------------------- |
+| `core/include/lantana/core/pipeline/ipipeline_manager.hpp` | `core/include/engine/core/pipeline/ipipeline_manager.hpp` |
+| `core/include/lantana/core/builders/ibuilder_factory.hpp`  | `core/include/engine/core/builders/ibuilder_factory.hpp`  |
+| `backends/deepstream/include/.../ds_pipeline_manager.hpp`  | `pipeline/include/engine/pipeline/pipeline_manager.hpp`   |
+| `backends/deepstream/include/.../ds_builder_factory.hpp`   | `pipeline/include/engine/pipeline/builder_factory.hpp`    |
+| `backends/deepstream/include/.../block_builders/*.hpp`     | `pipeline/include/engine/pipeline/block_builders/*.hpp`   |
+| `backends/deepstream/include/.../builders/ds_*.hpp`        | `pipeline/include/engine/pipeline/builders/*.hpp`         |
+| `backends/deepstream/include/.../probes/*.hpp`             | `pipeline/include/engine/pipeline/probes/*.hpp`           |
+| `infrastructure/config_parser/...`                         | `infrastructure/config_parser/...`                        |
+| `infrastructure/messaging/...`                             | `infrastructure/messaging/...`                            |
+| `infrastructure/storage/...`                               | `infrastructure/storage/...`                              |
+| `domain/include/lantana/domain/...`                        | `domain/include/engine/domain/...`                        |
 
 ### Migration Checklist
 
@@ -1875,22 +1883,23 @@ LOG_C("Critical: Pipeline initialization failed");
 
 For deep-dive technical documentation on the DeepStream-specific implementation, see:
 
-| File                                                                    | Topic                                                              |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [`docs/architecture/deepstream/README.md`](deepstream/README.md)        | Index & reading order                                              |
-| [`00_project_overview.md`](deepstream/00_project_overview.md)           | Tech stack, pipeline diagram, conventions                          |
-| [`01_directory_structure.md`](deepstream/01_directory_structure.md)     | Full project layout with file purposes                             |
-| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md)             | All core interfaces (engine:: namespace)                           |
-| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md)         | 5-phase build, tails\_ map pattern                                 |
-| [`04_linking_system.md`](deepstream/04_linking_system.md)               | Static/dynamic pad linking, queue: {}                              |
-| [`05_configuration.md`](deepstream/05_configuration.md)                 | Full YAML schema, parser architecture                              |
-| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md)         | GstBus, state machine, RTSP reconnect                              |
-| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md) | GStreamer pad probes, ProbeHandlerManager, SmartRecord/CropObjects |
-| [`08_analytics.md`](deepstream/08_analytics.md)                         | nvdsanalytics ROI/line crossing/overcrowding                       |
-| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)   | Sinks, encoders, smart record API                                  |
+| File                                                                               | Topic                                                                               |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [`docs/architecture/deepstream/README.md`](deepstream/README.md)                   | Index & reading order                                                               |
+| [`00_project_overview.md`](deepstream/00_project_overview.md)                      | Tech stack, pipeline diagram, conventions                                           |
+| [`01_directory_structure.md`](deepstream/01_directory_structure.md)                | Full project layout with file purposes                                              |
+| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md)                        | All core interfaces (engine:: namespace)                                            |
+| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md)                    | 5-phase build, tails\_ map pattern                                                  |
+| [`04_linking_system.md`](deepstream/04_linking_system.md)                          | Static/dynamic pad linking, queue: {}                                               |
+| [`05_configuration.md`](deepstream/05_configuration.md)                            | Full YAML schema, parser architecture                                               |
+| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md)                    | GstBus, state machine, RTSP reconnect                                               |
+| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md)            | GStreamer pad probes, ProbeHandlerManager, SmartRecord/CropObjects/ClassIdNamespace |
+| [`08_analytics.md`](deepstream/08_analytics.md)                                    | nvdsanalytics ROI/line crossing/overcrowding                                        |
+| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)              | Sinks, encoders, smart record API                                                   |
+| [`probes/class_id_namespacing_handler.md`](probes/class_id_namespacing_handler.md) | Multi-GIE class_id namespacing (offset + restore)                                   |
 
 ---
 
-**Last Updated**: March 2026
-**Based On**: lantanav2 architecture + DDD/Clean Architecture principles from family-lineage-app
-**Target**: vms-engine (NVIDIA DeepStream 7.1 + C++17)
+**Last Updated**: 2025
+**Based On**: lantanav2 architecture + DDD/Clean Architecture principles
+**Target**: vms-engine (NVIDIA DeepStream 8.0 + C++17)

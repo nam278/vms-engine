@@ -1,4 +1,5 @@
 #include "engine/pipeline/pipeline_manager.hpp"
+#include "engine/pipeline/probes/probe_handler_manager.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/gst_utils.hpp"
 
@@ -9,6 +10,10 @@ PipelineManager::PipelineManager(std::unique_ptr<engine::core::builders::IPipeli
 
 PipelineManager::~PipelineManager() {
     cleanup();
+}
+
+void PipelineManager::set_message_producer(engine::core::messaging::IMessageProducer* producer) {
+    producer_ = producer;
 }
 
 bool PipelineManager::initialize(const engine::core::config::PipelineConfig& config) {
@@ -45,6 +50,15 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
                                        gst_object_unref);
     if (bus) {
         gst_bus_add_watch(bus.get(), on_bus_message, this);
+    }
+
+    // Attach pad probes from event_handlers config
+    if (!config.event_handlers.empty()) {
+        probe_manager_ = std::make_unique<probes::ProbeHandlerManager>(pipeline_);
+        if (!probe_manager_->attach_probes(config, producer_)) {
+            LOG_E("Failed to attach one or more pad probes");
+            // Non-fatal — continue with reduced functionality
+        }
     }
 
     state_ = engine::core::pipeline::PipelineState::Ready;
@@ -189,6 +203,12 @@ void PipelineManager::handle_error(GError* err, const gchar* debug) {
 }
 
 void PipelineManager::cleanup() {
+    // Detach probes before tearing down the pipeline
+    if (probe_manager_) {
+        probe_manager_->detach_all();
+        probe_manager_.reset();
+    }
+
     stop();
 
     if (pipeline_) {

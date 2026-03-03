@@ -1,4 +1,5 @@
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
+#include "engine/pipeline/probes/class_id_namespace_handler.hpp"
 #include "engine/pipeline/probes/crop_object_handler.hpp"
 #include "engine/pipeline/probes/smart_record_probe_handler.hpp"
 #include "engine/core/utils/logger.hpp"
@@ -7,9 +8,9 @@ namespace engine::pipeline::probes {
 
 ProbeHandlerManager::ProbeHandlerManager(GstElement* pipeline) : pipeline_(pipeline) {}
 
-bool ProbeHandlerManager::attach_probes(
-    const std::vector<engine::core::config::EventHandlerConfig>& configs) {
-    for (const auto& cfg : configs) {
+bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConfig& config,
+                                        engine::core::messaging::IMessageProducer* producer) {
+    for (const auto& cfg : config.event_handlers) {
         if (!cfg.enable) {
             LOG_D("ProbeHandlerManager: handler '{}' disabled, skipping", cfg.id);
             continue;
@@ -27,28 +28,60 @@ bool ProbeHandlerManager::attach_probes(
             return false;
         }
 
-        GstPad* pad = gst_element_get_static_pad(element, "src");
+        const char* pad_name = cfg.pad_name.empty() ? "src" : cfg.pad_name.c_str();
+        GstPad* pad = gst_element_get_static_pad(element, pad_name);
         if (!pad) {
-            LOG_E("ProbeHandlerManager: no src pad on '{}' for handler '{}'", cfg.probe_element,
-                  cfg.id);
+            LOG_E("ProbeHandlerManager: no '{}' pad on '{}' for handler '{}'", pad_name,
+                  cfg.probe_element, cfg.id);
             return false;
         }
 
         gulong probe_id = 0;
 
+        // ── smart_record ──────────────────────────────────────────
         if (cfg.trigger == "smart_record") {
+            // Resolve the source element (nvmultiurisrcbin)
+            GstElement* multiuribin = nullptr;
+            if (!cfg.source_element.empty()) {
+                multiuribin = find_element(cfg.source_element);
+            }
+            if (!multiuribin) {
+                LOG_E("ProbeHandlerManager: source_element '{}' not found for smart_record '{}'",
+                      cfg.source_element, cfg.id);
+                gst_object_unref(pad);
+                return false;
+            }
+
             auto* handler = new SmartRecordProbeHandler();
-            handler->configure(cfg);
+            handler->configure(config, cfg, multiuribin, producer);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, SmartRecordProbeHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<SmartRecordProbeHandler*>(ud); });
 
+            // ── crop_objects ──────────────────────────────────────────
         } else if (cfg.trigger == "crop_objects") {
             auto* handler = new CropObjectHandler();
-            handler->configure(cfg);
+            handler->configure(config, cfg, producer);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, CropObjectHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<CropObjectHandler*>(ud); });
+
+            // ── class_id_offset ───────────────────────────────────────
+        } else if (cfg.trigger == "class_id_offset") {
+            int idx = find_processing_element_index(config, cfg.probe_element);
+            auto* handler = new ClassIdNamespaceHandler();
+            handler->configure(config, ClassIdNamespaceHandler::Mode::Offset, idx);
+            probe_id = gst_pad_add_probe(
+                pad, GST_PAD_PROBE_TYPE_BUFFER, ClassIdNamespaceHandler::on_buffer, handler,
+                [](gpointer ud) { delete static_cast<ClassIdNamespaceHandler*>(ud); });
+
+            // ── class_id_restore ──────────────────────────────────────
+        } else if (cfg.trigger == "class_id_restore") {
+            auto* handler = new ClassIdNamespaceHandler();
+            handler->configure(config, ClassIdNamespaceHandler::Mode::Restore);
+            probe_id = gst_pad_add_probe(
+                pad, GST_PAD_PROBE_TYPE_BUFFER, ClassIdNamespaceHandler::on_buffer, handler,
+                [](gpointer ud) { delete static_cast<ClassIdNamespaceHandler*>(ud); });
 
         } else {
             LOG_W("ProbeHandlerManager: unknown trigger '{}' for handler '{}', skipping",
@@ -62,7 +95,7 @@ bool ProbeHandlerManager::attach_probes(
               cfg.probe_element, cfg.id);
     }
 
-    LOG_I("ProbeHandlerManager: attached {} probes", probes_.size());
+    LOG_I("ProbeHandlerManager: attached {} probes total", probes_.size());
     return true;
 }
 
@@ -85,6 +118,20 @@ GstElement* ProbeHandlerManager::find_element(const std::string& name) const {
     if (!pipeline_)
         return nullptr;
     return gst_bin_get_by_name(GST_BIN(pipeline_), name.c_str());
+}
+
+int ProbeHandlerManager::find_processing_element_index(
+    const engine::core::config::PipelineConfig& config, const std::string& element_id) const {
+    const auto& elems = config.processing.elements;
+    for (int i = 0; i < static_cast<int>(elems.size()); ++i) {
+        if (elems[i].id == element_id)
+            return i;
+    }
+    LOG_W(
+        "ProbeHandlerManager: processing element '{}' not found in config, "
+        "using default index -1",
+        element_id);
+    return -1;
 }
 
 }  // namespace engine::pipeline::probes

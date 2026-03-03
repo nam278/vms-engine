@@ -41,7 +41,8 @@ set(DEEPSTREAM_INCLUDE_DIRS
 # DeepStream libraries
 set(DEEPSTREAM_SDK_LIBS "")
 foreach(_lib nvds_meta nvdsgst_meta nvds_utils nvdsgst_helper
-             nvbufsurface nvbufsurftransform nvds_infer)
+             nvbufsurface nvbufsurftransform nvds_infer
+             nvds_batch_jpegenc nvdsgst_smartrecord)
     find_library(LIB_${_lib} NAMES ${_lib}
         PATHS ${DEEPSTREAM_DIR}/lib NO_DEFAULT_PATH)
     if(LIB_${_lib})

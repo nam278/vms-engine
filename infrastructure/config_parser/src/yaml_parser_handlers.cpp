@@ -27,6 +27,9 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
         handler.enable = yaml_bool(h, "enable", true);
         handler.type = yaml_str(h, "type");
         handler.probe_element = yaml_str(h, "probe_element");
+        handler.pad_name = yaml_str(h, "pad_name");
+        if (handler.pad_name.empty())
+            handler.pad_name = "src";  // default
         handler.source_element = yaml_str(h, "source_element");
         handler.trigger = yaml_str(h, "trigger");
         handler.label_filter = yaml_string_list(h, "label_filter");
@@ -35,6 +38,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
         handler.pre_event_sec = yaml_int(h, "pre_event_sec", 2);
         handler.post_event_sec = yaml_int(h, "post_event_sec", 20);
         handler.min_interval_sec = yaml_int(h, "min_interval_sec", 2);
+        handler.max_concurrent_recordings = yaml_int(h, "max_concurrent_recordings", 0);
 
         // Crop objects specific
         handler.save_dir = yaml_str(h, "save_dir");
@@ -60,6 +64,34 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             broker.port = yaml_int(b, "port", 6379);
             broker.channel = yaml_str(b, "channel");
             handler.broker = broker;
+        }
+
+        // External processor sub-section
+        if (h["ext_processor"] && h["ext_processor"].IsMap()) {
+            engine::core::config::ExtProcessorConfig ext;
+            const auto& ep = h["ext_processor"];
+            ext.enable = yaml_bool(ep, "enable", false);
+            ext.min_interval_sec = yaml_int(ep, "min_interval_sec", 1);
+
+            if (ep["rules"] && ep["rules"].IsSequence()) {
+                for (const auto& r : ep["rules"]) {
+                    engine::core::config::ExtProcessorRule rule;
+                    rule.label = yaml_str(r, "label");
+                    rule.endpoint = yaml_str(r, "endpoint");
+                    rule.result_path = yaml_str(r, "result_path");
+                    rule.display_path = yaml_str(r, "display_path");
+
+                    if (r["params"] && r["params"].IsMap()) {
+                        for (const auto& kv : r["params"]) {
+                            rule.params[kv.first.as<std::string>()] = kv.second.as<std::string>("");
+                        }
+                    }
+
+                    ext.rules.push_back(std::move(rule));
+                }
+            }
+
+            handler.ext_processor = ext;
         }
 
         out.push_back(std::move(handler));

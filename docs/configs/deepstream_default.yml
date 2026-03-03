@@ -239,6 +239,40 @@ outputs:
 # =============================================================================
 event_handlers:
   # ---------------------------------------------------------------------------
+  # PROBE ORDERING NOTE (GStreamer FIFO):
+  # Multiple probes on the same pad fire in registration order.
+  # class_id_restore MUST be registered before smart_record / crop_objects on
+  # tracker:src so those handlers always see the original (restored) class_ids.
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Class ID namespace — Offset  (disabled by default)
+  # Remaps SGIE class IDs by (gie_unique_id * 1000) to avoid collision with PGIE
+  # by probing the tracker's SINK pad BEFORE objects enter nvtracker.
+  # Enable when pipeline has 2+ detectors with overlapping class_id ranges.
+  # probe_element MUST be the nvtracker element id (same for both handlers).
+  # ---------------------------------------------------------------------------
+  - id: class_id_offset
+    enable: false
+    type: on_detect
+    probe_element: tracker # nvtracker element id
+    pad_name: sink # probe BEFORE tracker (offset class_id going IN)
+    trigger: class_id_offset
+
+  # ---------------------------------------------------------------------------
+  # Class ID namespace — Restore  (disabled by default)
+  # Restores original class IDs on the tracker's SRC pad AFTER nvtracker so
+  # downstream handlers (smart_record, crop_objects) see original values.
+  # MUST be listed before smart_record and crop_objects (GStreamer FIFO order).
+  # ---------------------------------------------------------------------------
+  - id: class_id_restore
+    enable: false
+    type: on_detect
+    probe_element: tracker # same element, different pad
+    pad_name: src # probe AFTER tracker (restore class_id going OUT)
+    trigger: class_id_restore
+
+  # ---------------------------------------------------------------------------
   # Smart Record trigger
   # Probe on tracker src pad → detect objects → trigger smart record on
   # nvmultiurisrcbin (referenced by source_element).
@@ -247,7 +281,7 @@ event_handlers:
     enable: true
     type: on_detect
     probe_element: tracker # attach pad probe to tracker's src pad
-    source_element: sources # nvmultiurisrcbin to call smart_record API on
+    source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
     trigger: smart_record
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2 # seconds from cache before detection
@@ -266,7 +300,7 @@ event_handlers:
     enable: true
     type: on_detect
     probe_element: tracker
-    trigger: crop_object
+    trigger: crop_objects
     label_filter: [bike, bus, car, person, truck]
     save_dir: "/opt/vms_engine/dev/rec/objects"
     capture_interval_sec: 5 # min seconds between crops for the same track_id

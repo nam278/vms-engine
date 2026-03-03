@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <optional>
 
@@ -205,19 +206,38 @@ struct CleanupConfig {
     int old_dirs_max_days = 7;
 };
 
+/** @brief A single external processing rule (e.g., face recognition). */
+struct ExtProcessorRule {
+    std::string label;         ///< Object label to match (e.g. "face")
+    std::string endpoint;      ///< HTTP endpoint URL
+    std::string result_path;   ///< JSON path to result (e.g. "match.external_id")
+    std::string display_path;  ///< JSON path to display (e.g. "match.face_name")
+    std::unordered_map<std::string, std::string> params;  ///< Additional query parameters
+};
+
+/** @brief External processing service configuration (e.g., face recognition). */
+struct ExtProcessorConfig {
+    bool enable = false;
+    int min_interval_sec = 1;
+    std::vector<ExtProcessorRule> rules;
+};
+
 struct EventHandlerConfig {
     std::string id;
     bool enable = true;
-    std::string type;            ///< "on_detect" | "on_eos" | ...
-    std::string probe_element;   ///< element id to attach probe
-    std::string source_element;  ///< for smart_record: "sources"
-    std::string trigger;         ///< "smart_record" | "crop_object" | ...
+    std::string type;              ///< "on_detect" | "on_eos" | ...
+    std::string probe_element;     ///< element id to attach probe
+    std::string pad_name = "src";  ///< pad to probe: "src" (default) or "sink"
+    std::string source_element;    ///< for smart_record: nvmultiurisrcbin element name
+    std::string
+        trigger;  ///< "smart_record" | "crop_objects" | "class_id_offset" | "class_id_restore"
     std::vector<std::string> label_filter;
 
     // Smart record specific
     int pre_event_sec = 2;
     int post_event_sec = 20;
     int min_interval_sec = 2;
+    int max_concurrent_recordings = 0;  ///< 0 = unlimited
 
     // Crop objects specific
     std::string save_dir;
@@ -225,6 +245,9 @@ struct EventHandlerConfig {
     int image_quality = 85;
     bool save_full_frame = true;
     std::optional<CleanupConfig> cleanup;
+
+    // External processing (e.g., face recognition via HTTP)
+    std::optional<ExtProcessorConfig> ext_processor;
 
     // Broker (shared)
     std::optional<BrokerConfig> broker;
