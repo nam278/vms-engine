@@ -2,39 +2,23 @@
 
 > High-performance Video Management System engine — **NVIDIA DeepStream 8.0** · **C++17** · **Config-Driven**
 
-VMS Engine xử lý video realtime từ nhiều camera (RTSP, file, URI) với AI inference (object detection, tracking, analytics) và output ra display, file recording, RTSP streaming, và message broker.
+VMS Engine xử lý video realtime từ nhiều camera (RTSP, file, URI) với AI inference (object detection, tracking, analytics) và output ra RTSP streaming, file recording, và message broker (Redis/Kafka).
 
 ---
 
 ## 📖 Table of Contents
 
-- [VMS Engine](#vms-engine)
-  - [📖 Table of Contents](#-table-of-contents)
-  - [Key Features](#key-features)
-  - [Architecture](#architecture)
-  - [Prerequisites](#prerequisites)
-  - [Container Setup](#container-setup)
-    - [1. Tạo `.env` file](#1-tạo-env-file)
-    - [2. Build dev image](#2-build-dev-image)
-    - [3. Start container](#3-start-container)
-    - [4. Attach vào container](#4-attach-vào-container)
-  - [Build](#build)
-    - [Configure CMake (lần đầu)](#configure-cmake-lần-đầu)
-    - [Biên dịch](#biên-dịch)
-    - [Clean build](#clean-build)
-  - [Run](#run)
-  - [Development Workflow](#development-workflow)
-    - [Vòng lặp điển hình](#vòng-lặp-điển-hình)
-    - [Auto-rebuild khi thay đổi file](#auto-rebuild-khi-thay-đổi-file)
-    - [Tham chiếu config mẫu](#tham-chiếu-config-mẫu)
-    - [Build production image](#build-production-image)
-  - [Config Reference](#config-reference)
-  - [Debugging \& Troubleshooting](#debugging--troubleshooting)
-    - [GDB](#gdb)
-    - [GStreamer logs](#gstreamer-logs)
-    - [Common Issues](#common-issues)
-  - [Quick Commands](#quick-commands)
-  - [Related Services](#related-services)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Container Setup](#container-setup)
+- [Build](#build)
+- [Run](#run)
+- [Development Workflow](#development-workflow)
+- [Config Reference](#config-reference)
+- [Debugging & Troubleshooting](#debugging--troubleshooting)
+- [Quick Commands](#quick-commands)
+- [Related Services](#related-services)
 
 ---
 
@@ -44,14 +28,35 @@ VMS Engine xử lý video realtime từ nhiều camera (RTSP, file, URI) với A
 - **Config-Driven** — Pipeline topology mô tả hoàn toàn qua YAML; zero code changes cho deployment mới
 - **Multi-Stream** — Xử lý nhiều RTSP/URI sources đồng thời với `nvmultiurisrcbin`
 - **AI Inference** — PGIE/SGIE qua TensorRT (`nvinfer`) hoặc Triton Inference Server (`nvinferserver`)
-- **Smart Recording** — Recording theo event, có pre-event buffer
+- **Smart Recording** — Recording theo event, có pre-event buffer tích hợp trong `nvmultiurisrcbin`
+- **Event Handlers & Probes** — Pad probe callbacks (object crop, smart record trigger) + plugin `.so` runtime-loadable
 - **Clean Architecture** — Interface-first, dependency rule, không tight coupling với DeepStream nội bộ
-- **Plugin System** — Runtime-loadable `.so` handlers cho custom event processing
 - **Observable** — Structured logging (spdlog), DOT graph export, GStreamer bus monitoring
 
 ---
 
 ## Architecture
+
+### Pipeline Topology
+
+```
+nvmultiurisrcbin (decode + mux nhiều RTSP → batched frames)
+  │
+  ▼
+queue → nvinfer (pgie — primary detection)
+  ▼
+queue → nvtracker
+  ▼
+[queue → nvinfer (sgie — secondary, optional)]
+  ▼
+[queue → nvdsanalytics (ROI/line crossing, optional)]
+  ▼
+nvmultistreamtiler → nvdsosd
+  ▼
+nvvideoconvert → nvv4l2h264enc → h264parse → rtspclientsink
+```
+
+### Builder System (5 Phases)
 
 ```
 ┌─────────────────────────────────────────┐
@@ -66,35 +71,51 @@ VMS Engine xử lý video realtime từ nhiều camera (RTSP, file, URI) với A
                   │
                   ▼
 ┌─────────────────────────────────────────┐
-│           PipelineBuilder               │  ← Orchestrates sub-builders
+│           PipelineBuilder               │  ← Điều phối 5 phases, quản lý tails_ map
 └──────┬──────────┬──────────┬────────────┘
-       ▼          ▼          ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
-│  Source    │►│ Processing │►│  Visuals   │►│  Outputs   │
-│  Builder   │ │  Builder   │ │  Builder   │ │  Builder   │
-│ (nvmulti.. │ │ (nvinfer,  │ │ (tiler,   │ │ (rtsp,     │
-│  nvmux)    │ │  tracker)  │ │  OSD)     │ │  file)     │
-└────────────┘ └────────────┘ └────────────┘ └────────────┘
+       ▼          ▼          ▼            ▼            ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐
+│ Source   │►│Processing│►│ Visuals  │►│ Outputs  │►│ Standalone   │
+│ Phase 1  │ │ Phase 2  │ │ Phase 3  │ │ Phase 4  │ │ Phase 5      │
+│nvmulti.. │ │nvinfer   │ │nvtiler   │ │encoders  │ │smart record  │
+│urisrcbin │ │nvtracker │ │nvdsosd   │ │sinks     │ │msgconv/broker│
+└──────────┘ │nvinfer   │ └──────────┘ └──────────┘ └──────────────┘
+             │(sgie)    │
+             │nvanalytics│
+             └──────────┘
 ```
 
-**Layer structure:** `app/` → `pipeline/` → `core/` ← `infrastructure/`, `domain/`, `services/`  
-**Architecture doc:** [`docs/architecture/ARCHITECTURE_BLUEPRINT.md`](docs/architecture/ARCHITECTURE_BLUEPRINT.md)
+### Layer Dependency
+
+```
+app/            → depends on: pipeline, infrastructure, core
+pipeline/       → depends on: core ONLY
+infrastructure/ → depends on: core ONLY
+domain/         → depends on: core ONLY
+services/       → depends on: core ONLY
+core/           → NO external deps (only std + GStreamer fwd-declares)
+```
+
+**Quy tắc tuyệt đối**: `core/` không bao giờ include header của `pipeline/`, `infrastructure/`, hay `services/`.
+
+**Architecture docs đầy đủ:** [`docs/architecture/`](docs/architecture/)
 
 ---
 
 ## Prerequisites
 
 **Host requirements:**
+
 - NVIDIA GPU với driver **≥ 535**
 - Docker + **NVIDIA Container Toolkit**
 - VS Code + [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) (recommended)
 
 **Docker images được build sẵn:**
 
-| File             | Image tag              | Dùng khi nào                                |
-| ---------------- | ---------------------- | ------------------------------------------- |
-| `Dockerfile`     | `vms-engine-dev:latest`| **Development** — có build tools, gdb, valgrind |
-| `Dockerfile.image` | `vms-engine:latest`  | **Production** — chỉ binary + DeepStream base, chạy qua orchestration service |
+| File               | Image tag               | Dùng khi nào                                                                  |
+| ------------------ | ----------------------- | ----------------------------------------------------------------------------- |
+| `Dockerfile`       | `vms-engine-dev:latest` | **Development** — có build tools, gdb, valgrind                               |
+| `Dockerfile.image` | `vms-engine:latest`     | **Production** — chỉ binary + DeepStream base, chạy qua orchestration service |
 
 ---
 
@@ -124,19 +145,19 @@ docker compose up -d
 docker ps --filter name=vms-engine-dev
 ```
 
-`docker-compose.yml` mount toàn bộ source code vào `/opt/lantana` — chỉnh code trên host là thấy ngay trong container, không cần rebuild image.
+`docker-compose.yml` mount toàn bộ source code vào `/opt/vms_engine` — chỉnh code trên host là thấy ngay trong container, không cần rebuild image.
 
 ### 4. Attach vào container
 
 ```bash
-docker exec -it vms-engine-dev bash
+docker compose exec app bash
 ```
 
 ---
 
 ## Build
 
-Mọi lệnh build đều chạy **bên trong container** tại working dir `/opt/lantana`.
+Mọi lệnh build đều chạy **bên trong container** tại `/opt/vms_engine`.
 
 ### Configure CMake (lần đầu)
 
@@ -144,36 +165,50 @@ Mọi lệnh build đều chạy **bên trong container** tại working dir `/op
 cmake -S . -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
 ```
 
-**Tham số:**
-
-| Parameter                    | Mô tả                                                      |
-| ---------------------------- | ---------------------------------------------------------- |
-| `-S .`                       | Source dir (chứa `CMakeLists.txt` root)                    |
-| `-B build`                   | Build output dir                                           |
-| `-G Ninja`                   | Dùng Ninja (nhanh hơn Make)                                |
-| `-DCMAKE_BUILD_TYPE=Debug`   | `Debug` / `RelWithDebInfo` / `Release`                     |
-| `-DDEEPSTREAM_DIR=...`       | Path đến DeepStream SDK (default trong container đã đúng)  |
+| Parameter                         | Mô tả                                             |
+| --------------------------------- | ------------------------------------------------- |
+| `-G Ninja`                        | Dùng Ninja (nhanh hơn Make)                       |
+| `-DCMAKE_BUILD_TYPE=Debug`        | `Debug` / `RelWithDebInfo` / `Release`            |
+| `-DCMAKE_EXPORT_COMPILE_COMMANDS` | Sinh `compile_commands.json` cho clangd / IDE     |
+| `-DDEEPSTREAM_DIR=...`            | Path đến DeepStream SDK (đã đúng trong container) |
 
 ### Biên dịch
 
 ```bash
-# Giới hạn parallel jobs để tránh OOM (mỗi cc1plus tốn ~300–500 MB RAM)
-cmake --build build -j4
+# Giới hạn jobs để tránh OOM (mỗi cc1plus ~300–500 MB RAM)
+cmake --build build -- -j5
 
-# Hoặc dùng toàn bộ cores nếu RAM đủ
-cmake --build build -j$(nproc)
+# Dùng toàn bộ cores nếu RAM đủ
+cmake --build build -- -j$(nproc)
 ```
 
 Binary output: `build/bin/vms_engine`
+
+Build output structure:
+
+```
+build/bin/
+├── vms_engine          ← executable (self-contained, no build/lib/ deps)
+├── configs/            ← copy của configs/ (tự động sau build)
+├── logs/               ← tạo sẵn khi build
+└── plugins/            ← 7 DeepStream parser .so
+    ├── libnvdsinfer_custom_impl_Yolo.so
+    ├── libocr_fast_plate_parser.so
+    └── ...
+```
 
 ### Clean build
 
 ```bash
 rm -rf build/
-# Rồi configure lại từ đầu
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
+cmake --build build -- -j5
 ```
 
 ---
@@ -181,23 +216,29 @@ rm -rf build/
 ## Run
 
 ```bash
-# Trong container, tại /opt/lantana
-./build/bin/vms_engine -c dev/config/your_pipeline.yml
+# Trong container, tại /opt/vms_engine
+./build/bin/vms_engine -c dev/configs/my_pipeline.yml
 ```
 
-**Cấu trúc thư mục runtime:**
+**Cấu trúc thư mục runtime `dev/`:**
 
 ```
 dev/                            # Git-ignored (chỉ .gitkeep được track)
-├── config/                     # Pipeline YAML configs
-│   └── your_pipeline.yml
-├── models/                     # Models (TRT engines, ONNX, labels, ...)
-│   └── my-model/
-│       ├── config_infer_engine.yml
+├── configs/                    # Pipeline YAML configs
+├── models/                     # TensorRT engines, ONNX, labels
+│   └── phat-hien-nguoi-xe/
+│       ├── config.pbtxt
+│       ├── labels.txt
 │       └── 1/
-│           └── model.plan
-├── rec/                        # Recording outputs (MP4)
-└── logs/                       # App logs + GStreamer .dot files
+│           ├── model.onnx
+│           └── model.onnx_b9_gpu0_fp32.engine
+├── pipeline_components/        # Per-component nvinfer configs
+│   ├── pgie_phat-hien-nguoi-xe_DETECTION/
+│   └── sgie_nhan-dien-nguoi_MULTILABEL_CLASSIFICATION/
+├── rec/                        # Smart record MP4 outputs
+│   └── objects/                # Object crop JPEGs
+├── config/                     # Tracker + misc runtime configs
+└── logs/                       # App logs + GStreamer .dot graphs
 ```
 
 > `dev/` là runtime data dir — toàn bộ nội dung bị gitignore. Chỉ `.gitkeep` được commit để giữ cấu trúc folder.
@@ -210,136 +251,162 @@ dev/                            # Git-ignored (chỉ .gitkeep được track)
 
 ```bash
 # 1. Attach vào container
-docker exec -it vms-engine-dev bash
+docker compose exec app bash
 
-# 2. Chỉnh code (editor trên host)
+# 2. Chỉnh code (editor trên host — mount tự động sync)
 
-# 3. Rebuild (trong container)
-cmake --build build -j4
+# 3. Rebuild
+cmake --build build -- -j5
 
 # 4. Test
-./build/bin/vms_engine -c dev/config/my_pipeline.yml
+./build/bin/vms_engine -c dev/configs/my_pipeline.yml
 
-# 5. Xem logs nếu có lỗi
+# 5. Xem logs
 tail -f dev/logs/app.log
 ls -lah dev/logs/*.dot          # GStreamer pipeline graphs
 ```
 
-### Auto-rebuild khi thay đổi file
+### Dùng config mẫu
 
 ```bash
-apt-get install -y entr
+# Copy config mẫu
+cp docs/configs/deepstream_default.yml dev/configs/my_test.yml
 
-# Watch .cpp/.hpp và rebuild tự động
-find . -name "*.cpp" -o -name "*.hpp" | grep -v build | entr -c cmake --build build -j4
-```
-
-### Tham chiếu config mẫu
-
-Config mẫu được đặt trong `docs/configs/`:
-
-```bash
-# Copy mẫu để thử nghiệm
-cp docs/configs/deepstream_default.yml dev/config/my_test.yml
-
-# Chỉnh config
-vim dev/config/my_test.yml
+# Chỉnh camera URIs, paths, ...
+vim dev/configs/my_test.yml
 
 # Chạy
-./build/bin/vms_engine -c dev/config/my_test.yml
+./build/bin/vms_engine -c dev/configs/my_test.yml
+```
+
+### Code formatting
+
+```bash
+# Format toàn bộ .cpp/.hpp (dùng clang-format)
+./scripts/format.sh
+
+# Dry-run check (không sửa file)
+./scripts/format.sh --check
+
+# Cài pre-commit hook (chạy 1 lần sau clone)
+./scripts/install-hooks.sh
 ```
 
 ### Build production image
 
 ```bash
-# Build binary trước (Release mode)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
-cmake --build build -j4
+# Build binary Release trước (trong container)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
+cmake --build build -- -j5
 
 # Thoát container, build image production từ host
 exit
 docker build -f Dockerfile.image -t vms-engine:latest .
 ```
 
-> `Dockerfile.image` dùng `nvcr.io/nvidia/deepstream:8.0-triton-multiarch` (lighter, no build tools). Copy `build/bin/` vào image và set `ENTRYPOINT ["./vms_engine"]`. Image này được orchestrat bởi service riêng — không dùng `docker-compose.yml` này.
+> `Dockerfile.image` dùng `nvcr.io/nvidia/deepstream:8.0-triton-multiarch` (lighter, no build tools). Copy chỉ `build/bin/` vào image — binary đã self-contained (spdlog + hiredis link static).
 
 ---
 
 ## Config Reference
 
-Pipeline config là một YAML file với các section chính:
+Config là YAML file, pass qua `-c path/to/config.yml`. Reference đầy đủ: [`docs/configs/deepstream_default.yml`](docs/configs/deepstream_default.yml)
 
 ```yaml
 version: "1.0.0"
 
-application:
-  name: "my_pipeline"
-  log_file: "/opt/lantana/dev/logs/app.log"
-  gst_log_level: "*:1"               # 1=error ... 5=trace
-  gst_dot_file_dir: "/opt/lantana/dev/logs"
+pipeline:
+  id: "de1"
+  name: "Intrusion Detection Pipeline"
+  log_level: "INFO" # DEBUG | INFO | WARN | ERROR
+  gst_log_level: "*:1" # GStreamer log categories
+  dot_file_dir: "/opt/vms_engine/dev/logs"
+  log_file: "/opt/vms_engine/dev/logs/app.log"
+
+queue_defaults:
+  max_size_buffers: 10
+  leaky: 2 # 0=none  1=upstream  2=downstream
 
 sources:
-  id: "main_source"
-  type: "nvmultiurisrcbin"
-  mode: 0                            # 0=rtsp, 1=file, 2=image
-  uris:
-    - "rtsp://192.168.1.10:554/stream"
-    - "rtsp://192.168.1.11:554/stream"
-  # nvmultiurisrcbin direct properties
+  type: nvmultiurisrcbin
   max_batch_size: 4
-  # nvstreammux passthrough
   width: 1920
   height: 1080
-  batched_push_timeout: 33333        # µs
-  live_source: 1
-  # nvurisrcbin passthrough
-  latency: 100                       # ms
-  rtsp_reconnect_interval: 5        # seconds
+  cameras:
+    - name: camera-01
+      uri: rtsp://192.168.1.99:8554/stream
+  smart_record: 2 # 0=off  1=cloud  2=multi(cloud+local)
+  smart_rec_dir_path: "/opt/vms_engine/dev/rec"
+  output_queue:
+    leaky: 2
 
 processing:
   elements:
-    - id: "pgie"
-      type: "nvinfer"                # nvinfer (TensorRT) | nvinferserver (Triton)
-      process_mode: 1                # 1=Primary, 2=Secondary
-      config_file_path: "/opt/lantana/dev/models/my-model/config_infer_engine.yml"
+    - id: pgie_detection
+      type: nvinfer # nvinfer (TensorRT) | nvinferserver (Triton)
+      role: primary_inference
+      config_file: "/opt/vms_engine/dev/pipeline_components/pgie_detection/config.yml"
+      process_mode: 1 # 1=Primary (full-frame)
       batch_size: 4
       queue: {}
 
-    - id: "tracker"
-      type: "nvtracker"
+    - id: tracker
+      type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-      ll_config_file: "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml"
+      ll_config_file: "/opt/vms_engine/dev/config/tracker_NvDCF_perf.yml"
       tracker_width: 640
-      tracker_height: 384
-      compute_hw: 1                  # 0=default, 1=GPU, 2=VIC
+      tracker_height: 640
+      compute_hw: 1 # 0=default  1=GPU  2=VIC
       queue: {}
 
 visuals:
-  tiler:
-    enable: true
-    rows: 2
-    columns: 2
-    width: 1920
-    height: 1080
-  osd:
-    enable: true
-    process_mode: 1                  # 0=cpu, 1=gpu, 2=auto
+  enable: true
+  elements:
+    - id: tiler
+      type: nvmultistreamtiler
+      rows: 2
+      columns: 2
+      queue: {}
+    - id: osd
+      type: nvdsosd
+      process_mode: 1
+      queue: {}
 
 outputs:
-  - id: "rtsp_output"
-    type: "rtsp"
+  - id: rtsp_out
+    type: rtsp_client
     elements:
-      - type: "nvvideoconvert"
-      - type: "capsfilter"
-        caps: "video/x-raw(memory:NVMM),format=I420"
-      - type: "nvv4l2h264enc"
-        bitrate: 4000000
-      - type: "h264parse"
-      - type: "rtspclientsink"
-        location: "rtsp://localhost:8554/stream"
+      - id: encoder
+        type: nvv4l2h264enc
+        bitrate: 3000000
+      - id: sink
+        type: rtspclientsink
+        location: rtsp://192.168.1.99:8554/de1
+        queue: {}
+
+event_handlers:
+  - id: smart_record
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: smart_record
+    label_filter: [car, person, truck]
+
+  - id: crop_objects
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: crop_object
+    save_dir: "/opt/vms_engine/dev/rec/objects"
+    capture_interval_sec: 5
 ```
 
-**Reference đầy đủ:** [`docs/configs/deepstream_default.yml`](docs/configs/deepstream_default.yml)
+**Lưu ý quan trọng:**
+
+- `leaky` là **integer** (`0`/`1`/`2`), không dùng string `"downstream"`
+- Tất cả enum fields (`smart_record`, `process_mode`, `compute_hw`, ...) đều là **integer**
+- YAML dùng `snake_case`; GStreamer property dùng `kebab-case` — parser tự map
 
 ---
 
@@ -349,7 +416,7 @@ outputs:
 
 ```bash
 # Debug với GDB (build phải là Debug hoặc RelWithDebInfo)
-gdb --args ./build/bin/vms_engine -c dev/config/my_pipeline.yml
+gdb --args ./build/bin/vms_engine -c dev/configs/my_pipeline.yml
 
 # Debug core dump
 gdb ./build/bin/vms_engine core
@@ -364,51 +431,54 @@ ulimits:
 
 ### GStreamer logs
 
-Tăng log level trong config:
+Tăng `gst_log_level` trong config:
 
 ```yaml
-application:
-  gst_log_level: "*:3,GST_ELEMENT_PADS:5"  # Format: category:level
-  gst_dot_file_dir: "/opt/lantana/dev/logs"
+pipeline:
+  gst_log_level: "*:3,nvinfer:4,GST_ELEMENT_PADS:5"
 ```
 
 Convert `.dot` pipeline graph sang ảnh:
 
 ```bash
-dot -Tpng dev/logs/pipeline_PLAYING.dot -o dev/logs/pipeline.png
+dot -Tpng dev/logs/pipeline_PLAYING.dot -o /tmp/pipeline.png
 ```
 
 ### Common Issues
 
-**Model not found:**
-```
-ERROR: Failed to load model at dev/models/.../model.plan
-```
-→ Kiểm tra path trong YAML config, đảm bảo file `.plan` tồn tại
+**GStreamer element not found** (`nvstreammux`, `nvinfer`, ...):
 
-**Batch size mismatch:**
 ```
-ERROR: Batch size in config (4) doesn't match TensorRT engine (1)
+→ Chạy: /opt/nvidia/deepstream/deepstream/user_additional_install.sh
 ```
-→ Rebuild TensorRT engine với batch size đúng hoặc update `batch_size` trong config
+
+**Model not found / engine load failed:**
+
+```
+→ Kiểm tra config_file path trong YAML, đảm bảo .onnx hoặc .engine tồn tại
+→ Batch size trong config phải khớp với TensorRT engine
+```
 
 **RTSP connect timeout:**
+
 ```
-ERROR: Could not connect to rtsp://192.168.1.x:554/...
+→ Test: ffplay rtsp://... hoặc VLC
+→ Check select_rtp_protocol: 4  (force TCP)
+→ Check rtsp_reconnect_interval, rtsp_reconnect_attempts
 ```
-→ Kiểm tra network, test bằng `ffplay rtsp://...` hoặc VLC, check `rtsp_reconnect_interval`
 
 **Out of GPU memory:**
-```
-ERROR: CUDA out of memory
-```
-→ Giảm `max_batch_size`, giảm số cameras, hoặc dùng model nhỏ hơn
 
-**GStreamer element not found:**
 ```
-WARNING: Could not load plugin 'nvstreammux'
+→ Giảm max_batch_size, giảm số cameras
+→ Dùng model nhỏ hơn hoặc giảm num_extra_surfaces
 ```
-→ Chạy `/opt/nvidia/deepstream/deepstream/user_additional_install.sh` trong container
+
+**`leaky` parse fail / queue không hoạt động đúng:**
+
+```
+→ Đảm bảo leaky là integer (2), không phải string ("downstream")
+```
 
 ---
 
@@ -416,51 +486,54 @@ WARNING: Could not load plugin 'nvstreammux'
 
 ```bash
 # === Image & Container ===
-docker build -t vms-engine-dev:latest .                   # Build dev image
-docker compose up -d                                       # Start container
-docker exec -it vms-engine-dev bash                       # Attach
-docker compose down                                        # Stop container
+docker build -t vms-engine-dev:latest .          # Build dev image
+docker compose up -d                              # Start container
+docker compose exec app bash                      # Attach
+docker compose down                               # Stop
 
-# === Build ===
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug     # Configure (first time)
-cmake --build build -j4                                    # Build
-cmake --build build -j4 --target vms_engine               # Build specific target
-rm -rf build/                                              # Clean
+# === Build (trong container) ===
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream   # Configure
+cmake --build build -- -j5                        # Build
+rm -rf build/                                     # Clean
 
 # === Run ===
-./build/bin/vms_engine -c dev/config/my_pipeline.yml
-./build/bin/vms_engine --help
+./build/bin/vms_engine -c dev/configs/my_pipeline.yml
 
 # === Debug ===
-gdb --args ./build/bin/vms_engine -c dev/config/my_pipeline.yml
+gdb --args ./build/bin/vms_engine -c dev/configs/my_pipeline.yml
+GST_DEBUG=3 ./build/bin/vms_engine -c dev/configs/my_pipeline.yml
 tail -f dev/logs/app.log
 dot -Tpng dev/logs/pipeline_PLAYING.dot -o /tmp/pipeline.png
 
 # === Dev Helpers ===
-cp docs/configs/deepstream_default.yml dev/config/test.yml      # Copy sample config
-find . -name "*.cpp" -o -name "*.hpp" | grep -v build | entr -c cmake --build build -j4  # Auto-rebuild
+cp docs/configs/deepstream_default.yml dev/configs/test.yml
+./scripts/format.sh                               # Format code
+./scripts/install-hooks.sh                        # Cài pre-commit hook
 
-# === Production Image ===
-docker build -f Dockerfile.image -t vms-engine:latest .   # Build prod image
+# === Production Image (từ host) ===
+docker build -f Dockerfile.image -t vms-engine:latest .
 
 # === Cleanup ===
-rm -f dev/logs/*.dot dev/logs/*.log                        # Clean logs
-rm -rf dev/rec/*                                           # Clean recordings
+rm -f dev/logs/*.dot dev/logs/*.log
+rm -rf dev/rec/*
 ```
 
 ---
 
 ## Related Services
 
-| Service                    | Path                            | Role                                              |
-| -------------------------- | ------------------------------- | ------------------------------------------------- |
-| **VMS FastAPI**            | `vms_app_fastapi/`              | Event processing, REST API, database              |
-| **Lantana Master**         | `lantana_prj/services/lantana_master/` | Control plane — quản lý pipelines       |
-| **Lantana Worker**         | `lantana_prj/services/lantana_worker/` | Generates pipeline configs, deploys models |
-| **GPU VMS Frontend**       | `gpu-vms/`                      | Electron app — UI management                      |
+| Service              | Path                                   | Role                                 |
+| -------------------- | -------------------------------------- | ------------------------------------ |
+| **VMS FastAPI**      | `vms_app_fastapi/`                     | Event processing, REST API, database |
+| **Lantana Master**   | `lantana_prj/services/lantana_master/` | Control plane — quản lý pipelines    |
+| **Lantana Worker**   | `lantana_prj/services/lantana_worker/` | Sinh pipeline configs, deploy models |
+| **GPU VMS Frontend** | `gpu-vms/`                             | Electron app — UI management         |
 
 ---
 
 **Architecture:** [`docs/architecture/ARCHITECTURE_BLUEPRINT.md`](docs/architecture/ARCHITECTURE_BLUEPRINT.md)  
+**DeepStream Deep-dives:** [`docs/architecture/deepstream/`](docs/architecture/deepstream/)  
 **Implementation Plans:** [`docs/plans/phase1_refactor/`](docs/plans/phase1_refactor/)  
 **Config Schema:** [`docs/configs/deepstream_default.yml`](docs/configs/deepstream_default.yml)
