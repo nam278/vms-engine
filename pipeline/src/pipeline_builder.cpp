@@ -28,17 +28,17 @@ bool PipelineBuilder::build(const engine::core::config::PipelineConfig& config,
     tails_.clear();
 
     // ── Create top-level GstPipeline ────────────────────────────────
-    const std::string pipeline_name =
-        config.pipeline.name.empty() ? "vms_engine_pipeline" : config.pipeline.name;
+    const std::string pipeline_id =
+        config.pipeline.id.empty() ? "vms_engine_pipeline" : config.pipeline.id;
 
     cleanup_pipeline();  // in case build() is called more than once
 
-    pipeline_ = gst_pipeline_new(pipeline_name.c_str());
+    pipeline_ = gst_pipeline_new(pipeline_id.c_str());
     if (!pipeline_) {
-        LOG_C("Build failed: gst_pipeline_new('{}') returned null", pipeline_name);
+        LOG_C("Build failed: gst_pipeline_new('{}') returned null", pipeline_id);
         return false;
     }
-    LOG_D("Created GstPipeline '{}'", pipeline_name);
+    LOG_D("Created GstPipeline '{}'", pipeline_id);
 
     try {
         // ── Phase 1: Source ─────────────────────────────────────────
@@ -88,11 +88,11 @@ bool PipelineBuilder::build(const engine::core::config::PipelineConfig& config,
         // ── DOT graph dump (if enabled) ─────────────────────────────
         if (!config.pipeline.dot_file_dir.empty()) {
             gst_debug_bin_to_dot_file(GST_BIN(pipeline_), GST_DEBUG_GRAPH_SHOW_ALL,
-                                      (pipeline_name + "_build_graph").c_str());
-            LOG_I("Pipeline DOT graph written to '{}_build_graph.dot'", pipeline_name);
+                                      (pipeline_id + "_build_graph").c_str());
+            LOG_I("Pipeline DOT graph written to '{}_build_graph.dot'", pipeline_id);
         }
 
-        LOG_I("Pipeline '{}' build complete", pipeline_name);
+        LOG_I("Pipeline '{}' build complete", pipeline_id);
         return true;
 
     } catch (const std::exception& e) {

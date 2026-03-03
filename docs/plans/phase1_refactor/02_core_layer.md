@@ -69,7 +69,7 @@ struct PipelineMetaConfig {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 struct CameraConfig {
-    std::string name;
+    std::string id;   ///< camera identifier, used as element name
     std::string uri;
 };
 
@@ -77,8 +77,9 @@ struct SourcesConfig {
     std::string type = "nvmultiurisrcbin";
 
     // Group 1 — nvmultiurisrcbin direct
-    std::string ip_address     = "localhost";
-    int port                   = 9000;       ///< 0 = disable REST API
+    // NOTE: ip_address and port are intentionally absent.
+    // Setting ip-address via g_object_set causes SIGSEGV in DeepStream 8.0.
+    // REST API stays disabled; element defaults to 0.0.0.0 internally.
     int max_batch_size         = 4;
     int mode                   = 0;          ///< 0=video, 1=audio
 
@@ -115,9 +116,7 @@ struct SourcesConfig {
     int smart_rec_default_duration = 20;
     int smart_rec_mode         = 0;          ///< 0=audio+video, 1=video, 2=audio
     int smart_rec_container    = 0;          ///< 0=mp4, 1=mkv
-
-    // Output queue (between sources_bin → processing_bin)
-    std::optional<QueueConfig> output_queue;
+    // NO output_queue — queue is per-element (queue: {} inline on each element)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -158,7 +157,7 @@ struct ProcessingElementConfig {
 
 struct ProcessingConfig {
     std::vector<ProcessingElementConfig> elements;
-    std::optional<QueueConfig> output_queue;
+    // NO output_queue — queue is per-element (queue: {} inline)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -191,7 +190,7 @@ struct VisualsElementConfig {
 struct VisualsConfig {
     bool enable                = true;
     std::vector<VisualsElementConfig> elements;
-    std::optional<QueueConfig> output_queue;
+    // NO output_queue — queue is per-element (queue: {} inline)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

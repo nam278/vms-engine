@@ -176,29 +176,30 @@ Each block builder is called once by `IPipelineBuilder::build()`.
 
 ```
 Phase 1 — SourceBlockBuilder:
-    nvmultiurisrcbin → [output_queue]
-    tail: src_tail (GstElement*)
+    GstBin "sources_bin":
+        nvmultiurisrcbin (no ip-address/port — DS8 SIGSEGV)
+    ghost src pad → tails_["src"] = sources_bin
 
 Phase 2 — ProcessingBlockBuilder:
-    [input from src_tail]
-    → [queue?] → nvinfer(PGIE) → [queue?] → nvtracker → [queue?] → nvinfer(SGIE)* → [queue?]
-    → nvdsanalytics?
-    → [output_queue]
-    tail: proc_tail
+    GstBin "processing_bin":
+        [queue?] → nvinfer(PGIE) → [queue?] → nvtracker → [queue?] → nvinfer(SGIE)* → ...
+        → nvdsanalytics?
+    ghost src pad → tails_["src"] = processing_bin
 
 Phase 3 — VisualsBlockBuilder:
-    [input from proc_tail]
-    → [queue?] → nvmultistreamtiler → [queue?] → nvdsosd → [queue?]
-    → [output_queue]
-    tail: vis_tail
+    GstBin "visuals_bin":
+        [queue?] → nvmultistreamtiler → [queue?] → nvdsosd
+    ghost src pad → tails_["src"] = visuals_bin
 
 Phase 4 — OutputsBlockBuilder:
     For each output in config.outputs:
-      [input from tee or proc_tail/vis_tail]
-      → [queue?] → nvv4l2h264enc/nvv4l2h265enc → [queue?] → sink
-      OR
-      → [queue?] → nvmsgconv → nvmsgbroker
-    Connects: demuxer for multi-sink outputs
+      GstBin "output_bin_{id}":
+        [queue?] → nvv4l2h264enc/nvv4l2h265enc → [queue?] → sink
+        OR [queue?] → nvmsgconv → nvmsgbroker
+    ghost src pad (if needed) per output bin
+
+Inter-bin linking: gst_element_link(bin_a, bin_b) — ghost pads handle the rest.
+No output_queue at block boundary — queue is per-element (queue: {} inline).
 ```
 
 ### `tails_` Map Pattern

@@ -9,35 +9,35 @@ bool RuntimeStreamManager::add_stream(const engine::core::config::CameraConfig& 
     std::lock_guard<std::mutex> lock(mtx_);
 
     if (!source_bin_) {
-        LOG_E("Source bin is null — cannot add stream '{}'", camera.name);
+        LOG_E("Source bin is null — cannot add stream '{}'", camera.id);
         return false;
     }
 
     // nvmultiurisrcbin uses REST API (POST /add) or sensor-id-list property.
     // For runtime add, emit "add-source" signal if supported by the element.
     // This is a stub — actual implementation depends on DeepStream version.
-    LOG_I("Adding stream '{}' (uri={})", camera.name, camera.uri);
+    LOG_I("Adding stream '{}' (uri={})", camera.id, camera.uri);
 
     // TODO: Implement via nvmultiurisrcbin REST API or GSignal
-    active_streams_.push_back(camera.name);
+    active_streams_.push_back(camera.id);
     return true;
 }
 
-bool RuntimeStreamManager::remove_stream(const std::string& camera_name) {
+bool RuntimeStreamManager::remove_stream(const std::string& camera_id) {
     std::lock_guard<std::mutex> lock(mtx_);
 
     if (!source_bin_) {
-        LOG_E("Source bin is null — cannot remove stream '{}'", camera_name);
+        LOG_E("Source bin is null — cannot remove stream '{}'", camera_id);
         return false;
     }
 
-    auto it = std::find(active_streams_.begin(), active_streams_.end(), camera_name);
+    auto it = std::find(active_streams_.begin(), active_streams_.end(), camera_id);
     if (it == active_streams_.end()) {
-        LOG_W("Stream '{}' not found in active list", camera_name);
+        LOG_W("Stream '{}' not found in active list", camera_id);
         return false;
     }
 
-    LOG_I("Removing stream '{}'", camera_name);
+    LOG_I("Removing stream '{}'", camera_id);
     // TODO: Implement via nvmultiurisrcbin REST API or GSignal
     active_streams_.erase(it);
     return true;

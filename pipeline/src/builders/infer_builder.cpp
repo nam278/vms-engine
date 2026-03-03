@@ -18,9 +18,12 @@ GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& conf
 
     g_object_set(G_OBJECT(elem.get()), "config-file-path", elem_cfg.config_file.c_str(),
                  "process-mode", static_cast<gint>(elem_cfg.process_mode), "batch-size",
-                 static_cast<gint>(elem_cfg.batch_size), "gie-unique-id",
-                 static_cast<gint>(elem_cfg.unique_id), "gpu-id",
+                 static_cast<gint>(elem_cfg.batch_size), "gpu-id",
                  static_cast<gint>(elem_cfg.gpu_id), nullptr);
+    if (elem_cfg.unique_id > 0) {
+        g_object_set(G_OBJECT(elem.get()), "gie-unique-id", static_cast<gint>(elem_cfg.unique_id),
+                     nullptr);
+    }
 
     if (elem_cfg.interval > 0) {
         g_object_set(G_OBJECT(elem.get()), "interval", static_cast<gint>(elem_cfg.interval),

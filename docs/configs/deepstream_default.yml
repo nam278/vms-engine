@@ -7,18 +7,14 @@
 #
 #   [sources_bin]
 #     nvmultiurisrcbin
-#                     → output_queue →
 #
-#   [processing_bin]
+#   [processing_bin]     ← ghost sink pad
 #     queue → nvinfer (pgie)
 #     queue → nvtracker
-#     queue → nvstreamdemux
-#                           → output_queue →
 #
-#   [visuals_bin]
+#   [visuals_bin]         ← ghost sink pad
 #     queue → nvmultistreamtiler
 #     queue → nvdsosd
-#                  → output_queue →
 #
 #   [outputs_bin]
 #     queue → nvv4l2h264enc → rtspclientsink
@@ -63,8 +59,8 @@ sources:
   type: nvmultiurisrcbin
 
   # --- Section 1: nvmultiurisrcbin direct properties ---
-  ip_address: "localhost" # REST API bind address ("0.0.0.0" for all interfaces)
-  port: 9000 # REST API port; 0 = disable REST API
+  # NOTE: ip_address and port are NOT configured — DS8 ip-address property causes SIGSEGV.
+  # REST API is disabled by default; element uses 0.0.0.0:9000 internally.
   max_batch_size: 4 # max number of sources to mux (NOT batch_size)
   mode: 0 # 0=video-only  1=audio-only
 
@@ -92,13 +88,13 @@ sources:
   sync_inputs: false
 
   cameras:
-    - name: camera-ah
+    - id: camera-ah
       uri: rtsp://192.168.1.192:18554/kho
-    - name: camera-hanh-trinh
+    - id: camera-hanh-trinh
       uri: rtsp://192.168.1.192:18554/traffic1
-    - name: djuong-5
+    - id: djuong-5
       uri: rtsp://192.168.1.192:18554/test_video
-    - name: san
+    - id: san
       uri: rtsp://192.168.1.192:18554/traffic2
 
   # Smart Record — flat integer enum properties on nvmultiurisrcbin
@@ -110,11 +106,6 @@ sources:
   smart_rec_default_duration: 20 # post-event recording length in seconds
   smart_rec_mode: 0 # 0=audio+video  1=video-only  2=audio-only
   smart_rec_container: 0 # 0=mp4  1=mkv
-
-  # Queue at the EXIT of sources_bin → thread boundary before processing_bin
-  output_queue:
-    max_size_buffers: 5
-    leaky: 2 # 2=downstream — drop oldest frame when full → stay realtime
 
 # =============================================================================
 # STAGE 2 — Processing Block  (→ processing_bin)
@@ -172,10 +163,6 @@ processing:
     #   type: nvstreamdemux
     #   queue: {}                 # → queue before demuxer
 
-  # Queue at the EXIT of processing_bin → thread boundary before visuals_bin
-  output_queue:
-    max_size_buffers: 10
-
 # =============================================================================
 # STAGE 3 — Visuals Block  (→ visuals_bin)
 # Wraps: tiler + osd
@@ -200,9 +187,6 @@ visuals:
       display_text: false
       display_mask: false
       queue: {} # → queue before osd
-
-  # Queue at the EXIT of visuals_bin → thread boundary before outputs_bin
-  output_queue: {}
 
 # =============================================================================
 # STAGE 4 — Outputs Block  (→ outputs_bin)

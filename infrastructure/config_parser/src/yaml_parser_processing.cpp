@@ -59,12 +59,6 @@ void YamlConfigParser::parse_processing(const void* node_ptr,
         }
     }
 
-    // ── output_queue ──
-    if (node["output_queue"]) {
-        YAML::Node oq_node = node["output_queue"];
-        out.output_queue = resolve_queue(static_cast<const void*>(&oq_node), defaults);
-    }
-
     LOG_D("Parsed processing: {} elements", out.elements.size());
 }
 

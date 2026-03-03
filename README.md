@@ -40,23 +40,30 @@ VMS Engine xử lý video realtime từ nhiều camera (RTSP, file, URI) với A
 ### Pipeline Topology
 
 ```
-nvmultiurisrcbin (decode + mux nhiều RTSP → batched frames)
-  │
-  ▼
-queue → nvinfer (pgie — primary detection)
-  ▼
-queue → nvtracker
-  ▼
-[queue → nvinfer (sgie — secondary, optional)]
-  ▼
-[queue → nvdsanalytics (ROI/line crossing, optional)]
-  ▼
-nvmultistreamtiler → nvdsosd
-  ▼
-nvvideoconvert → nvv4l2h264enc → h264parse → rtspclientsink
+[sources_bin]        nvmultiurisrcbin (decode + mux → batched frames)
+     │                 ghost src pad
+     │
+     ▼
+[processing_bin]     queue→nvinfer(pgie)→queue→nvtracker
+                     [queue→nvinfer(sgie)] (optional)
+     │                 ghost sink+src pads
+     │
+     ▼
+[visuals_bin]        queue→nvmultistreamtiler→queue→nvdsosd
+                     (optional — skip if visuals.enable: false)
+     │                 ghost sink+src pads
+     │
+     ▼
+[output_bin_{id}]    queue→nvvideoconvert→capsfilter→
+                     nvv4l2h264enc→h264parse→queue→rtspclientsink
+                     ghost sink pad
 ```
 
+Mỗi stage là một `GstBin` độc lập với ghost pads. `tails_["src"]` lưu bin pointer của stage hiện tại để link với stage tiếp theo.
+
 ### Builder System (5 Phases)
+
+Mỗi phase tạo một **GstBin** với ghost pads, sau đó link bin đó với bin của phase trước via `gst_element_link()`.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -77,13 +84,14 @@ nvvideoconvert → nvv4l2h264enc → h264parse → rtspclientsink
 ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐
 │ Source   │►│Processing│►│ Visuals  │►│ Outputs  │►│ Standalone   │
 │ Phase 1  │ │ Phase 2  │ │ Phase 3  │ │ Phase 4  │ │ Phase 5      │
-│nvmulti.. │ │nvinfer   │ │nvtiler   │ │encoders  │ │smart record  │
-│urisrcbin │ │nvtracker │ │nvdsosd   │ │sinks     │ │msgconv/broker│
-└──────────┘ │nvinfer   │ └──────────┘ └──────────┘ └──────────────┘
-             │(sgie)    │
-             │nvanalytics│
+│sources_  │ │processing│ │visuals_  │ │output_   │ │smart record  │
+│bin (Bin) │ │_bin (Bin)│ │bin (Bin) │ │bin_{id}  │ │msgconv/broker│
+└──────────┘ │nvinfer   │ └──────────┘ │  (Bin)   │ └──────────────┘
+             │nvtracker │              └──────────┘
              └──────────┘
 ```
+
+`tails_["src"]` luôn trỏ đến bin mới nhất. Bins link với nhau qua ghost pads.
 
 ### Layer Dependency
 
@@ -330,16 +338,16 @@ queue_defaults:
 
 sources:
   type: nvmultiurisrcbin
+  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
   max_batch_size: 4
+  mode: 0 # 0=video  1=audio
   width: 1920
   height: 1080
   cameras:
-    - name: camera-01
+    - id: camera-01
       uri: rtsp://192.168.1.99:8554/stream
   smart_record: 2 # 0=off  1=cloud  2=multi(cloud+local)
   smart_rec_dir_path: "/opt/vms_engine/dev/rec"
-  output_queue:
-    leaky: 2
 
 processing:
   elements:

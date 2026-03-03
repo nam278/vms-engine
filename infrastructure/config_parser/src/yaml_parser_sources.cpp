@@ -20,8 +20,6 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
 
     // ── Section 1: nvmultiurisrcbin direct ──
     out.type = yaml_str(node, "type", "nvmultiurisrcbin");
-    out.ip_address = yaml_str(node, "ip_address", "localhost");
-    out.port = yaml_int(node, "port", 9000);
     out.max_batch_size = yaml_int(node, "max_batch_size", 4);
     out.mode = yaml_int(node, "mode", 0);
 
@@ -52,7 +50,7 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
     if (node["cameras"] && node["cameras"].IsSequence()) {
         for (const auto& cam_node : node["cameras"]) {
             engine::core::config::CameraConfig cam;
-            cam.name = yaml_str(cam_node, "name");
+            cam.id = yaml_str(cam_node, "id");
             cam.uri = yaml_str(cam_node, "uri");
             out.cameras.push_back(std::move(cam));
         }
@@ -67,12 +65,6 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
     out.smart_rec_default_duration = yaml_int(node, "smart_rec_default_duration", 20);
     out.smart_rec_mode = yaml_int(node, "smart_rec_mode", 0);
     out.smart_rec_container = yaml_int(node, "smart_rec_container", 0);
-
-    // ── Output queue ──
-    if (node["output_queue"]) {
-        YAML::Node oq_node = node["output_queue"];
-        out.output_queue = resolve_queue(static_cast<const void*>(&oq_node), defaults);
-    }
 }
 
 }  // namespace engine::infrastructure::config_parser

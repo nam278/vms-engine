@@ -54,14 +54,14 @@ Thêm `queue: {}` vào bất kỳ element nào để auto-insert GstQueue với 
 # =============================================================================
 # VMS Engine — DeepStream Pipeline Configuration
 # =============================================================================
-# PIPELINE TOPOLOGY (left-to-right):
-#   [sources_bin] → output_queue →
-#   [processing_bin] → output_queue →
-#   [visuals_bin] → output_queue →
-#   [outputs_bin]
+# PIPELINE TOPOLOGY (left-to-right, each stage = GstBin with ghost pads):
+#   [sources_bin] →
+#   [processing_bin] →
+#   [visuals_bin] →
+#   [output_bin_{id}]
 #
 # QUEUE RULES:
-#   queue: {}         → insert queue, inherit queue_defaults
+#   queue: {}         → insert queue before this element (inside its bin)
 #   queue: { ... }    → insert queue, override specific fields
 #   (no queue field)  → no queue before this element
 # =============================================================================
@@ -96,8 +96,8 @@ sources:
   type: nvmultiurisrcbin
 
   # Group 1 — nvmultiurisrcbin direct
-  ip_address: "localhost"
-  port: 9000 # 0 = disable REST API
+  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
+  # REST API is disabled by default; element uses 0.0.0.0 internally.
   max_batch_size: 4
   mode: 0 # 0=video  1=audio
 
@@ -124,9 +124,9 @@ sources:
   sync_inputs: false
 
   cameras:
-    - name: camera-01
+    - id: camera-01
       uri: rtsp://192.168.1.99:8554/view_cam_camera-01
-    - name: camera-02
+    - id: camera-02
       uri: rtsp://192.168.1.99:8554/view_cam_camera-02
 
   # Smart Record — flat properties on nvmultiurisrcbin
@@ -137,10 +137,6 @@ sources:
   smart_rec_default_duration: 20
   smart_rec_mode: 0 # 0=audio+video  1=video  2=audio
   smart_rec_container: 0 # 0=mp4  1=mkv
-
-  output_queue:
-    max_size_buffers: 5
-    leaky: 2
 
 # =============================================================================
 # STAGE 2 — Processing Block (→ processing_bin)
@@ -170,9 +166,6 @@ processing:
       user_meta_pool_size: 512
       queue: {}
 
-  output_queue:
-    max_size_buffers: 10
-
 # =============================================================================
 # STAGE 3 — Visuals Block (→ visuals_bin)
 # =============================================================================
@@ -196,8 +189,6 @@ visuals:
       display_text: false
       display_mask: false
       queue: {}
-
-  output_queue: {}
 
 # =============================================================================
 # STAGE 4 — Outputs Block (→ outputs_bin)
@@ -323,14 +314,11 @@ YamlConfigParser::parse(path)
   ├── parse_queue_defaults()      → PipelineConfig.queue_defaults
   ├── parse_sources()             → PipelineConfig.sources
   │     ├── cameras[]
-  │     ├── smart_record flat props
-  │     └── output_queue
+  │     └── smart_record flat props
   ├── parse_processing()          → PipelineConfig.processing
-  │     ├── elements[]            (nvinfer, nvtracker, ...)
-  │     └── output_queue
+  │     └── elements[]            (nvinfer, nvtracker, ...)
   ├── parse_visuals()             → PipelineConfig.visuals
-  │     ├── elements[]            (tiler, osd, ...)
-  │     └── output_queue
+  │     └── elements[]            (tiler, osd, ...)
   ├── parse_outputs()             → PipelineConfig.outputs (vector)
   │     └── per output: elements[]
   └── parse_event_handlers()      → PipelineConfig.event_handlers (vector)
@@ -370,7 +358,7 @@ Config hỗ trợ `${}` syntax cho env vars (thực hiện trong parser trước
 ```yaml
 sources:
   cameras:
-    - name: camera-01
+    - id: camera-01
       uri: "${RTSP_URI_CAM01}" # Substituted từ env
 ```
 

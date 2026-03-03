@@ -208,18 +208,17 @@ queue_defaults:
 
 sources:
   type: nvmultiurisrcbin
+  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
   max_batch_size: 4
+  mode: 0 # 0=video-only  1=audio-only
   gpu_id: 0
   width: 1920
   height: 1080
   cameras:
-    - name: camera-01
+    - id: camera-01
       uri: "rtsp://192.168.1.100:554/stream"
   smart_record: 2 # int: 0=disabled, 1=cloud-only, 2=multi
   smart_rec_dir_path: "/opt/engine/data/rec"
-  output_queue:
-    max_size_buffers: 5
-    leaky: 2
 
 processing:
   elements:
@@ -234,7 +233,6 @@ processing:
       type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
       queue: {}
-  output_queue: {}
 
 event_handlers:
   - id: smart_record
@@ -257,12 +255,12 @@ Properties in 3 groups:
 
 **Group 1 — nvmultiurisrcbin direct:**
 
-| YAML key         | GStreamer        | Type   | Notes                                          |
-| ---------------- | ---------------- | ------ | ---------------------------------------------- |
-| `ip_address`     | `ip-address`     | string | REST API bind address (`localhost`, `0.0.0.0`) |
-| `port`           | `port`           | int    | REST API port; **0** = disable                 |
-| `max_batch_size` | `max-batch-size` | int    | max number of streams to mux (NOT batch_size)  |
-| `mode`           | `mode`           | int    | **0**=video-only, **1**=audio-only             |
+> ⚠️ **DS8 Note**: `ip-address` and `port` are **NOT applied** — setting `ip-address` via `g_object_set` causes SIGSEGV in DeepStream 8.0. REST API is disabled by default; the element binds to `0.0.0.0` internally. Do not add these properties back.
+
+| YAML key         | GStreamer        | Type | Notes                                         |
+| ---------------- | ---------------- | ---- | --------------------------------------------- |
+| `max_batch_size` | `max-batch-size` | int  | max number of streams to mux (NOT batch_size) |
+| `mode`           | `mode`           | int  | **0**=video-only, **1**=audio-only            |
 
 **Group 2 — per-source nvurisrcbin pass-through:**
 

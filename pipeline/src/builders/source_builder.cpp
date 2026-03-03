@@ -2,6 +2,8 @@
 #include "engine/core/utils/gst_utils.hpp"
 #include "engine/core/utils/logger.hpp"
 
+#include <sstream>
+
 namespace engine::pipeline::builders {
 
 SourceBuilder::SourceBuilder(GstElement* bin) : bin_(bin) {}
@@ -18,10 +20,10 @@ GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& con
     }
 
     // Group 1 — nvmultiurisrcbin direct
-    g_object_set(G_OBJECT(elem.get()), "ip-address", src.ip_address.c_str(), "port",
-                 static_cast<gint>(src.port), "max-batch-size",
-                 static_cast<gint>(src.max_batch_size), "mode", static_cast<gint>(src.mode),
-                 nullptr);
+    // NOTE: ip-address and port are intentionally NOT set — DS8's ip-address setter
+    // triggers SIGSEGV regardless of timing. REST API stays disabled by default.
+    g_object_set(G_OBJECT(elem.get()), "max-batch-size", static_cast<gint>(src.max_batch_size),
+                 "mode", static_cast<gint>(src.mode), nullptr);
 
     // Group 2 — nvurisrcbin per-source passthrough
     g_object_set(G_OBJECT(elem.get()), "gpu-id", static_cast<gint>(src.gpu_id),
@@ -53,13 +55,27 @@ GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& con
                      static_cast<gint>(src.smart_rec_container), nullptr);
     }
 
+    // uri-list: comma-separated URIs from cameras[] config.
+    // Must be set before element reaches READY state (before gst_bin_add / state change).
+    if (!src.cameras.empty()) {
+        std::ostringstream oss;
+        for (std::size_t i = 0; i < src.cameras.size(); ++i) {
+            if (i > 0)
+                oss << ',';
+            oss << src.cameras[i].uri;
+        }
+        const std::string uri_list = oss.str();
+        g_object_set(G_OBJECT(elem.get()), "uri-list", uri_list.c_str(), nullptr);
+        LOG_D("nvmultiurisrcbin uri-list: {}", uri_list);
+    }
+
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
         LOG_E("Failed to add nvmultiurisrcbin '{}' to bin", id);
         return nullptr;
     }
 
-    LOG_I("Built nvmultiurisrcbin '{}' (batch={}, {}x{})", id, src.max_batch_size, src.width,
-          src.height);
+    LOG_I("Built nvmultiurisrcbin '{}' (batch={}, {}x{}, {} cameras)", id, src.max_batch_size,
+          src.width, src.height, src.cameras.size());
     return elem.release();
 }
 

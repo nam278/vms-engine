@@ -853,14 +853,16 @@ protected:
 
 ### tails\_ Map — Phase Endpoint Tracking
 
-The `tails_` map tracks the **last element** of each phase, allowing the next phase to know where to connect:
+The `tails_` map tracks the **last GstBin** of each phase, allowing the next phase to know where to connect.
+Each block builder wraps its elements in a `GstBin` with ghost pads. The bin pointer is stored under the key `"src"`:
 
 ```cpp
-std::map<std::string, GstElement*> tails_;
+std::map<std::string, GstElement*> tails_;  // value is GstBin* (cast to GstElement*)
 
-// After SourceBuilder:   tails_["sources_bin"] = muxer_element
-// After ProcessingBuilder: tails_["processing_bin"] = last_processor
-// After VisualsBuilder:  tails_["visuals_bin"] = osd_element
+// After SourceBlockBuilder:   tails_["src"] = sources_bin    (GstBin*)
+// After ProcessingBlockBuilder: tails_["src"] = processing_bin (GstBin*)
+// After VisualsBlockBuilder:  tails_["src"] = visuals_bin   (GstBin*)
+// Each bin exposes ghost "src" pad → gst_element_link(bin_a, bin_b) works naturally
 ```
 
 ### PipelineBuilder — Orchestrator
@@ -1069,8 +1071,8 @@ sources:
   type: nvmultiurisrcbin
 
   # Section 1 — nvmultiurisrcbin direct
-  ip_address: "localhost" # REST API bind addr; "0.0.0.0" = all interfaces
-  port: 9000 # REST port; 0 = disable
+  # NOTE: ip_address and port are NOT configured — setting ip-address via
+  # g_object_set causes SIGSEGV in DeepStream 8.0. REST API stays disabled.
   max_batch_size: 4 # max sources to mux (NOT batch_size)
   mode: 0 # 0=video-only  1=audio-only
 
@@ -1096,9 +1098,9 @@ sources:
   sync_inputs: false
 
   cameras:
-    - name: camera-entrance
+    - id: camera-entrance
       uri: rtsp://192.168.1.100:554/stream1
-    - name: camera-parking
+    - id: camera-parking
       uri: rtsp://192.168.1.101:554/stream1
 
   # Smart Record — flat integer enum properties (NOT a sub-object)
@@ -1110,23 +1112,19 @@ sources:
   smart_rec_default_duration: 20
   smart_rec_mode: 0 # 0=audio+video  1=video-only  2=audio-only
   smart_rec_container: 0 # 0=mp4  1=mkv
-
-  output_queue: # queue at EXIT of sources_bin
-    max_size_buffers: 5
-    leaky: 2 # 0=none, 1=upstream, 2=downstream (drop oldest)
 ```
 
 ```cpp
 struct CameraConfig {
-    std::string name;
+    std::string id;   ///< camera identifier, used as element name
     std::string uri;
 };
 
 struct SourcesConfig {
     // Section 1 — nvmultiurisrcbin direct
     std::string type          = "nvmultiurisrcbin";
-    std::string ip_address    = "localhost";
-    int  port                 = 9000;     // 0 = disable REST API
+    // NOTE: ip_address and port deliberately absent — setting ip-address via
+    // g_object_set causes SIGSEGV in DeepStream 8.0. Omit entirely.
     int  max_batch_size       = 1;        // NOT batch_size
     int  mode                 = 0;        // 0=video 1=audio
     // Section 2 — nvurisrcbin per-source
@@ -1159,7 +1157,7 @@ struct SourcesConfig {
     int  smart_rec_mode       = 0;        // 0=AV 1=video 2=audio
     int  smart_rec_container  = 0;        // 0=mp4 1=mkv
 
-    std::optional<QueueConfig> output_queue;
+    // NO output_queue — queue is per-element (queue: {} inline on each element)
 };
 ```
 
@@ -1209,9 +1207,6 @@ processing:
     - id: demuxer
       type: nvstreamdemux
       queue: {} # → GstQueue before demuxer
-
-  output_queue: # queue at EXIT of processing_bin
-    max_size_buffers: 10
 ```
 
 ```cpp
@@ -1248,7 +1243,7 @@ struct ProcessingElementConfig {
 
 struct ProcessingConfig {
     std::vector<ProcessingElementConfig> elements;
-    std::optional<QueueConfig> output_queue;
+    // NO output_queue — queue is per-element (queue: {} inline)
 };
 ```
 

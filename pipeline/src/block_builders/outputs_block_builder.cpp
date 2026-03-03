@@ -5,14 +5,29 @@
 #include "engine/pipeline/builders/msgbroker_builder.hpp"
 #include "engine/pipeline/builders/demuxer_builder.hpp"
 #include "engine/pipeline/builders/queue_builder.hpp"
-#include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/gst_utils.hpp"
+#include "engine/core/utils/logger.hpp"
 
 namespace engine::pipeline::block_builders {
 
-OutputsBlockBuilder::OutputsBlockBuilder(GstElement* bin,
+// ── Helper: expose a ghost pad on a bin pointing at target_elem's pad ───────────────────────────
+static bool expose_ghost(GstElement* bin, GstElement* target_elem, const char* pad_name,
+                         const char* ghost_name) {
+    engine::core::utils::GstPadPtr pad(gst_element_get_static_pad(target_elem, pad_name),
+                                       gst_object_unref);
+    if (!pad) {
+        LOG_E("expose_ghost: no '{}' pad on '{}'", pad_name, GST_ELEMENT_NAME(target_elem));
+        return false;
+    }
+    GstPad* ghost = gst_ghost_pad_new(ghost_name, pad.get());
+    gst_pad_set_active(ghost, TRUE);
+    gst_element_add_pad(bin, ghost);
+    return true;
+}
+
+OutputsBlockBuilder::OutputsBlockBuilder(GstElement* pipeline,
                                          std::unordered_map<std::string, GstElement*>& tails)
-    : bin_(bin), tails_(tails) {}
+    : pipeline_(pipeline), tails_(tails) {}
 
 bool OutputsBlockBuilder::build(const engine::core::config::PipelineConfig& config) {
     if (config.outputs.empty()) {
@@ -20,18 +35,18 @@ bool OutputsBlockBuilder::build(const engine::core::config::PipelineConfig& conf
         return true;
     }
 
-    // Determine input point — prefer "vis" if visuals are enabled
-    GstElement* input = nullptr;
+    // Determine upstream input bin — prefer "vis" if visuals are enabled
+    GstElement* upstream = nullptr;
     if (tails_.count("vis")) {
-        input = tails_["vis"];
+        upstream = tails_["vis"];
     } else if (tails_.count("proc")) {
-        input = tails_["proc"];
+        upstream = tails_["proc"];
     } else {
         LOG_E("OutputsBlockBuilder: no input tail available");
         return false;
     }
 
-    // For multiple outputs, use a tee element
+    // For multiple outputs, insert a tee (in pipeline_ directly)
     GstElement* tee = nullptr;
     if (config.outputs.size() > 1) {
         auto tee_guard = engine::core::utils::make_gst_element("tee", "output_tee");
@@ -39,25 +54,23 @@ bool OutputsBlockBuilder::build(const engine::core::config::PipelineConfig& conf
             LOG_E("OutputsBlockBuilder: failed to create tee");
             return false;
         }
-        if (!gst_bin_add(GST_BIN(bin_), tee_guard.get())) {
-            LOG_E("OutputsBlockBuilder: failed to add tee to bin");
+        if (!gst_bin_add(GST_BIN(pipeline_), tee_guard.get())) {
+            LOG_E("OutputsBlockBuilder: failed to add tee to pipeline");
             return false;
         }
         tee = tee_guard.release();
 
-        if (!gst_element_link(input, tee)) {
-            LOG_E("OutputsBlockBuilder: failed to link input → tee");
+        if (!gst_element_link(upstream, tee)) {
+            LOG_E("OutputsBlockBuilder: failed to link upstream → tee");
             return false;
         }
-        input = tee;
     }
 
     for (int i = 0; i < static_cast<int>(config.outputs.size()); ++i) {
-        GstElement* branch_input = input;
-
-        // If using tee, create a queue for each branch
+        // When tee is present, insert a per-branch queue in pipeline_ before the output_bin
+        GstElement* branch_input = tee ? nullptr : upstream;
         if (tee) {
-            builders::QueueBuilder q_builder(bin_);
+            builders::QueueBuilder q_builder(pipeline_);
             engine::core::config::QueueConfig default_q;
             std::string q_name = config.outputs[i].id + "_tee_queue";
             GstElement* q = q_builder.build(default_q, q_name);
@@ -73,8 +86,15 @@ bool OutputsBlockBuilder::build(const engine::core::config::PipelineConfig& conf
             branch_input = q;
         }
 
-        if (!build_output(config, i, branch_input)) {
-            LOG_E("OutputsBlockBuilder: failed to build output '{}'", config.outputs[i].id);
+        // Build per-output GstBin and link
+        GstElement* out_bin = build_output_bin(config, i);
+        if (!out_bin) {
+            LOG_E("OutputsBlockBuilder: failed to build output_bin for '{}'", config.outputs[i].id);
+            return false;
+        }
+        if (!gst_element_link(branch_input, out_bin)) {
+            LOG_E("OutputsBlockBuilder: failed to link upstream → output_bin_{}",
+                  config.outputs[i].id);
             return false;
         }
     }
@@ -83,26 +103,40 @@ bool OutputsBlockBuilder::build(const engine::core::config::PipelineConfig& conf
     return true;
 }
 
-bool OutputsBlockBuilder::build_output(const engine::core::config::PipelineConfig& config,
-                                       int output_index, GstElement* input) {
+GstElement* OutputsBlockBuilder::build_output_bin(
+    const engine::core::config::PipelineConfig& config, int output_index) {
     const auto& output_cfg = config.outputs[output_index];
-    GstElement* prev = input;
-    builders::QueueBuilder q_builder(bin_);
+
+    // ── Create per-output GstBin ─────────────────────────────────────────────────────────────────
+    std::string bin_name = "output_bin_" + output_cfg.id;
+    GstElement* out_bin = gst_bin_new(bin_name.c_str());
+    if (!out_bin) {
+        LOG_E("OutputsBlockBuilder: failed to create '{}'", bin_name);
+        return nullptr;
+    }
+
+    GstElement* first_elem = nullptr;  // ← ghost sink target
+    GstElement* prev = nullptr;        // running link tail inside out_bin
+    builders::QueueBuilder q_builder(out_bin);
 
     for (int j = 0; j < static_cast<int>(output_cfg.elements.size()); ++j) {
         const auto& elem_cfg = output_cfg.elements[j];
 
-        // Insert inline queue if configured
+        // Insert queue BEFORE element (if queue: {} configured on this element)
         if (elem_cfg.has_queue) {
             std::string q_name = elem_cfg.id + "_queue";
             GstElement* q = q_builder.build(elem_cfg.queue, q_name);
             if (!q) {
                 LOG_E("OutputsBlockBuilder: failed to build queue for '{}'", elem_cfg.id);
-                return false;
+                gst_object_unref(out_bin);
+                return nullptr;
             }
-            if (!gst_element_link(prev, q)) {
-                LOG_E("OutputsBlockBuilder: link failed: {} → {}", GST_ELEMENT_NAME(prev), q_name);
-                return false;
+            if (!first_elem)
+                first_elem = q;
+            if (prev && !gst_element_link(prev, q)) {
+                LOG_E("OutputsBlockBuilder: link failed {} → {}", GST_ELEMENT_NAME(prev), q_name);
+                gst_object_unref(out_bin);
+                return nullptr;
             }
             prev = q;
         }
@@ -110,28 +144,32 @@ bool OutputsBlockBuilder::build_output(const engine::core::config::PipelineConfi
         GstElement* elem = nullptr;
 
         if (elem_cfg.type == "nvv4l2h264enc" || elem_cfg.type == "nvv4l2h265enc") {
-            builders::EncoderBuilder builder(bin_);
+            builders::EncoderBuilder builder(out_bin);
             elem = builder.build(config, output_index * 100 + j);
         } else if (elem_cfg.type == "rtspclientsink" || elem_cfg.type == "fakesink" ||
                    elem_cfg.type == "filesink") {
-            builders::SinkBuilder builder(bin_);
+            builders::SinkBuilder builder(out_bin);
             elem = builder.build(config, output_index * 100 + j);
         } else if (elem_cfg.type == "nvmsgconv") {
-            builders::MsgconvBuilder builder(bin_);
+            builders::MsgconvBuilder builder(out_bin);
             elem = builder.build(config, output_index * 100 + j);
         } else if (elem_cfg.type == "nvmsgbroker") {
-            builders::MsgbrokerBuilder builder(bin_);
+            builders::MsgbrokerBuilder builder(out_bin);
             elem = builder.build(config, output_index * 100 + j);
         } else {
             // Generic element — try factory make
             auto guard =
                 engine::core::utils::make_gst_element(elem_cfg.type.c_str(), elem_cfg.id.c_str());
             if (!guard) {
-                LOG_E("OutputsBlockBuilder: unknown element type '{}'", elem_cfg.type);
-                return false;
+                LOG_E("OutputsBlockBuilder: unknown element type '{}' for '{}'", elem_cfg.type,
+                      elem_cfg.id);
+                gst_object_unref(out_bin);
+                return nullptr;
             }
-            if (!gst_bin_add(GST_BIN(bin_), guard.get())) {
-                return false;
+            if (!gst_bin_add(GST_BIN(out_bin), guard.get())) {
+                LOG_E("OutputsBlockBuilder: failed to add '{}' to {}", elem_cfg.id, bin_name);
+                gst_object_unref(out_bin);
+                return nullptr;
             }
             elem = guard.release();
         }
@@ -139,18 +177,43 @@ bool OutputsBlockBuilder::build_output(const engine::core::config::PipelineConfi
         if (!elem) {
             LOG_E("OutputsBlockBuilder: failed to build '{}' (type={})", elem_cfg.id,
                   elem_cfg.type);
-            return false;
+            gst_object_unref(out_bin);
+            return nullptr;
         }
-
-        if (!gst_element_link(prev, elem)) {
-            LOG_E("OutputsBlockBuilder: link failed: {} → {}", GST_ELEMENT_NAME(prev),
+        if (!first_elem)
+            first_elem = elem;
+        if (prev && !gst_element_link(prev, elem)) {
+            LOG_E("OutputsBlockBuilder: link failed {} → {}", GST_ELEMENT_NAME(prev),
                   GST_ELEMENT_NAME(elem));
-            return false;
+            gst_object_unref(out_bin);
+            return nullptr;
         }
         prev = elem;
     }
 
-    return true;
+    if (!first_elem) {
+        LOG_E("OutputsBlockBuilder: empty element chain in '{}'", bin_name);
+        gst_object_unref(out_bin);
+        return nullptr;
+    }
+
+    // ── Expose ghost sink (entry queue or first element) ─────────────────────────────────────────
+    if (!expose_ghost(out_bin, first_elem, "sink", "sink")) {
+        gst_object_unref(out_bin);
+        return nullptr;
+    }
+
+    // ── Add out_bin to pipeline
+    // ───────────────────────────────────────────────────────────────────
+    if (!gst_bin_add(GST_BIN(pipeline_), out_bin)) {
+        LOG_E("OutputsBlockBuilder: failed to add '{}' to pipeline", bin_name);
+        gst_object_unref(out_bin);
+        return nullptr;
+    }
+
+    LOG_I("OutputsBlockBuilder: built '{}' (first='{}', last='{}')", bin_name,
+          GST_ELEMENT_NAME(first_elem), GST_ELEMENT_NAME(prev));
+    return out_bin;  // pipeline_ owns it
 }
 
 }  // namespace engine::pipeline::block_builders

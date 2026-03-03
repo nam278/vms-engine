@@ -170,9 +170,9 @@ struct PipelineConfig {
     PipelineMetaConfig  pipeline;       // id, name, log_level, gst_log_level, dot_file_dir, log_file
     QueueConfig         queue_defaults; // default for every queue: {}
 
-    SourcesConfig       sources;        // nvmultiurisrcbin + cameras[] + smart_record + output_queue
-    ProcessingConfig    processing;     // elements[] (nvinfer, nvtracker, ...) + output_queue
-    VisualsConfig       visuals;        // enable + elements[] (tiler, osd) + output_queue
+    SourcesConfig       sources;        // nvmultiurisrcbin + cameras[] + smart_record
+    ProcessingConfig    processing;     // elements[] (nvinfer, nvtracker, ...)
+    VisualsConfig       visuals;        // enable + elements[] (tiler, osd)
     std::vector<OutputConfig>       outputs;        // each has id, type, elements[]
     std::vector<EventHandlerConfig> event_handlers; // pad probes (smart_record, crop_objects, ...)
 };
@@ -287,18 +287,18 @@ queue_defaults:
 
 sources:
   type: nvmultiurisrcbin
+  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
+  # REST API stays disabled; element defaults to 0.0.0.0 internally.
   max_batch_size: 4
+  mode: 0 # 0=video-only  1=audio-only
   gpu_id: 0
   width: 1920
   height: 1080
   cameras:
-    - name: camera-01
+    - id: camera-01
       uri: "rtsp://host/stream"
   smart_record: 2 # int enum, NOT string
   smart_rec_dir_path: "/opt/engine/data/rec"
-  output_queue:
-    max_size_buffers: 5
-    leaky: 2
 
 processing:
   elements:
@@ -317,7 +317,6 @@ processing:
       tracker_height: 640
       compute_hw: 1 # int: 0=default, 1=GPU, 2=VIC
       queue: {}
-  output_queue: {}
 
 visuals:
   enable: true
@@ -332,7 +331,6 @@ visuals:
       process_mode: 1
       display_bbox: true
       queue: {}
-  output_queue: {}
 
 outputs:
   - id: rtsp_out
@@ -367,12 +365,17 @@ When calling `g_object_set`, use the GStreamer **kebab-case** property name as a
 
 ### nvmultiurisrcbin
 
+> ⚠️ **DS8 SIGSEGV**: `ip-address` and `port` are **NOT set** — setting `ip-address` via `g_object_set` crashes DeepStream 8.0. Omit them entirely; the element defaults to `0.0.0.0` with REST API disabled.
+
 ```cpp
+// Group 1 — nvmultiurisrcbin direct (ip-address/port intentionally omitted — DS8 SIGSEGV)
 g_object_set(G_OBJECT(src_bin),
-    "ip-address",               (const gchar*) cfg.ip_address.c_str(),
-    "port",                     (gint)  cfg.port,                 // 0=disable REST
     "max-batch-size",           (gint)  cfg.max_batch_size,
     "mode",                     (gint)  cfg.mode,                 // 0=video, 1=audio
+    nullptr);
+
+// Group 2 — nvurisrcbin per-source passthrough
+g_object_set(G_OBJECT(src_bin),
     "gpu-id",                   (gint)  cfg.gpu_id,
     "num-extra-surfaces",       (gint)  cfg.num_extra_surfaces,
     "cudadec-memtype",          (gint)  cfg.cudadec_memtype,      // 0=device,1=pinned,2=unified
@@ -382,16 +385,26 @@ g_object_set(G_OBJECT(src_bin),
     "latency",                  (guint) cfg.latency,              // ms
     "udp-buffer-size",          (guint) cfg.udp_buffer_size,
     "drop-pipeline-eos",        (gboolean) cfg.drop_pipeline_eos,
-    "smart-record",             (gint)  cfg.smart_record,         // 0/1/2
-    "smart-rec-dir-path",       (const gchar*) cfg.smart_rec_dir_path.c_str(),
-    "smart-rec-file-prefix",    (const gchar*) cfg.smart_rec_file_prefix.c_str(),
-    "smart-rec-cache",          (gint)  cfg.smart_rec_cache,
-    "smart-rec-default-duration",(gint) cfg.smart_rec_default_duration,
+    nullptr);
+
+// Group 3 — nvstreammux passthrough
+g_object_set(G_OBJECT(src_bin),
     "width",                    (gint)  cfg.width,
     "height",                   (gint)  cfg.height,
     "batched-push-timeout",     (gint)  cfg.batched_push_timeout, // µs
     "live-source",              (gboolean) cfg.live_source,
     nullptr);
+
+// Smart Record (only if enabled)
+if (cfg.smart_record > 0) {
+    g_object_set(G_OBJECT(src_bin),
+        "smart-record",             (gint)  cfg.smart_record,         // 0/1/2
+        "smart-rec-dir-path",       (const gchar*) cfg.smart_rec_dir_path.c_str(),
+        "smart-rec-file-prefix",    (const gchar*) cfg.smart_rec_file_prefix.c_str(),
+        "smart-rec-cache",          (gint)  cfg.smart_rec_cache,
+        "smart-rec-default-duration",(gint) cfg.smart_rec_default_duration,
+        nullptr);
+}
 ```
 
 ### nvinfer (PGIE)

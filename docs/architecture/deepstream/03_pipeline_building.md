@@ -17,120 +17,116 @@ PipelineBuilder.build()
 
 ## 2. `tails_` Map Pattern
 
-`tails_` là trái tim của linking system. Nó lưu trữ GstElement* đại diện cho **đuôi (tail)** của mỗi pipeline branch, và được cập nhật khi mỗi phase thêm vào elements mới.
+`tails_` là trái tim của linking system. Sau khi refactor sang **GstBin architecture**, mỗi phase tạo ra một sub-bin và lưu con trỏ bin đó vào `tails_`. Linking giữa các phase dùng `gst_element_link(bin_a, bin_b)` thông qua ghost pads.
 
 ```cpp
 // Pipeline branches được track bởi string key:
-std::map<std::string, GstElement*> tails_;
+std::unordered_map<std::string, GstElement*> tails_;
 
-// Sau Phase 1:
-tails_["source"] = nvmultiurisrcbin_element;
+// Sau Phase 1 (sources_bin với ghost src pad):
+tails_["src"] = sources_bin;  // GstBin pointer, KHÔNG phải nvmultiurisrcbin
 
-// Sau Phase 2:
-tails_["main"] = nvdsanalytics_element;  // hoặc nvtracker nếu không có analytics
+// Sau Phase 2 (processing_bin với ghost sink + src pads):
+tails_["src"] = processing_bin;  // cập nhật tail về bin mới nhất
 
-// Per-stream sau demux:
-tails_["stream_0"] = last_element_for_stream_0;
-tails_["stream_1"] = last_element_for_stream_1;
+// Sau Phase 3 (visuals_bin với ghost sink + src pads):
+tails_["src"] = visuals_bin;
 
-// Sau Phase 3 (per stream):
-tails_["vis_0"] = osd_element_for_stream_0;
-tails_["vis_1"] = osd_element_for_stream_1;
+// Sau Phase 4 (output_bin_{id} per output, ghost sink):
+// tails_ không cần cập nhật — outputs là đuôi pipeline, không có downstream
 ```
+
+> **Tại sao GstBin?** Wrapping mỗi stage trong GstBin giúp:
+>
+> - Isolate internal linking (elements chỉ link với nhau trong cùng bin)
+> - DOT graph rõ ràng hơn (group elements theo stage)
+> - Ghost pads cung cấp consistent interface để link giữa phases
 
 ### Update `tails_` sau mỗi phase
 
 ```cpp
 bool PipelineBuilder::build_sources(const PipelineConfig& config) {
-    auto src_builder = factory_->create_source_builder();
-    auto* src = src_builder->build(config, config.sources.id, pipeline_);
-    if (!src) return false;
-
-    tails_["source"] = src;
-    LOG_D("Phase 1 complete: source tail = {}", config.sources.id);
+    auto builder = std::make_unique<SourceBlockBuilder>(pipeline_, tails_);
+    if (!builder->build(config)) return false;
+    // tails_["src"] = sources_bin  (set inside SourceBlockBuilder)
     return true;
 }
 
 bool PipelineBuilder::build_processing(const PipelineConfig& config) {
-    GstElement* current_tail = tails_["source"];
-
-    for (const auto& elem_cfg : config.processing) {
-        // Insert queue nếu elem_cfg.queue_before = true (hoặc config.queue: {})
-        if (should_insert_queue(elem_cfg, config)) {
-            auto* q = build_queue(elem_cfg.id + "_queue", config);
-            link_manager_->link(current_tail, q);
-            gst_bin_add(GST_BIN(pipeline_), q);
-            current_tail = q;
-        }
-
-        auto builder = factory_->create_processing_builder(elem_cfg.role);
-        auto* elem = builder->build(config, elem_cfg.id, pipeline_);
-        if (!elem) return false;
-
-        link_manager_->link(current_tail, elem);
-        current_tail = elem;
-    }
-
-    tails_["main"] = current_tail;
+    auto builder = std::make_unique<ProcessingBlockBuilder>(pipeline_, tails_);
+    if (!builder->build(config)) return false;
+    // ProcessingBlockBuilder links sources_bin → processing_bin via ghost pads
+    // tails_["src"] updated to processing_bin
     return true;
 }
 ```
 
 ## 3. Phase 1 — Sources
 
-**Block builder**: `SourceBuilder` (trong `block_builders/`)
+**Block builder**: `SourceBlockBuilder` (trong `pipeline/src/block_builders/`)
 
-Sử dụng `source_builder` từ factory để tạo `nvmultiurisrcbin`:
+Phase 1 tạo `sources_bin` — một `GstBin` chứa `nvmultiurisrcbin`. Sau đó expose ghost src pad để downstream bins có thể link.
 
 ```cpp
-// processing_builder.hpp (phase 1)
-bool SourceBuilder::build_phase(
-    const PipelineConfig& config,
-    GstElement* pipeline,
-    std::map<std::string, GstElement*>& tails)
-{
-    auto elem_builder = factory_->create_source_builder();
-    auto* src = elem_builder->build(config, config.sources.id, pipeline);
-    if (!src) return false;
+bool SourceBlockBuilder::build(const PipelineConfig& config) {
+    // 1. Tạo sources_bin
+    GstElement* sources_bin = gst_bin_new("sources_bin");
 
-    tails["source"] = src;
+    // 2. Build nvmultiurisrcbin bên trong sources_bin
+    builders::SourceBuilder src_builder(sources_bin);
+    GstElement* source = src_builder.build(config, 0);
+
+    // 3. Expose ghost src pad từ nvmultiurisrcbin
+    GstPad* src_pad = gst_element_get_static_pad(source, "src");
+    GstPad* ghost_src = gst_ghost_pad_new("src", src_pad);
+    gst_element_add_pad(sources_bin, ghost_src);
+
+    // 4. Add sources_bin vào top-level pipeline
+    gst_bin_add(GST_BIN(pipeline_), sources_bin);
+
+    tails_["src"] = sources_bin;  // lưu bin, KHÔNG phải element
     return true;
 }
 ```
 
-**Builder implementation** (`InnerSourceBuilder::build`):
+**SourceBuilder** (element builder) cấu hình `nvmultiurisrcbin`:
 
 ```cpp
-GstElement* SourceBuilder::build(const PipelineConfig& config,
-                                 const std::string& id,
-                                 GstElement* pipeline) {
+GstElement* SourceBuilder::build(const PipelineConfig& config, int /*index*/) {
     const auto& src = config.sources;
 
-    // Build URI list: "rtsp://...; rtsp://..."
-    std::string uris;
-    for (size_t i = 0; i < src.cameras.size(); ++i) {
-        if (i > 0) uris += ";";
-        uris += src.cameras[i].uri;
-    }
+    auto elem = make_gst_element("nvmultiurisrcbin", "nvmultiurisrcbin0");
 
-    auto elem = make_gst_element("nvmultiurisrcbin", id.c_str());
-    if (!elem) return nullptr;
-
+    // Group 1 — direct (ip-address/port intentionally OMITTED — DS8 SIGSEGV)
     g_object_set(G_OBJECT(elem.get()),
-        "max-batch-size",              (guint)src.cameras.size(),
-        "uri-list",                    uris.c_str(),
-        "gpu-id",                      src.gpu_id,
-        "width",                       src.width,
-        "height",                      src.height,
-        "batched-push-timeout",        src.batched_push_timeout,
-        "rtsp-reconnect-interval",     src.rtsp_reconnect_interval,
-        "live-source",                 src.live_source,
+        "max-batch-size", (gint) src.max_batch_size,
+        "mode",           (gint) src.mode,  // 0=video, 1=audio
         nullptr);
 
-    if (!gst_bin_add(GST_BIN(pipeline), elem.get())) return nullptr;
+    // Group 2 — nvurisrcbin per-source passthrough
+    g_object_set(G_OBJECT(elem.get()),
+        "gpu-id",                  (gint) src.gpu_id,
+        "select-rtp-protocol",     (gint) src.select_rtp_protocol,
+        "rtsp-reconnect-interval", (gint) src.rtsp_reconnect_interval,
+        "drop-pipeline-eos",       (gboolean) src.drop_pipeline_eos,
+        nullptr);
+
+    // Group 3 — nvstreammux passthrough
+    g_object_set(G_OBJECT(elem.get()),
+        "width",  (gint) src.width,
+        "height", (gint) src.height,
+        "live-source", (gboolean) src.live_source,
+        nullptr);
+
+    // uri-list (comma-separated)
+    g_object_set(G_OBJECT(elem.get()), "uri-list", uri_list.c_str(), nullptr);
+
+    gst_bin_add(GST_BIN(bin_), elem.get());
     return elem.release();
 }
 ```
+
+> ⚠️ **DS8 Bug**: `ip-address` và `port` KHÔNG được set — `g_object_set("ip-address", ...)` gây SIGSEGV trong DeepStream 8.0 bất kể timing. Element sử dụng giá trị mặc định: `0.0.0.0`, REST API disabled.
 
 ## 4. Phase 2 — Processing
 
@@ -144,7 +140,7 @@ processing:
   elements:
     - id: "pgie"
       role: "primary_inference"
-      queue: {}          # Tự động insert GstQueue trước element này
+      queue: {} # Tự động insert GstQueue trước element này
       type: "nvinfer"
       config_file_path: "configs/nvinfer/pgie_config.txt"
       unique_id: 1
@@ -165,7 +161,7 @@ processing:
       unique_id: 2
       process_mode: 2
       operate_on_gie_id: 1
-      operate_on_class_ids: "2"   # class 2 = vehicles
+      operate_on_class_ids: "2" # class 2 = vehicles
 
     - id: "demuxer"
       role: "demuxer"

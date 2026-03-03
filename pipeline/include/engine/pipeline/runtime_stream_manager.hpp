@@ -25,11 +25,11 @@ class RuntimeStreamManager {
     bool add_stream(const engine::core::config::CameraConfig& camera);
 
     /**
-     * @brief Remove a camera stream by name.
-     * @param camera_name Unique camera name.
+     * @brief Remove a camera stream by id.
+     * @param camera_id Unique camera id.
      * @return true if the stream was removed.
      */
-    bool remove_stream(const std::string& camera_name);
+    bool remove_stream(const std::string& camera_id);
 
     /**
      * @brief Get the current number of active streams.

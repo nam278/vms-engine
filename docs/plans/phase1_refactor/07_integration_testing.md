@@ -214,9 +214,8 @@ sources:
   height: 1080
   live_source: false
   cameras:
-    - name: test_cam
+    - id: test_cam
       uri: "file:///path/to/test_video.mp4"
-  output_queue: {}
 
 processing:
   elements:
@@ -227,7 +226,6 @@ processing:
       process_mode: 1
       batch_size: 1
       queue: {}
-  output_queue: {}
 
 visuals:
   enable: false

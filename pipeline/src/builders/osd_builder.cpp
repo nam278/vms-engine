@@ -16,11 +16,11 @@ GstElement* OsdBuilder::build(const engine::core::config::PipelineConfig& config
         return nullptr;
     }
 
+    // DS8: 'border-width' property was removed from nvdsosd — skip to avoid GLib warning.
     g_object_set(G_OBJECT(elem.get()), "process-mode", static_cast<gint>(elem_cfg.process_mode),
                  "display-bbox", static_cast<gboolean>(elem_cfg.display_bbox), "display-text",
                  static_cast<gboolean>(elem_cfg.display_text), "display-mask",
-                 static_cast<gboolean>(elem_cfg.display_mask), "border-width",
-                 static_cast<gint>(elem_cfg.border_width), "gpu-id",
+                 static_cast<gboolean>(elem_cfg.display_mask), "gpu-id",
                  static_cast<gint>(elem_cfg.gpu_id), nullptr);
 
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
