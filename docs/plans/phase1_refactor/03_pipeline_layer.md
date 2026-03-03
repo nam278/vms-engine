@@ -75,21 +75,21 @@ GstElement* SomeBuilder::build(
 
 ### Config Section Access Map
 
-| Builder               | Config access                                    | Type                     |
-| --------------------- | ------------------------------------------------ | ------------------------ |
-| `SourceBuilder`       | `config.sources`                                 | `SourcesConfig`          |
-| `MuxerBuilder`        | `config.sources` (batch_size, width, height)     | `SourcesConfig`          |
-| `QueueBuilder`        | `QueueConfig` directly (not PipelineConfig)      | `QueueConfig`            |
-| `InferBuilder`        | `config.processing.elements[index]`              | `ProcessingElementConfig`|
-| `TrackerBuilder`      | `config.processing.elements[index]`              | `ProcessingElementConfig`|
-| `AnalyticsBuilder`    | `config.processing.elements[index]`              | `ProcessingElementConfig`|
-| `TilerBuilder`        | `config.visuals.elements[index]`                 | `VisualsElementConfig`   |
-| `OsdBuilder`          | `config.visuals.elements[index]`                 | `VisualsElementConfig`   |
-| `EncoderBuilder`      | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
-| `SinkBuilder`         | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
-| `MsgconvBuilder`      | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
-| `MsgbrokerBuilder`    | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
-| `DemuxerBuilder`      | `config.sources` (num sources for pads)          | `SourcesConfig`          |
+| Builder            | Config access                                 | Type                      |
+| ------------------ | --------------------------------------------- | ------------------------- |
+| `SourceBuilder`    | `config.sources`                              | `SourcesConfig`           |
+| `MuxerBuilder`     | `config.sources` (batch_size, width, height)  | `SourcesConfig`           |
+| `QueueBuilder`     | `QueueConfig` directly (not PipelineConfig)   | `QueueConfig`             |
+| `InferBuilder`     | `config.processing.elements[index]`           | `ProcessingElementConfig` |
+| `TrackerBuilder`   | `config.processing.elements[index]`           | `ProcessingElementConfig` |
+| `AnalyticsBuilder` | `config.processing.elements[index]`           | `ProcessingElementConfig` |
+| `TilerBuilder`     | `config.visuals.elements[index]`              | `VisualsElementConfig`    |
+| `OsdBuilder`       | `config.visuals.elements[index]`              | `VisualsElementConfig`    |
+| `EncoderBuilder`   | `config.outputs[outputIdx].elements[elemIdx]` | `OutputElementConfig`     |
+| `SinkBuilder`      | `config.outputs[outputIdx].elements[elemIdx]` | `OutputElementConfig`     |
+| `MsgconvBuilder`   | `config.outputs[outputIdx].elements[elemIdx]` | `OutputElementConfig`     |
+| `MsgbrokerBuilder` | `config.outputs[outputIdx].elements[elemIdx]` | `OutputElementConfig`     |
+| `DemuxerBuilder`   | `config.sources` (num sources for pads)       | `SourcesConfig`           |
 
 **QueueBuilder exception**: Takes `QueueConfig` (not `PipelineConfig`) since queues are inline elements
 with their own config resolved by the block builders before calling `QueueBuilder`.
@@ -100,13 +100,13 @@ with their own config resolved by the block builders before calling `QueueBuilde
 
 ### Files to Create
 
-| File (header)                                   | File (source)                                   | Class                    |
-| ----------------------------------------------- | ----------------------------------------------- | ------------------------ |
-| `include/engine/pipeline/pipeline_manager.hpp`  | `src/pipeline_manager.cpp`                      | `PipelineManager`        |
-| `include/engine/pipeline/runtime_stream_manager.hpp` | `src/runtime_stream_manager.cpp`           | `RuntimeStreamManager`   |
-| `include/engine/pipeline/smart_record_controller.hpp` | `src/smart_record_controller.cpp`         | `SmartRecordController`  |
-| `include/engine/pipeline/builder_factory.hpp`   | `src/builder_factory.cpp`                       | `BuilderFactory`         |
-| `include/engine/pipeline/config_validator.hpp`  | `src/config_validator.cpp`                      | `ConfigValidator`        |
+| File (header)                                         | File (source)                     | Class                   |
+| ----------------------------------------------------- | --------------------------------- | ----------------------- |
+| `include/engine/pipeline/pipeline_manager.hpp`        | `src/pipeline_manager.cpp`        | `PipelineManager`       |
+| `include/engine/pipeline/runtime_stream_manager.hpp`  | `src/runtime_stream_manager.cpp`  | `RuntimeStreamManager`  |
+| `include/engine/pipeline/smart_record_controller.hpp` | `src/smart_record_controller.cpp` | `SmartRecordController` |
+| `include/engine/pipeline/builder_factory.hpp`         | `src/builder_factory.cpp`         | `BuilderFactory`        |
+| `include/engine/pipeline/config_validator.hpp`        | `src/config_validator.cpp`        | `ConfigValidator`       |
 
 ### `PipelineManager` — Key Notes
 
@@ -165,12 +165,12 @@ Each block builder is called once by `IPipelineBuilder::build()`.
 
 ### Files to Create
 
-| File (header)                                                | File (source)                                          |
-| ------------------------------------------------------------ | ------------------------------------------------------ |
-| `include/engine/pipeline/block_builders/source_block_builder.hpp`      | `src/block_builders/source_block_builder.cpp`     |
-| `include/engine/pipeline/block_builders/processing_block_builder.hpp`  | `src/block_builders/processing_block_builder.cpp` |
-| `include/engine/pipeline/block_builders/visuals_block_builder.hpp`     | `src/block_builders/visuals_block_builder.cpp`    |
-| `include/engine/pipeline/block_builders/outputs_block_builder.hpp`     | `src/block_builders/outputs_block_builder.cpp`    |
+| File (header)                                                         | File (source)                                     |
+| --------------------------------------------------------------------- | ------------------------------------------------- |
+| `include/engine/pipeline/block_builders/source_block_builder.hpp`     | `src/block_builders/source_block_builder.cpp`     |
+| `include/engine/pipeline/block_builders/processing_block_builder.hpp` | `src/block_builders/processing_block_builder.cpp` |
+| `include/engine/pipeline/block_builders/visuals_block_builder.hpp`    | `src/block_builders/visuals_block_builder.cpp`    |
+| `include/engine/pipeline/block_builders/outputs_block_builder.hpp`    | `src/block_builders/outputs_block_builder.cpp`    |
 
 ### Build Phase Overview
 
@@ -226,21 +226,21 @@ All use the RAII `make_gst_element()` guard pattern.
 
 ### Files to Create
 
-| Header                                                 | Source                                          | GStreamer element       |
-| ------------------------------------------------------ | ----------------------------------------------- | ----------------------- |
-| `include/engine/pipeline/builders/source_builder.hpp`  | `src/builders/source_builder.cpp`               | `nvmultiurisrcbin`      |
-| `include/engine/pipeline/builders/muxer_builder.hpp`   | `src/builders/muxer_builder.cpp`                | `nvstreammux`           |
-| `include/engine/pipeline/builders/queue_builder.hpp`   | `src/builders/queue_builder.cpp`                | `queue`                 |
-| `include/engine/pipeline/builders/infer_builder.hpp`   | `src/builders/infer_builder.cpp`                | `nvinfer`               |
-| `include/engine/pipeline/builders/tracker_builder.hpp` | `src/builders/tracker_builder.cpp`              | `nvtracker`             |
-| `include/engine/pipeline/builders/analytics_builder.hpp` | `src/builders/analytics_builder.cpp`          | `nvdsanalytics`         |
-| `include/engine/pipeline/builders/tiler_builder.hpp`   | `src/builders/tiler_builder.cpp`                | `nvmultistreamtiler`    |
-| `include/engine/pipeline/builders/osd_builder.hpp`     | `src/builders/osd_builder.cpp`                  | `nvdsosd`               |
-| `include/engine/pipeline/builders/encoder_builder.hpp` | `src/builders/encoder_builder.cpp`              | `nvv4l2h264enc/265enc`  |
-| `include/engine/pipeline/builders/sink_builder.hpp`    | `src/builders/sink_builder.cpp`                 | `rtspclientsink` / `fakesink` / `filesink` |
-| `include/engine/pipeline/builders/msgconv_builder.hpp` | `src/builders/msgconv_builder.cpp`              | `nvmsgconv`             |
-| `include/engine/pipeline/builders/msgbroker_builder.hpp` | `src/builders/msgbroker_builder.cpp`          | `nvmsgbroker`           |
-| `include/engine/pipeline/builders/demuxer_builder.hpp` | `src/builders/demuxer_builder.cpp`              | `nvstreamdemux`         |
+| Header                                                   | Source                               | GStreamer element                          |
+| -------------------------------------------------------- | ------------------------------------ | ------------------------------------------ |
+| `include/engine/pipeline/builders/source_builder.hpp`    | `src/builders/source_builder.cpp`    | `nvmultiurisrcbin`                         |
+| `include/engine/pipeline/builders/muxer_builder.hpp`     | `src/builders/muxer_builder.cpp`     | `nvstreammux`                              |
+| `include/engine/pipeline/builders/queue_builder.hpp`     | `src/builders/queue_builder.cpp`     | `queue`                                    |
+| `include/engine/pipeline/builders/infer_builder.hpp`     | `src/builders/infer_builder.cpp`     | `nvinfer`                                  |
+| `include/engine/pipeline/builders/tracker_builder.hpp`   | `src/builders/tracker_builder.cpp`   | `nvtracker`                                |
+| `include/engine/pipeline/builders/analytics_builder.hpp` | `src/builders/analytics_builder.cpp` | `nvdsanalytics`                            |
+| `include/engine/pipeline/builders/tiler_builder.hpp`     | `src/builders/tiler_builder.cpp`     | `nvmultistreamtiler`                       |
+| `include/engine/pipeline/builders/osd_builder.hpp`       | `src/builders/osd_builder.cpp`       | `nvdsosd`                                  |
+| `include/engine/pipeline/builders/encoder_builder.hpp`   | `src/builders/encoder_builder.cpp`   | `nvv4l2h264enc/265enc`                     |
+| `include/engine/pipeline/builders/sink_builder.hpp`      | `src/builders/sink_builder.cpp`      | `rtspclientsink` / `fakesink` / `filesink` |
+| `include/engine/pipeline/builders/msgconv_builder.hpp`   | `src/builders/msgconv_builder.cpp`   | `nvmsgconv`                                |
+| `include/engine/pipeline/builders/msgbroker_builder.hpp` | `src/builders/msgbroker_builder.cpp` | `nvmsgbroker`                              |
+| `include/engine/pipeline/builders/demuxer_builder.hpp`   | `src/builders/demuxer_builder.cpp`   | `nvstreamdemux`                            |
 
 ### Standard Builder Template
 
@@ -376,13 +376,13 @@ Each handler receives `IMessageProducer*` via constructor (no static coupling).
 
 ### Files to Create
 
-| Header                                                           | Source                                               |
-| ---------------------------------------------------------------- | ---------------------------------------------------- |
-| `include/engine/pipeline/event_handlers/handler_manager.hpp`    | `src/event_handlers/handler_manager.cpp`             |
-| `include/engine/pipeline/event_handlers/smart_record_handler.hpp` | `src/event_handlers/smart_record_handler.cpp`      |
+| Header                                                                 | Source                                             |
+| ---------------------------------------------------------------------- | -------------------------------------------------- |
+| `include/engine/pipeline/event_handlers/handler_manager.hpp`           | `src/event_handlers/handler_manager.cpp`           |
+| `include/engine/pipeline/event_handlers/smart_record_handler.hpp`      | `src/event_handlers/smart_record_handler.cpp`      |
 | `include/engine/pipeline/event_handlers/crop_detected_obj_handler.hpp` | `src/event_handlers/crop_detected_obj_handler.cpp` |
-| `include/engine/pipeline/event_handlers/ext_proc_handler.hpp`   | `src/event_handlers/ext_proc_handler.cpp`            |
-| `include/engine/pipeline/event_handlers/object_crop.hpp`        | *(header-only utility)*                              |
+| `include/engine/pipeline/event_handlers/ext_proc_handler.hpp`          | `src/event_handlers/ext_proc_handler.cpp`          |
+| `include/engine/pipeline/event_handlers/object_crop.hpp`               | _(header-only utility)_                            |
 
 ### Handler Dependency Injection Pattern
 
@@ -392,7 +392,7 @@ class SmartRecordHandler : public engine::core::handlers::IEventHandler {
 public:
     SmartRecordHandler(
         engine::core::messaging::IMessageProducer* producer,
-        engine::core::storage::IStorageManager* storage);
+        engine::core::storage::IStorageManager* storage);docs/plans/phase1_refactor
 
     bool handle(const engine::core::handlers::HandlerContext& ctx) override;
 
@@ -419,9 +419,9 @@ void SmartRecordHandler::register_probe(GstElement* element) {
 
 ### Files to Create
 
-| Header                                                  | Source                                     |
-| -------------------------------------------------------- | ------------------------------------------ |
-| `include/engine/pipeline/linking/pipeline_linker.hpp`   | `src/linking/pipeline_linker.cpp`          |
+| Header                                                | Source                            |
+| ----------------------------------------------------- | --------------------------------- |
+| `include/engine/pipeline/linking/pipeline_linker.hpp` | `src/linking/pipeline_linker.cpp` |
 
 ### Key Linking Patterns
 
@@ -454,12 +454,12 @@ static void on_pad_added(GstElement* src, GstPad* new_pad, GstElement* muxer) {
 
 ### Files to Create
 
-| Header                                                               | Source                                              |
-| -------------------------------------------------------------------- | --------------------------------------------------- |
-| `include/engine/pipeline/probes/probe_handler_manager.hpp`           | `src/probes/probe_handler_manager.cpp`              |
-| `include/engine/pipeline/probes/smart_record_probe_handler.hpp`      | `src/probes/smart_record_probe_handler.cpp`         |
-| `include/engine/pipeline/probes/crop_object_handler.hpp`             | `src/probes/crop_object_handler.cpp`                |
-| `include/engine/pipeline/probes/class_id_namespace_handler.hpp`      | `src/probes/class_id_namespace_handler.cpp`         |
+| Header                                                          | Source                                      |
+| --------------------------------------------------------------- | ------------------------------------------- |
+| `include/engine/pipeline/probes/probe_handler_manager.hpp`      | `src/probes/probe_handler_manager.cpp`      |
+| `include/engine/pipeline/probes/smart_record_probe_handler.hpp` | `src/probes/smart_record_probe_handler.cpp` |
+| `include/engine/pipeline/probes/crop_object_handler.hpp`        | `src/probes/crop_object_handler.cpp`        |
+| `include/engine/pipeline/probes/class_id_namespace_handler.hpp` | `src/probes/class_id_namespace_handler.cpp` |
 
 ### Probe Pattern (NvDs Metadata)
 
@@ -493,9 +493,9 @@ static GstPadProbeReturn on_buffer_probe(
 
 If the `ExtProcSvc` (external processor) is needed:
 
-| Header                                                 | Source                                      |
-| ------------------------------------------------------ | ------------------------------------------- |
-| `include/engine/pipeline/services/ext_proc_svc.hpp`   | `src/services/ext_proc_svc.cpp`             |
+| Header                                              | Source                          |
+| --------------------------------------------------- | ------------------------------- |
+| `include/engine/pipeline/services/ext_proc_svc.hpp` | `src/services/ext_proc_svc.cpp` |
 
 ---
 
@@ -533,16 +533,16 @@ set_target_properties(vms_engine_pipeline PROPERTIES
 
 ## File Count Summary
 
-| Category            | Headers | Sources | Notes                                     |
-| ------------------- | ------- | ------- | ----------------------------------------- |
-| Root managers        | 5       | 5       | PipelineManager, BuilderFactory, etc.     |
-| Block builders       | 4       | 4       | One per build phase                       |
-| Element builders     | 13      | 13      | One per GStreamer element type            |
-| Event handlers       | 5       | 4       | + object_crop.hpp (header-only)           |
-| Linking              | 1       | 1       |                                           |
-| Probes               | 4       | 4       |                                           |
-| Services (optional)  | 1       | 1       |                                           |
-| **Total**            | **33**  | **32**  | ~65 files + headers                       |
+| Category            | Headers | Sources | Notes                                 |
+| ------------------- | ------- | ------- | ------------------------------------- |
+| Root managers       | 5       | 5       | PipelineManager, BuilderFactory, etc. |
+| Block builders      | 4       | 4       | One per build phase                   |
+| Element builders    | 13      | 13      | One per GStreamer element type        |
+| Event handlers      | 5       | 4       | + object_crop.hpp (header-only)       |
+| Linking             | 1       | 1       |                                       |
+| Probes              | 4       | 4       |                                       |
+| Services (optional) | 1       | 1       |                                       |
+| **Total**           | **33**  | **32**  | ~65 files + headers                   |
 
 ---
 

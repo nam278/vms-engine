@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# .git/hooks/pre-commit — Auto-format staged C++ files before committing
+#
+# Install: already here (symlinked/copied by scripts/install-hooks.sh)
+# Skip:    git commit --no-verify
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
+
+# ── Check tool availability ──────────────────────────────────────────────────
+if ! command -v "${CLANG_FORMAT}" &>/dev/null; then
+    echo "⚠  pre-commit: clang-format not found — skipping format check."
+    echo "   Install with:  apt install clang-format"
+    exit 0
+fi
+
+# ── Collect staged C++ files ─────────────────────────────────────────────────
+mapfile -t STAGED < <(
+    git diff --cached --name-only --diff-filter=ACMR \
+    | grep -E '\.(cpp|hpp|h|cc|cxx)$' \
+    | sed "s|^|${REPO_ROOT}/|" \
+    || true
+)
+
+if [[ ${#STAGED[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+echo "  [pre-commit] clang-format on ${#STAGED[@]} staged C++ file(s)..."
+
+# ── Format each staged file then re-stage it ─────────────────────────────────
+CHANGED=0
+for f in "${STAGED[@]}"; do
+    before=$(git show ":${f#"${REPO_ROOT}/"}" 2>/dev/null | md5sum | awk '{print $1}')
+    "${CLANG_FORMAT}" -i "${f}"
+    after=$(md5sum < "${f}" | awk '{print $1}')
+
+    if [[ "$before" != "$after" ]]; then
+        git add "${f}"
+        CHANGED=$((CHANGED + 1))
+        echo "    ✔  reformatted: ${f#"${REPO_ROOT}/"}"
+    fi
+done
+
+if [[ $CHANGED -gt 0 ]]; then
+    echo "  [pre-commit] ${CHANGED} file(s) reformatted and re-staged."
+else
+    echo "  [pre-commit] All files already correctly formatted."
+fi
+
+exit 0

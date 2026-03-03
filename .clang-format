@@ -1,0 +1,32 @@
+# .clang-format
+---
+Language: Cpp
+BasedOnStyle: Google
+
+# Basic formatting
+IndentWidth: 4 # indentation width
+UseTab: Never # use spaces, never tabs
+ColumnLimit: 100 # max column width
+SortIncludes: false # do not sort includes automatically
+
+# Brace and block settings
+BreakBeforeBraces: Attach # attach braces to function/if/loop
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Pointer/reference alignment
+DerivePointerAlignment: false # disable auto pointer alignment
+PointerAlignment: Left # place '*' next to type, e.g., int* p
+
+# Align trailing comments
+AlignTrailingComments: true
+
+# Namespace and include options
+FixNamespaceComments: true
+
+
+# You can add other preferred rules below
+---

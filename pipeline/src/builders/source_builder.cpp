@@ -1,0 +1,66 @@
+#include "engine/pipeline/builders/source_builder.hpp"
+#include "engine/core/utils/gst_utils.hpp"
+#include "engine/core/utils/logger.hpp"
+
+namespace engine::pipeline::builders {
+
+SourceBuilder::SourceBuilder(GstElement* bin) : bin_(bin) {}
+
+GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& config,
+                                 int /*index*/) {
+    const auto& src = config.sources;
+    const std::string id = "nvmultiurisrcbin0";
+
+    auto elem = engine::core::utils::make_gst_element("nvmultiurisrcbin", id.c_str());
+    if (!elem) {
+        LOG_E("Failed to create nvmultiurisrcbin '{}'", id);
+        return nullptr;
+    }
+
+    // Group 1 — nvmultiurisrcbin direct
+    g_object_set(G_OBJECT(elem.get()), "ip-address", src.ip_address.c_str(), "port",
+                 static_cast<gint>(src.port), "max-batch-size",
+                 static_cast<gint>(src.max_batch_size), "mode", static_cast<gint>(src.mode),
+                 nullptr);
+
+    // Group 2 — nvurisrcbin per-source passthrough
+    g_object_set(G_OBJECT(elem.get()), "gpu-id", static_cast<gint>(src.gpu_id),
+                 "num-extra-surfaces", static_cast<gint>(src.num_extra_surfaces), "cudadec-memtype",
+                 static_cast<gint>(src.cudadec_memtype), "dec-skip-frames",
+                 static_cast<gint>(src.dec_skip_frames), "drop-frame-interval",
+                 static_cast<gint>(src.drop_frame_interval), "select-rtp-protocol",
+                 static_cast<gint>(src.select_rtp_protocol), "rtsp-reconnect-interval",
+                 static_cast<gint>(src.rtsp_reconnect_interval), "rtsp-reconnect-attempts",
+                 static_cast<gint>(src.rtsp_reconnect_attempts), "latency",
+                 static_cast<guint>(src.latency), "udp-buffer-size",
+                 static_cast<guint>(src.udp_buffer_size), "drop-pipeline-eos",
+                 static_cast<gboolean>(src.drop_pipeline_eos), nullptr);
+
+    // Group 3 — nvstreammux passthrough
+    g_object_set(G_OBJECT(elem.get()), "width", static_cast<gint>(src.width), "height",
+                 static_cast<gint>(src.height), "batched-push-timeout",
+                 static_cast<gint>(src.batched_push_timeout), "live-source",
+                 static_cast<gboolean>(src.live_source), nullptr);
+
+    // Smart Record properties
+    if (src.smart_record > 0) {
+        g_object_set(G_OBJECT(elem.get()), "smart-record", static_cast<gint>(src.smart_record),
+                     "smart-rec-dir-path", src.smart_rec_dir_path.c_str(), "smart-rec-file-prefix",
+                     src.smart_rec_file_prefix.c_str(), "smart-rec-cache",
+                     static_cast<gint>(src.smart_rec_cache), "smart-rec-default-duration",
+                     static_cast<gint>(src.smart_rec_default_duration), "smart-rec-mode",
+                     static_cast<gint>(src.smart_rec_mode), "smart-rec-container",
+                     static_cast<gint>(src.smart_rec_container), nullptr);
+    }
+
+    if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
+        LOG_E("Failed to add nvmultiurisrcbin '{}' to bin", id);
+        return nullptr;
+    }
+
+    LOG_I("Built nvmultiurisrcbin '{}' (batch={}, {}x{})", id, src.max_batch_size, src.width,
+          src.height);
+    return elem.release();
+}
+
+}  // namespace engine::pipeline::builders
