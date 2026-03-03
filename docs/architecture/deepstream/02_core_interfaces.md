@@ -344,7 +344,7 @@ struct PipelineConfig {
         int    max_size_buffers = 10;
         int    max_size_bytes_mb = 20;
         double max_size_time_sec = 0.5;
-        std::string leaky = "downstream";
+        int    leaky = 2;  // 0=none, 1=upstream, 2=downstream
         bool   silent = true;
     } queue_defaults;
 

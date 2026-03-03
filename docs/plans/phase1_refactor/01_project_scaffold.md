@@ -1,28 +1,24 @@
 # Plan 01 — Project Scaffold & Build System
 
 > Create the vms-engine directory tree, root CMakeLists.txt, sub-module CMake files,
-> Docker files, and initial configs. **No C++ source code yet** — just the skeleton.
+> and initial placeholder files. **No C++ source code yet** — just the skeleton that compiles.
 
 ---
 
 ## Prerequisites
 
-- Empty vms-engine repo with only `docs/` and empty root files
-- DeepStream SDK 7.1 installed at `/opt/nvidia/deepstream/deepstream`
-- CMake 3.16+, GCC/G++ with C++17 support
+- Docker image `vms-engine-dev:latest` built from `Dockerfile` (DeepStream 8.0 base)
+- Container running via `docker compose up -d`, source mounted at `/opt/vms_engine`
+- All work done inside container: `docker compose exec app bash`
 
 ## Deliverables
 
-- [ ] Root `CMakeLists.txt` with all dependencies
-- [ ] Subdirectory `CMakeLists.txt` for each layer (7 files)
-- [ ] Directory structure with empty placeholder files
-- [ ] `Dockerfile` and `Dockerfile.image` updated
-- [ ] `docker-compose.yml` updated
-- [ ] `.env.example` with documented variables
-- [ ] `configs/default.yml` copied from lantanav2 and adjusted
-- [ ] `.clang-format` copied
-- [ ] `.gitignore` updated
-- [ ] Build succeeds (empty libraries, no source)
+- [ ] Root `CMakeLists.txt` with all dependencies (FetchContent + system)
+- [ ] Subdirectory `CMakeLists.txt` for each layer (6 files)
+- [ ] Directory structure with placeholder `.gitkeep` files
+- [ ] `configs/default.yml` → symlink or copy of `docs/configs/deepstream_default.yml`
+- [ ] `.clang-format` configured
+- [ ] Build succeeds inside container (empty libraries + stub main.cpp)
 
 ---
 
@@ -31,96 +27,143 @@
 ### 1.1 Create Directory Structure
 
 ```bash
-mkdir -p core/include/engine/core/{builders,config,pipeline,eventing,probes,handlers,messaging,storage,recording,runtime,services,utils}
-mkdir -p core/src/{utils,handlers}
+# Run inside container: docker compose exec app bash
+cd /opt/vms_engine
 
-mkdir -p pipeline/include/engine/pipeline/{block_builders,builders,linking,probes,event_handlers,config,services}
-mkdir -p pipeline/src/{block_builders,builders,linking,probes,event_handlers,config,services}
+# ── Core Layer ──────────────────────────────────────────────────────
+mkdir -p core/include/engine/core/{builders,config,pipeline,eventing,handlers,messaging,storage,recording,runtime,services,utils}
+mkdir -p core/src/utils
 
+# ── Pipeline Layer (DeepStream element builders + linking) ──────────
+mkdir -p pipeline/include/engine/pipeline/{block_builders,builders,linking,probes,event_handlers}
+mkdir -p pipeline/src/{block_builders,builders,linking,probes,event_handlers}
+
+# ── Domain Layer (business logic — thin for now) ────────────────────
 mkdir -p domain/include/engine/domain
 mkdir -p domain/src
 
+# ── Infrastructure Layer (config parser, messaging, storage) ────────
 mkdir -p infrastructure/config_parser/include/engine/infrastructure/config_parser
 mkdir -p infrastructure/config_parser/src
 mkdir -p infrastructure/messaging/include/engine/infrastructure/messaging
 mkdir -p infrastructure/messaging/src
 mkdir -p infrastructure/storage/include/engine/infrastructure/storage
 mkdir -p infrastructure/storage/src
-mkdir -p infrastructure/rest_api/include/engine/infrastructure/rest_api
-mkdir -p infrastructure/rest_api/src
 
+# ── Services Layer (external inference clients, etc.) ───────────────
 mkdir -p services/include/engine/services
 mkdir -p services/src
 
-mkdir -p plugins/src
-
+# ── Application entry point ─────────────────────────────────────────
 mkdir -p app
 
-mkdir -p configs/nvinfer configs/tracker configs/analytics
+# ── Runtime data directories ────────────────────────────────────────
+mkdir -p configs/components
 mkdir -p models
 mkdir -p scripts
 ```
 
 ### 1.2 Root CMakeLists.txt
 
-Create new `CMakeLists.txt` based on lantanav2 with these changes:
-
-| Change                              | Details                                                |
-| ----------------------------------- | ------------------------------------------------------ |
-| Project name                        | `project(vms_engine VERSION 1.0.0 LANGUAGES CXX)`     |
-| Remove `LANTANA_WITH_DLSTREAMER`    | Delete option and all DLStreamer pkg_check_modules      |
-| Remove `LANTANA_WITH_DEEPSTREAM`    | Always on — use direct `find_library` calls            |
-| Remove `add_definitions(-DLANTANA_WITH_DEEPSTREAM)` | Not needed anymore               |
-| Backend vars                        | Remove `LANTANA_BACKEND_LIBS`, `LANTANA_BACKEND_SDK_LIBS`, etc. |
-| Subdirectories                      | `add_subdirectory(pipeline)` instead of `add_subdirectory(backends)` |
-| Executable name                     | `vms_engine` (in app/CMakeLists.txt)                   |
-| Library prefix                      | `vms_engine_core`, `vms_engine_pipeline`, etc.         |
-| Format target                       | Update glob paths (`backends/` → `pipeline/`)          |
-
-**Key structure:**
-
 ```cmake
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 project(vms_engine VERSION 1.0.0 LANGUAGES CXX)
 
+# ── C++ Standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ── Output directories ──────────────────────────────────────────────
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# --- External Dependencies ---
+# ── System Dependencies ─────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GLIB2 REQUIRED IMPORTED_TARGET glib-2.0>=2.56 gobject-2.0>=2.56 gio-2.0>=2.56)
-pkg_check_modules(GST REQUIRED IMPORTED_TARGET
-    gstreamer-1.0>=1.14 gstreamer-base-1.0>=1.14
-    gstreamer-video-1.0>=1.14 gstreamer-app-1.0>=1.14 gstreamer-rtsp-1.0>=1.14)
-pkg_check_modules(CURL REQUIRED libcurl)
 find_package(Threads REQUIRED)
-find_package(CUDA)
 find_package(CUDAToolkit REQUIRED)
 
-# --- DeepStream SDK ---
-set(DEEPSTREAM_DIR "/opt/nvidia/deepstream/deepstream" CACHE PATH "DeepStream installation path")
-# ... find_library calls for nvds_meta, nvdsgst_meta, etc. ...
+pkg_check_modules(GLIB2 REQUIRED IMPORTED_TARGET
+    glib-2.0>=2.56  gobject-2.0>=2.56  gio-2.0>=2.56)
 
-# --- FetchContent ---
+pkg_check_modules(GST REQUIRED IMPORTED_TARGET
+    gstreamer-1.0>=1.14
+    gstreamer-base-1.0>=1.14
+    gstreamer-video-1.0>=1.14
+    gstreamer-app-1.0>=1.14
+    gstreamer-rtsp-1.0>=1.14)
+
+pkg_check_modules(CURL REQUIRED libcurl)
+
+# ── DeepStream SDK 8.0 ──────────────────────────────────────────────
+set(DEEPSTREAM_DIR "/opt/nvidia/deepstream/deepstream"
+    CACHE PATH "DeepStream SDK installation path")
+
+set(DEEPSTREAM_INCLUDE_DIRS
+    ${DEEPSTREAM_DIR}/sources/includes
+    ${DEEPSTREAM_DIR}/sources/includes/nvdsinfer
+)
+
+# DeepStream libraries
+set(DEEPSTREAM_SDK_LIBS "")
+foreach(_lib nvds_meta nvdsgst_meta nvds_utils nvdsgst_helper
+             nvbufsurface nvbufsurftransform nvds_infer nvds_batch_utils)
+    find_library(LIB_${_lib} NAMES ${_lib}
+        PATHS ${DEEPSTREAM_DIR}/lib NO_DEFAULT_PATH)
+    if(LIB_${_lib})
+        list(APPEND DEEPSTREAM_SDK_LIBS ${LIB_${_lib}})
+    else()
+        message(WARNING "DeepStream library not found: ${_lib}")
+    endif()
+endforeach()
+
+# ── FetchContent (pinned versions) ──────────────────────────────────
 include(FetchContent)
-FetchContent_Declare(spdlog GIT_REPOSITORY https://github.com/gabime/spdlog.git GIT_TAG v1.12.0)
-FetchContent_Declare(yaml-cpp GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG master)
-FetchContent_Declare(hiredis GIT_REPOSITORY https://github.com/redis/hiredis.git GIT_TAG v1.3.0)
-FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.12.0)
+
+FetchContent_Declare(spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG        v1.14.1)
+
+FetchContent_Declare(yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG        0.8.0)
+
+FetchContent_Declare(hiredis
+    GIT_REPOSITORY https://github.com/redis/hiredis.git
+    GIT_TAG        v1.3.0)
+set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
+
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3)
+
 FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json)
 
-# --- Subdirectories ---
+# ── Sub-modules ─────────────────────────────────────────────────────
 add_subdirectory(core)
 add_subdirectory(pipeline)
 add_subdirectory(domain)
 add_subdirectory(infrastructure)
 add_subdirectory(services)
-add_subdirectory(plugins)
 add_subdirectory(app)
+
+# ── clang-format target (optional) ──────────────────────────────────
+find_program(CLANG_FORMAT clang-format)
+if(CLANG_FORMAT)
+    file(GLOB_RECURSE ALL_SOURCES
+        core/include/*.hpp core/src/*.cpp
+        pipeline/include/*.hpp pipeline/src/*.cpp
+        domain/include/*.hpp domain/src/*.cpp
+        infrastructure/*/include/*.hpp infrastructure/*/src/*.cpp
+        services/include/*.hpp services/src/*.cpp
+        app/*.cpp)
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT} -i ${ALL_SOURCES}
+        COMMENT "Running clang-format"
+        VERBATIM)
+endif()
 ```
 
 ### 1.3 Sub-Module CMakeLists.txt Files
@@ -129,14 +172,12 @@ add_subdirectory(app)
 
 ```cmake
 add_library(vms_engine_core STATIC
-    src/utils/spdlog_logger.cpp
-    src/utils/uuid_v7_generator.cpp
-    # src/handlers/handler_registry.cpp  # Added in Plan 02
+    src/utils/placeholder.cpp   # Will be replaced in Plan 02
 )
 
 target_include_directories(vms_engine_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PUBLIC ${DEEPSTREAM_DIR}/sources/includes    # For GStreamer/NvDs forward declarations
+    PUBLIC ${DEEPSTREAM_INCLUDE_DIRS}
 )
 
 target_link_libraries(vms_engine_core
@@ -144,34 +185,42 @@ target_link_libraries(vms_engine_core
     PUBLIC PkgConfig::GLIB2
     PUBLIC PkgConfig::GST
 )
+
+set_target_properties(vms_engine_core PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 ```
 
 #### pipeline/CMakeLists.txt
 
 ```cmake
 add_library(vms_engine_pipeline STATIC
-    # Sources added incrementally in Plan 03
+    src/placeholder.cpp
 )
 
 target_include_directories(vms_engine_pipeline
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PUBLIC ${DEEPSTREAM_DIR}/sources/includes
-    PRIVATE ${CUDA_INCLUDE_DIRS}
+    PUBLIC ${DEEPSTREAM_INCLUDE_DIRS}
+    PRIVATE ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 target_link_libraries(vms_engine_pipeline
-    PUBLIC vms_engine_core
+    PUBLIC  vms_engine_core
     PRIVATE ${DEEPSTREAM_SDK_LIBS}
     PRIVATE PkgConfig::CURL
     PRIVATE CUDA::cudart
 )
+
+set_target_properties(vms_engine_pipeline PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 ```
 
 #### domain/CMakeLists.txt
 
 ```cmake
 add_library(vms_engine_domain STATIC
-    # Sources added in Plan 04
+    src/placeholder.cpp
 )
 
 target_include_directories(vms_engine_domain
@@ -181,35 +230,44 @@ target_include_directories(vms_engine_domain
 target_link_libraries(vms_engine_domain
     PUBLIC vms_engine_core
 )
+
+set_target_properties(vms_engine_domain PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 ```
 
 #### infrastructure/CMakeLists.txt
 
 ```cmake
 add_library(vms_engine_infrastructure STATIC
-    # Sources added in Plan 05
+    config_parser/src/placeholder.cpp
+    messaging/src/placeholder.cpp
+    storage/src/placeholder.cpp
 )
 
 target_include_directories(vms_engine_infrastructure
     PUBLIC config_parser/include
     PUBLIC messaging/include
     PUBLIC storage/include
-    PUBLIC rest_api/include
 )
 
 target_link_libraries(vms_engine_infrastructure
-    PUBLIC vms_engine_core
+    PUBLIC  vms_engine_core
     PRIVATE yaml-cpp::yaml-cpp
     PRIVATE hiredis::hiredis_static
     PRIVATE PkgConfig::CURL
 )
+
+set_target_properties(vms_engine_infrastructure PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 ```
 
 #### services/CMakeLists.txt
 
 ```cmake
 add_library(vms_engine_services STATIC
-    # Sources added in Plan 06
+    src/placeholder.cpp
 )
 
 target_include_directories(vms_engine_services
@@ -217,9 +275,13 @@ target_include_directories(vms_engine_services
 )
 
 target_link_libraries(vms_engine_services
-    PUBLIC vms_engine_core
+    PUBLIC  vms_engine_core
     PRIVATE PkgConfig::CURL
 )
+
+set_target_properties(vms_engine_services PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 ```
 
 #### app/CMakeLists.txt
@@ -235,39 +297,39 @@ target_link_libraries(vms_engine
     PRIVATE vms_engine_services
     PRIVATE Threads::Threads
 )
+
+# Copy config to build output
+add_custom_command(TARGET vms_engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_SOURCE_DIR}/configs
+            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/configs
+    COMMENT "Linking configs/ → build/bin/configs/")
 ```
 
-#### plugins/CMakeLists.txt
+### 1.4 Create Placeholder Source Files
 
-```cmake
-# Each plugin is a shared library loaded by DeepStream at runtime
-# Copied from lantanav2 with minimal changes
-```
-
-### 1.4 Copy Build Support Files
-
-| File               | Source (lantanav2)     | Action                                     |
-| ------------------ | ---------------------- | ------------------------------------------ |
-| `.clang-format`    | `.clang-format`        | Copy as-is                                 |
-| `.gitignore`       | `.gitignore`           | Copy, add `build/`, `lantana_data/`        |
-| `Dockerfile`       | `Dockerfile`           | Update binary name `lantana` → `vms_engine`|
-| `Dockerfile.image` | `Dockerfile.image`     | Copy, update project name in comments      |
-| `docker-compose.yml`| `docker-compose.yml`  | Update container/image names               |
-| `.env.example`     | `.env.example`         | Copy, document all env vars                |
-
-### 1.5 Copy and Adjust Config Files
+Each CMake STATIC library needs at least one source file. Create minimal placeholders:
 
 ```bash
-cp lantanav2/configs/deepstream_default.yml vms-engine/configs/default.yml
-cp -r lantanav2/configs/nvinfer/ vms-engine/configs/nvinfer/
-cp -r lantanav2/configs/tracker/ vms-engine/configs/tracker/
+# core
+echo '// placeholder — replaced in Plan 02' > core/src/utils/placeholder.cpp
+
+# pipeline
+echo '// placeholder — replaced in Plan 03' > pipeline/src/placeholder.cpp
+
+# domain
+echo '// placeholder — replaced in Plan 04' > domain/src/placeholder.cpp
+
+# infrastructure
+echo '// placeholder — replaced in Plan 05' > infrastructure/config_parser/src/placeholder.cpp
+echo '// placeholder — replaced in Plan 05' > infrastructure/messaging/src/placeholder.cpp
+echo '// placeholder — replaced in Plan 05' > infrastructure/storage/src/placeholder.cpp
+
+# services
+echo '// placeholder — replaced in Plan 06' > services/src/placeholder.cpp
 ```
 
-In `configs/default.yml`:
-- Change `application.name` to `"vms_engine"`
-- No other structural changes needed (YAML is backend-agnostic)
-
-### 1.6 Create Minimal main.cpp Stub
+### 1.5 Create Minimal main.cpp Stub
 
 ```cpp
 // app/main.cpp
@@ -279,38 +341,65 @@ int main(int argc, char* argv[]) {
 }
 ```
 
-This ensures `cmake --build build` succeeds even with empty libraries.
+### 1.6 Config Files
+
+The canonical config already exists at `docs/configs/deepstream_default.yml`.
+Create a working default config:
+
+```bash
+cp docs/configs/deepstream_default.yml configs/default.yml
+```
+
+### 1.7 Copy .clang-format
+
+Copy from lantanav2 (or create a standard one):
+
+```bash
+# From lantanav2 if available:
+cp /path/to/lantanav2/.clang-format .clang-format
+```
 
 ---
 
-## Verification
+## Build & Verification (Inside Container)
 
 ```bash
-# 1. Configure
-cmake -S . -B build -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
+# 1. Start container (from host)
+docker compose up -d
 
-# 2. Build
-cmake --build build -- -j$(nproc)
+# 2. Attach shell
+docker compose exec app bash
 
-# 3. Run
+# 3. Configure (inside container, /opt/vms_engine)
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
+    -G Ninja
+
+# 4. Build
+cmake --build build -- -j5
+
+# 5. Run
 ./build/bin/vms_engine
-# Expected output: "vms_engine v1.0.0 — scaffold build OK"
+# Expected: "vms_engine v1.0.0 — scaffold build OK"
 
-# 4. Check no lantana references
-grep -r "lantana" CMakeLists.txt app/ core/ pipeline/ domain/ infrastructure/ services/ plugins/ || echo "PASS: No lantana references"
+# 6. Verify no lantana references in source
+grep -r "lantana" CMakeLists.txt app/ core/ pipeline/ domain/ \
+    infrastructure/ services/ 2>/dev/null || echo "PASS: No lantana references"
 ```
 
 ---
 
 ## Checklist
 
-- [ ] Directory tree created per architecture blueprint
-- [ ] Root CMakeLists.txt with all external deps (no DLStreamer)
-- [ ] 7 sub-module CMakeLists.txt files
-- [ ] Stub main.cpp compiles and runs
-- [ ] Docker files updated
-- [ ] Config files copied and adjusted
-- [ ] `.clang-format` and `.gitignore` in place
-- [ ] `cmake configure` succeeds
-- [ ] `cmake build` succeeds
-- [ ] No `lantana` string in any project file (except docs/)
+- [ ] Directory tree created per Section 1.1
+- [ ] Root `CMakeLists.txt` with DeepStream 8.0, FetchContent (spdlog 1.14.1, yaml-cpp 0.8.0, hiredis 1.3.0, nlohmann_json 3.11.3)
+- [ ] 6 sub-module `CMakeLists.txt` files (core, pipeline, domain, infrastructure, services, app)
+- [ ] Placeholder `.cpp` files for each library target
+- [ ] Stub `main.cpp` compiles and runs
+- [ ] `configs/default.yml` exists (copy of canonical config)
+- [ ] `.clang-format` in place
+- [ ] `cmake configure` succeeds inside container
+- [ ] `cmake build` succeeds inside container
+- [ ] No `lantana` string in any project source file (except docs/)

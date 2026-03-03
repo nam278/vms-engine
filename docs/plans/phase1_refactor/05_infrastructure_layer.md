@@ -1,7 +1,7 @@
 # Plan 05 — Infrastructure Layer (Config Parser, Messaging, Storage, REST API)
 
-> Migrate all files from `lantanav2/infrastructure/` → `vms-engine/infrastructure/`.
-> 4 sub-modules with ~26 files total (~3,500+ lines of real code).
+> Create all infrastructure files from scratch implementing core interfaces.
+> 4 sub-modules with ~26 files total. Each sub-module implements a `core/` interface (Port → Adapter pattern).
 
 ---
 
@@ -11,74 +11,77 @@
 
 ## Deliverables
 
-- [ ] Config parser (1 header + 15 source files + 1 helper header) migrated
-- [ ] Messaging adapters (2 headers + 2 sources) migrated
-- [ ] Storage adapters (2 headers + 2 sources) migrated
-- [ ] REST API server (1 header + 1 source) migrated
+- [ ] Config parser (1 header + 15 source files + 1 helper header) created
+- [ ] Messaging adapters (2 headers + 2 sources) created
+- [ ] Storage adapters (2 headers + 2 sources) created
+- [ ] REST API server (1 header + 1 source) created
 - [ ] All implement core interfaces (Port → Adapter pattern)
-- [ ] `infrastructure/CMakeLists.txt` updated
+- [ ] `infrastructure/CMakeLists.txt` created
 - [ ] Infrastructure library compiles
 
 ---
 
-## Sub-Module 1: Config Parser (~3,561 lines)
+## Sub-Module 1: Config Parser (~3,500+ lines)
 
-The YAML config parser is the largest single component — 15 source files parsing different YAML sections.
+The YAML config parser is the largest single component — 15 source files, each parsing a different YAML section.
+Implements `engine::core::config::IConfigParser`.
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                                | Target (vms-engine)                                                | Changes     |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------ | ------------ |
-| **Header:**                                                       |                                                                    |              |
-| `config_parser/include/.../config_parser/yaml_config_parser.hpp` | `config_parser/include/.../config_parser/yaml_config_parser.hpp`   | Namespace   |
-| **Internal helper (src-local header):**                            |                                                                    |              |
-| `config_parser/src/yaml_parser_helpers.hpp`                       | `config_parser/src/yaml_parser_helpers.hpp`                         | Namespace   |
-| **Source files:**                                                  |                                                                    |              |
-| `config_parser/src/yaml_config_parser.cpp` (184 lines)           | `config_parser/src/yaml_config_parser.cpp`                          | Namespace + includes |
-| `config_parser/src/yaml_parser_analytics.cpp` (335 lines)        | `config_parser/src/yaml_parser_analytics.cpp`                       | Namespace + includes |
-| `config_parser/src/yaml_parser_api.cpp` (53 lines)               | `config_parser/src/yaml_parser_api.cpp`                             | Namespace + includes |
-| `config_parser/src/yaml_parser_application.cpp` (163 lines)      | `config_parser/src/yaml_parser_application.cpp`                     | Namespace + includes |
-| `config_parser/src/yaml_parser_handlers.cpp` (258 lines)         | `config_parser/src/yaml_parser_handlers.cpp`                        | Namespace + includes |
-| `config_parser/src/yaml_parser_messaging.cpp` (286 lines)        | `config_parser/src/yaml_parser_messaging.cpp`                       | Namespace + includes |
-| `config_parser/src/yaml_parser_muxer.cpp` (144 lines)            | `config_parser/src/yaml_parser_muxer.cpp`                           | Namespace + includes |
-| `config_parser/src/yaml_parser_outputs.cpp` (667 lines)          | `config_parser/src/yaml_parser_outputs.cpp`                         | Namespace + includes |
-| `config_parser/src/yaml_parser_processing.cpp` (337 lines)       | `config_parser/src/yaml_parser_processing.cpp`                      | Namespace + includes |
-| `config_parser/src/yaml_parser_recording.cpp` (194 lines)        | `config_parser/src/yaml_parser_recording.cpp`                       | Namespace + includes |
-| `config_parser/src/yaml_parser_services.cpp` (116 lines)         | `config_parser/src/yaml_parser_services.cpp`                        | Namespace + includes |
-| `config_parser/src/yaml_parser_sources.cpp` (294 lines)          | `config_parser/src/yaml_parser_sources.cpp`                         | Namespace + includes |
-| `config_parser/src/yaml_parser_storage.cpp` (129 lines)          | `config_parser/src/yaml_parser_storage.cpp`                         | Namespace + includes |
-| `config_parser/src/yaml_parser_utils.cpp` (95 lines)             | `config_parser/src/yaml_parser_utils.cpp`                           | Namespace + includes |
-| `config_parser/src/yaml_parser_visuals.cpp` (306 lines)          | `config_parser/src/yaml_parser_visuals.cpp`                         | Namespace + includes |
+| File                                                             | Description                                       |
+| ---------------------------------------------------------------- | ------------------------------------------------- |
+| **Header:**                                                      |                                                   |
+| `config_parser/include/.../config_parser/yaml_config_parser.hpp` | Declares `YamlConfigParser : IConfigParser`       |
+| **Internal helper (src-local):**                                 |                                                   |
+| `config_parser/src/yaml_parser_helpers.hpp`                      | Shared parsing utilities (src-local only)         |
+| **Source files:**                                                |                                                   |
+| `config_parser/src/yaml_config_parser.cpp`                       | Entry point: parse(), dispatch to sub-parsers     |
+| `config_parser/src/yaml_parser_analytics.cpp`                    | `analytics:` section                              |
+| `config_parser/src/yaml_parser_api.cpp`                          | `rest_api:` section                               |
+| `config_parser/src/yaml_parser_pipeline.cpp`                     | `pipeline:` section (id, name, log_level)         |
+| `config_parser/src/yaml_parser_handlers.cpp`                     | `event_handlers:` section                         |
+| `config_parser/src/yaml_parser_messaging.cpp`                    | `broker_configurations:` section                  |
+| `config_parser/src/yaml_parser_outputs.cpp`                      | `outputs:` section (elements list)                |
+| `config_parser/src/yaml_parser_processing.cpp`                   | `processing:` section (elements list)             |
+| `config_parser/src/yaml_parser_queues.cpp`                       | `queue_defaults:` + inline `queue: {}` resolution |
+| `config_parser/src/yaml_parser_recording.cpp`                    | `sources.smart_record*` fields                    |
+| `config_parser/src/yaml_parser_services.cpp`                     | `services:` section (Triton)                      |
+| `config_parser/src/yaml_parser_sources.cpp`                      | `sources:` section (cameras list)                 |
+| `config_parser/src/yaml_parser_storage.cpp`                      | `storage_configurations:` section                 |
+| `config_parser/src/yaml_parser_utils.cpp`                        | Shared YAML node helpers                          |
+| `config_parser/src/yaml_parser_visuals.cpp`                      | `visuals:` section (elements list)                |
 
 **Total: 1 header + 1 helper header + 15 .cpp = 17 files**
 
-#### Config Parser Clean-Up
+#### Config Parser Notes
 
-1. **Remove backend variant parsing**: The parser currently reads `backend_type` from YAML and creates backend-specific configs. Simplify to produce a single config struct (no variant).
-2. **Update include paths**: All includes from `lantana/core/config/` → `engine/core/config/`
-3. **Remove DLStreamer parsing branches**: Any `if (backend == "dlstreamer")` blocks should be deleted.
+1. **All output is `PipelineConfig`**: The parser produces a flat, DeepStream-native `PipelineConfig` struct with no backend variants.
+2. **`queue_defaults:` support**: `yaml_parser_queues.cpp` reads the top-level `queue_defaults:` block and resolves inline `queue: {}` entries on each element.
+3. **New file**: `yaml_parser_queues.cpp` is new (no equivalent in older code).
+4. **`yaml_parser_pipeline.cpp`**: Parses `pipeline:` section (id, name, log_level, gst_log_level, dot_file_dir).
 
 #### Schema Changes (new YAML format → `docs/configs/deepstream_default.yml`)
 
 The new config schema eliminates `backend_config.deepstream.*` nesting and
 reflects GStreamer topology directly. Parser files affected:
 
-| Old YAML key path | New YAML key path | Parser file affected |
-| --- | --- | --- |
-| `application.name` | `pipeline.id` / `pipeline.name` | `yaml_parser_application.cpp` → **rename to `yaml_parser_pipeline.cpp`** |
-| `sources[].uris[]` + `sources[].source_names[]` | `sources.cameras[{name, uri}]` | `yaml_parser_sources.cpp` |
-| `sources[].backend_options.deepstream.*` | `sources.*` (flat) | `yaml_parser_sources.cpp` |
-| `sources[].backend_options.deepstream.smart_record*` | `sources.smart_record.*` | `yaml_parser_sources.cpp` |
-| `processing_flow[].backend_config.deepstream.*` | `processing.elements[].*(flat)` | `yaml_parser_processing.cpp` |
-| `processing_flow[].input_from` | removed — order is implicit in list | `yaml_parser_processing.cpp` |
-| `visuals.tiler.backend_config.deepstream.*` | `visuals.elements[{type:tiler}].*` | `yaml_parser_visuals.cpp` |
-| `visuals.osd.backend_config.deepstream.*` | `visuals.elements[{type:osd}].*` | `yaml_parser_visuals.cpp` |
-| `outputs[].encoding.*` + `outputs[].destination.*` | `outputs[].elements[{type}].*` (flat element list, same pattern as processing/visuals) | `yaml_parser_outputs.cpp` |
-| implicit queues via `QueueManager` heuristics | `queue: {}` inline per element + `queue_defaults:` | **new file: `yaml_parser_queues.cpp`** |
-| `event_handlers[].evidence_from` + `snapshot_type: N` magic | `event_handlers[].trigger` + `probe_element` | `yaml_parser_handlers.cpp` |
-| — | `queue_defaults:` top-level block | **new file: `yaml_parser_queues.cpp`** |
+| Old YAML key path                                           | New YAML key path                                                                      | Parser file affected                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `application.name`                                          | `pipeline.id` / `pipeline.name`                                                        | `yaml_parser_application.cpp` → **rename to `yaml_parser_pipeline.cpp`** |
+| `sources[].uris[]` + `sources[].source_names[]`             | `sources.cameras[{name, uri}]`                                                         | `yaml_parser_sources.cpp`                                                |
+| `sources[].backend_options.deepstream.*`                    | `sources.*` (flat)                                                                     | `yaml_parser_sources.cpp`                                                |
+| `sources[].backend_options.deepstream.smart_record*`        | `sources.smart_record.*`                                                               | `yaml_parser_sources.cpp`                                                |
+| `processing_flow[].backend_config.deepstream.*`             | `processing.elements[].*(flat)`                                                        | `yaml_parser_processing.cpp`                                             |
+| `processing_flow[].input_from`                              | removed — order is implicit in list                                                    | `yaml_parser_processing.cpp`                                             |
+| `visuals.tiler.backend_config.deepstream.*`                 | `visuals.elements[{type:tiler}].*`                                                     | `yaml_parser_visuals.cpp`                                                |
+| `visuals.osd.backend_config.deepstream.*`                   | `visuals.elements[{type:osd}].*`                                                       | `yaml_parser_visuals.cpp`                                                |
+| `outputs[].encoding.*` + `outputs[].destination.*`          | `outputs[].elements[{type}].*` (flat element list, same pattern as processing/visuals) | `yaml_parser_outputs.cpp`                                                |
+| implicit queues via `QueueManager` heuristics               | `queue: {}` inline per element + `queue_defaults:`                                     | **new file: `yaml_parser_queues.cpp`**                                   |
+| `event_handlers[].evidence_from` + `snapshot_type: N` magic | `event_handlers[].trigger` + `probe_element`                                           | `yaml_parser_handlers.cpp`                                               |
+| —                                                           | `queue_defaults:` top-level block                                                      | **new file: `yaml_parser_queues.cpp`**                                   |
 
 **New parser source file to add:**
+
 ```
 config_parser/src/yaml_parser_queues.cpp   # parses queue_defaults + inline queue: {}
 ```
@@ -90,98 +93,76 @@ All other structural keys (`broker_configurations`, `storage_configurations`,
 
 ## Sub-Module 2: Messaging (Redis + Kafka)
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                                          | Target (vms-engine)                                                          | Changes              |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------- |
-| `messaging/include/.../messaging/redis_stream_producer.hpp`                | `messaging/include/.../messaging/redis_stream_producer.hpp`                  | Namespace; implement `IMessageProducer` |
-| `messaging/include/.../messaging/kafka_adapter.hpp`                        | `messaging/include/.../messaging/kafka_adapter.hpp`                          | Namespace; implement `IMessageProducer` |
-| `messaging/src/redis_stream_producer.cpp`                                   | `messaging/src/redis_stream_producer.cpp`                                     | Namespace + includes |
-| `messaging/src/kafka_adapter.cpp`                                           | `messaging/src/kafka_adapter.cpp`                                             | Namespace + includes |
+| File                                                        | Description                                              |
+| ----------------------------------------------------------- | -------------------------------------------------------- |
+| `messaging/include/.../messaging/redis_stream_producer.hpp` | Implements `IMessageProducer`; Redis Streams via hiredis |
+| `messaging/include/.../messaging/kafka_adapter.hpp`         | Implements `IMessageProducer`; Kafka via rdkafka         |
+| `messaging/src/redis_stream_producer.cpp`                   | `XADD` to Redis stream                                   |
+| `messaging/src/kafka_adapter.cpp`                           | Kafka producer                                           |
 
 **Total: 2 headers + 2 sources = 4 files**
 
-#### Messaging Clean-Up
+#### Messaging Notes
 
-1. **Implement `IMessageProducer` interface** (defined in Plan 02): Both `RedisStreamProducer` and `KafkaAdapter` must explicitly implement `engine::core::messaging::IMessageProducer`.
-2. **Remove static registration patterns**: No global/static `shared_ptr` to Redis. Instances are created and injected by main.cpp.
+1. Both `RedisStreamProducer` and `KafkaAdapter` implement `engine::core::messaging::IMessageProducer`.
+2. Instances are created in `app/main.cpp` and injected into event handlers via constructor.
 
 ---
 
 ## Sub-Module 3: Storage (Local + S3)
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                                      | Target (vms-engine)                                                      | Changes              |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------- |
-| `storage/include/.../storage/local_storage_manager.hpp`                | `storage/include/.../storage/local_storage_manager.hpp`                  | Namespace; implement `IStorageManager` |
-| `storage/include/.../storage/s3_storage_manager.hpp`                   | `storage/include/.../storage/s3_storage_manager.hpp`                     | Namespace; implement `IStorageManager` |
-| `storage/src/local_storage_manager.cpp`                                 | `storage/src/local_storage_manager.cpp`                                   | Namespace + includes |
-| `storage/src/s3_storage_manager.cpp`                                    | `storage/src/s3_storage_manager.cpp`                                      | Namespace + includes |
+| File                                                    | Description                                       |
+| ------------------------------------------------------- | ------------------------------------------------- |
+| `storage/include/.../storage/local_storage_manager.hpp` | Implements `IStorageManager`; saves to filesystem |
+| `storage/include/.../storage/s3_storage_manager.hpp`    | Implements `IStorageManager`; uploads to S3/MinIO |
+| `storage/src/local_storage_manager.cpp`                 | `std::filesystem` + file I/O                      |
+| `storage/src/s3_storage_manager.cpp`                    | libcurl or AWS SDK                                |
 
 **Total: 2 headers + 2 sources = 4 files**
 
-#### Storage Clean-Up
+#### Storage Notes
 
-1. **Implement `IStorageManager` interface** (defined in Plan 02).
-2. **Include paths**: `lantana/core/storage/` → `engine/core/storage/`
+1. Both implement `engine::core::storage::IStorageManager`.
 
 ---
 
 ## Sub-Module 4: REST API
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                                      | Target (vms-engine)                                                      | Changes     |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------ |
-| `rest_api/include/.../rest_api/pistache_server.hpp`                    | `rest_api/include/.../rest_api/pistache_server.hpp`                      | Namespace   |
-| `rest_api/src/pistache_server.cpp`                                      | `rest_api/src/pistache_server.cpp`                                        | Namespace + includes |
+| File                                                | Description                             |
+| --------------------------------------------------- | --------------------------------------- |
+| `rest_api/include/.../rest_api/pistache_server.hpp` | REST server wrapping `IPipelineManager` |
+| `rest_api/src/pistache_server.cpp`                  | Pistache HTTP handler implementation    |
 
 **Total: 1 header + 1 source = 2 files**
 
 #### REST API Notes
 
 - Pistache provides runtime control (start/stop pipelines, update params).
-- Update endpoint handler to use `engine::core::pipeline::IPipelineManager` interface.
-- Replace any direct DeepStream calls with interface methods.
+- Uses `engine::core::pipeline::IPipelineManager` interface — no direct pipeline access.
 
 ---
 
-## Include Path Mapping
+## Include Path Conventions
 
-All infrastructure files use this pattern:
+All infrastructure includes follow this pattern:
 
 ```
-lantanav2:    infrastructure/<sub>/include/lantana/infrastructure/<sub>/
-vms-engine:   infrastructure/<sub>/include/engine/infrastructure/<sub>/
+infrastructure/<sub>/include/engine/infrastructure/<sub>/
 ```
 
-Example: `lantana/infrastructure/messaging/redis_stream_producer.hpp` → `engine/infrastructure/messaging/redis_stream_producer.hpp`
+Example: `engine/infrastructure/messaging/redis_stream_producer.hpp`
 
----
+All internal includes reference core interfaces:
 
-## Namespace Replacement Script
-
-```bash
-cd vms-engine/infrastructure
-
-# Replace namespace
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's/namespace lantana::infrastructure/namespace engine::infrastructure/g' \
-    -e 's/namespace lantana/namespace engine/g' \
-    -e 's/lantana::infrastructure::/engine::infrastructure::/g' \
-    -e 's/lantana::/engine::/g'
-
-# Replace include paths
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's|#include "lantana/infrastructure/|#include "engine/infrastructure/|g' \
-    -e 's|#include "lantana/core/|#include "engine/core/|g' \
-    -e 's|#include "lantana/backends/deepstream/|#include "engine/pipeline/|g'
-
-# Replace include guards
-find . -name "*.hpp" | xargs sed -i \
-    -e 's/LANTANA_INFRASTRUCTURE_/ENGINE_INFRASTRUCTURE_/g' \
-    -e 's/LANTANA_/ENGINE_/g'
+```cpp
+#include "engine/core/messaging/imessage_producer.hpp"
+#include "engine/core/config/config_types.hpp"
 ```
 
 ---
@@ -255,45 +236,51 @@ target_link_libraries(vms_engine_infrastructure INTERFACE
 
 ## File Count Summary
 
-| Sub-Module     | Headers | Src-local Headers | Sources | Total |
-| --------------- | ------- | ----------------- | ------- | ----- |
-| Config Parser  | 1       | 1                 | 15      | 17    |
-| Messaging      | 2       | 0                 | 2       | 4     |
-| Storage        | 2       | 0                 | 2       | 4     |
-| REST API       | 1       | 0                 | 1       | 2     |
-| **Total**      | **6**   | **1**             | **20**  | **27** |
+| Sub-Module    | Headers | Src-local Headers | Sources | Total  |
+| ------------- | ------- | ----------------- | ------- | ------ |
+| Config Parser | 1       | 1                 | 15      | 17     |
+| Messaging     | 2       | 0                 | 2       | 4      |
+| Storage       | 2       | 0                 | 2       | 4      |
+| REST API      | 1       | 0                 | 1       | 2      |
+| **Total**     | **6**   | **1**             | **20**  | **27** |
 
 ---
 
 ## Verification
 
 ```bash
-# 1. Compile each sub-module independently
-cmake --build build --target vms_engine_config_parser -- -j$(nproc)
-cmake --build build --target vms_engine_messaging -- -j$(nproc)
-cmake --build build --target vms_engine_storage -- -j$(nproc)
-cmake --build build --target vms_engine_rest_api -- -j$(nproc)
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
 
-# 2. Check no backend/lantana references
-grep -r "lantana\|backends/deepstream" infrastructure/ && echo "FAIL" || echo "PASS"
+# 1. Compile each sub-module independently
+cmake --build build --target vms_engine_config_parser -- -j5
+cmake --build build --target vms_engine_messaging -- -j5
+cmake --build build --target vms_engine_storage -- -j5
+cmake --build build --target vms_engine_rest_api -- -j5
+
+# 2. Check no lantana references
+grep -r "lantana" infrastructure/ --include="*.hpp" --include="*.cpp" \
+    && echo "FAIL" || echo "PASS"
 
 # 3. Check interface implementations
-grep -r "IMessageProducer\|IStorageManager\|IConfigParser" infrastructure/include/ | head -20
+grep -r "IMessageProducer\|IStorageManager\|IConfigParser" \
+    infrastructure/*/include/ --include="*.hpp" | head -20
 
-# 4. Check no DLStreamer references
-grep -r "dlstreamer\|DLStreamer\|DLSTREAMER" infrastructure/ && echo "FAIL" || echo "PASS"
+# 4. Check new queue parser exists
+ls infrastructure/config_parser/src/yaml_parser_queues.cpp
 ```
 
 ---
 
 ## Checklist
 
-- [ ] Config parser: 17 files migrated, backend variant parsing removed
-- [ ] Messaging: 4 files migrated, both implement `IMessageProducer`
-- [ ] Storage: 4 files migrated, both implement `IStorageManager`
-- [ ] REST API: 2 files migrated, uses `IPipelineManager` interface
-- [ ] All `lantana::` → `engine::` namespace changes applied
-- [ ] All include paths updated
-- [ ] No remaining `lantana`, `backends/deepstream`, or `dlstreamer` references
+- [ ] Config parser: 17 files created, outputs flat `PipelineConfig` (no backend variants)
+- [ ] `yaml_parser_queues.cpp` created: handles `queue_defaults:` + inline `queue: {}` resolution
+- [ ] `yaml_parser_pipeline.cpp` created: parses `pipeline:` section
+- [ ] Messaging: 4 files created, both implement `IMessageProducer`
+- [ ] Storage: 4 files created, both implement `IStorageManager`
+- [ ] REST API: 2 files created, uses `IPipelineManager` interface
+- [ ] All files in `engine::infrastructure::*` namespace
+- [ ] All includes use `"engine/infrastructure/..."` and `"engine/core/..."` paths
 - [ ] Each sub-module CMake target compiles independently
 - [ ] Unified `vms_engine_infrastructure` INTERFACE target works

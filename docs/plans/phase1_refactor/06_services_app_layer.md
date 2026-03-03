@@ -1,7 +1,7 @@
 # Plan 06 — Services, Application Entry Point, and Plugins
 
-> Migrate external services (`services/`), rewrite `app/main.cpp`, and copy `plugins/`.
-> This is the final code migration plan before integration testing.
+> Create external services (`services/`), write `app/main.cpp`, and create `plugins/`.
+> This is the final implementation plan before integration testing.
 
 ---
 
@@ -11,27 +11,27 @@
 
 ## Deliverables
 
-- [ ] Triton inference client (1 header + 1 source) migrated
-- [ ] `app/main.cpp` rewritten (remove #ifdef guards, use `engine::` namespace)
-- [ ] All 7 plugin source files copied
+- [ ] Triton inference client (1 header + 1 source) created
+- [ ] `app/main.cpp` written (DeepStream-only, `engine::` namespace throughout)
+- [ ] All 7 plugin source files created
 - [ ] Final binary links and compiles
 
 ---
 
 ## Part A: External Services (Triton Client)
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                           | Target (vms-engine)                                           | Changes   |
-| ------------------------------------------------------------ | ------------------------------------------------------------- | ---------- |
-| `services/include/lantana/services/triton_inference_client.hpp` | `services/include/engine/services/triton_inference_client.hpp` | Namespace |
-| `services/src/triton_inference_client.cpp`                    | `services/src/triton_inference_client.cpp`                     | Namespace + includes |
+| File                                                           | Purpose                                                                 |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `services/include/engine/services/triton_inference_client.hpp` | Declares `TritonInferenceClient`; implements `IExternalInferenceClient` |
+| `services/src/triton_inference_client.cpp`                     | HTTP/gRPC calls to Triton Inference Server                              |
 
-### Changes
+### Conventions
 
-- `namespace lantana::services` → `namespace engine::services`
-- `#include "lantana/core/services/..."` → `#include "engine/core/services/..."`
-- Implement `engine::core::services::IExternalInferenceClient` (if not already)
+- Namespace: `engine::services`
+- Implement `engine::core::services::IExternalInferenceClient`
+- Includes: `#include "engine/core/services/..."`
 
 ### CMakeLists.txt
 
@@ -55,22 +55,15 @@ target_link_libraries(vms_engine_services
 
 ## Part B: Application Entry Point (main.cpp)
 
-The original `app/main.cpp` is **546 lines**. Key changes during rewrite:
+`app/main.cpp` is the single entry point (~450 lines). It is DeepStream-only — no `#ifdef` guards, no backend variants.
 
-### What Gets Removed
+### Design Decisions
 
-1. **#ifdef backend guards** — All `LANTANA_WITH_DEEPSTREAM` / `LANTANA_WITH_DLSTREAMER` blocks
-2. **Backend selection logic** — `create_pipeline_manager()` no longer switches on `backend_type`
-3. **DLStreamer code paths** — All dead code / commented-out DLStreamer references
-4. **`std::variant` ParseResult handling** — Simplify to direct config struct
-
-### What Gets Changed
-
-1. **Namespace**: `lantana::` → `engine::` everywhere
-2. **Include paths**: All `lantana/` → `engine/`
-3. **Logger name**: `"lantana_app"` → `"vms_engine"`
-4. **Default config path**: `"config/deepstream_default.yml"` → `"config/default.yml"` (or keep as-is)
-5. **Pipeline manager creation**: Direct construction, no factory switch
+1. **DeepStream-only** — No `#ifdef LANTANA_WITH_DEEPSTREAM` guards; DeepStream is the only pipeline backend.
+2. **Direct construction** — `create_pipeline_manager()` calls `std::make_shared<engine::pipeline::PipelineManager>()` directly.
+3. **Flat config** — Parser returns `PipelineConfig` directly; no `std::variant` wrapping.
+4. **Logger name**: `"vms_engine"`
+5. **Default config path**: `-c configs/default.yml`
 
 ### Rewritten Structure (Pseudocode)
 
@@ -140,22 +133,6 @@ int main(int argc, char* argv[]) {
 }
 ```
 
-### Detailed Diff Summary
-
-| Section | Lines | Change Type |
-| --- | --- | --- |
-| Includes (1-19) | 19 | Replace paths, remove `#ifdef` includes |
-| Global vars (39-43) | 5 | `lantana::` → `engine::` |
-| `handle_signal` (45-69) | 25 | Unchanged logic, namespace update |
-| `handle_crash_signal` (71-115) | 45 | Unchanged |
-| `parse_arguments` (117-131) | 15 | Optional: update default config path |
-| `initialize_logger` (133-155) | 23 | `lantana::core::utils::` → `engine::core::utils::`, name `"vms_engine"` |
-| `create_pipeline_manager` (157-205) | 49 → **5** | **Major simplification**: remove backend switch, #ifdef |
-| `main()` steps 1-4 (207-300) | 94 | Namespace updates, remove `std::variant` handling |
-| `main()` steps 5-9 (301-360) | 60 | Namespace updates |
-| `main()` steps 10-11 (360-546) | 186 | Namespace updates |
-| **Total** | **546** | **~450 lines after cleanup** |
-
 ### CMakeLists.txt
 
 ```cmake
@@ -179,21 +156,19 @@ target_link_libraries(vms_engine
 
 ## Part C: Plugins (Custom Parsers)
 
-Plugins are shared libraries loaded at runtime by DeepStream via `custom-lib-path` in nvinfer config files. They don't depend on core/domain/infrastructure — they only depend on DeepStream SDK headers.
+Plugins are shared libraries loaded at runtime by DeepStream via `custom-lib-path` in nvinfer config files. They depend only on DeepStream SDK headers and export C functions — they do not use core/domain/infrastructure.
 
-### File Migration Table
+### Files to Create
 
-| Source (lantanav2)                                           | Target (vms-engine)                        | Changes         |
-| ------------------------------------------------------------ | ------------------------------------------ | ---------------- |
-| `plugins/src/nvdsinfer_custom_impl_Yolo.cpp`               | `plugins/src/nvdsinfer_custom_impl_Yolo.cpp` | Include paths if any |
-| `plugins/src/nvdsinfer_custom_impl_Yolo_face.cpp`          | `plugins/src/nvdsinfer_custom_impl_Yolo_face.cpp` | Include paths   |
-| `plugins/src/nvdsinfer_custom_impl_Yolo_padded.cpp`        | `plugins/src/nvdsinfer_custom_impl_Yolo_padded.cpp` | Include paths   |
-| `plugins/src/nvdsinfer_person_attrib_deepmar.cpp`           | `plugins/src/nvdsinfer_person_attrib_deepmar.cpp` | Include paths   |
-| `plugins/src/nvdsinfer_person_attrib_deepmar_24label.cpp`   | `plugins/src/nvdsinfer_person_attrib_deepmar_24label.cpp` | Include paths   |
-| `plugins/src/ocr_fast_plate_parser.cpp`                     | `plugins/src/ocr_fast_plate_parser.cpp`     | Include paths   |
-| `plugins/src/ocr_fast_plate_parser_vn.cpp`                  | `plugins/src/ocr_fast_plate_parser_vn.cpp`  | Include paths   |
-
-These files are typically standalone — they include DeepStream SDK headers directly and export C functions. **Minimal or no changes needed** beyond copying.
+| File                                                      | Purpose                           |
+| --------------------------------------------------------- | --------------------------------- |
+| `plugins/src/nvdsinfer_custom_impl_Yolo.cpp`              | YOLO bounding box parser          |
+| `plugins/src/nvdsinfer_custom_impl_Yolo_face.cpp`         | YOLO face detection parser        |
+| `plugins/src/nvdsinfer_custom_impl_Yolo_padded.cpp`       | YOLO padded output parser         |
+| `plugins/src/nvdsinfer_person_attrib_deepmar.cpp`         | Person attribute parser (DeepMAR) |
+| `plugins/src/nvdsinfer_person_attrib_deepmar_24label.cpp` | DeepMAR 24-label variant          |
+| `plugins/src/ocr_fast_plate_parser.cpp`                   | License plate OCR parser          |
+| `plugins/src/ocr_fast_plate_parser_vn.cpp`                | Vietnamese plate OCR parser       |
 
 ### CMakeLists.txt
 
@@ -228,39 +203,42 @@ endforeach()
 ## Verification
 
 ```bash
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
+
 # 1. Compile services
-cmake --build build --target vms_engine_services -- -j$(nproc)
+cmake --build build --target vms_engine_services -- -j5
 
 # 2. Compile main binary
-cmake --build build --target vms_engine -- -j$(nproc)
+cmake --build build --target vms_engine -- -j5
 
 # 3. Compile all plugins
-cmake --build build -- -j$(nproc)
+cmake --build build -- -j5
 
-# 4. Check no lantana references in main binary code
-grep -r "lantana" app/ services/ plugins/ && echo "FAIL" || echo "PASS"
+# 4. Check engine:: namespace in services
+grep -r "engine::services" services/ --include="*.hpp" --include="*.cpp" | head -5
 
 # 5. Check no #ifdef backend guards
-grep -r "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER" app/ && echo "FAIL" || echo "PASS"
+grep -r "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER\|WITH_DLSTREAMER" app/ \
+    --include="*.cpp" --include="*.hpp" && echo "FAIL" || echo "PASS"
 
 # 6. Verify binary exists
 ls -la build/bin/vms_engine
 
 # 7. Verify plugins built
-ls -la build/lib/*.so 2>/dev/null || ls -la build/plugins/*.so 2>/dev/null
+find build/ -name "*.so" | sort
 ```
 
 ---
 
 ## Checklist
 
-- [ ] Services: 2 files migrated, namespace updated
-- [ ] `app/main.cpp`: Rewritten without #ifdef guards (~100 lines removed)
-- [ ] `create_pipeline_manager()`: Direct construction (no backend switch)
+- [ ] Services: 2 files created in `engine::services` namespace
+- [ ] `app/main.cpp`: Written without `#ifdef` guards (~450 lines)
+- [ ] `create_pipeline_manager()`: Direct construction (`make_shared<PipelineManager>()`)
 - [ ] Logger name: `"vms_engine"`
-- [ ] All `lantana::` → `engine::` namespace
-- [ ] All include paths updated to `engine/`
-- [ ] Plugins: 7 files copied (minimal changes)
-- [ ] Plugin CMake builds each as separate `.so`
-- [ ] Final binary `vms_engine` links and compiles
-- [ ] No remaining `lantana`, `LANTANA_WITH_*`, or `backends/` references
+- [ ] All includes use `"engine/..."` paths
+- [ ] Plugins: 7 files created, build each as separate `.so`
+- [ ] Plugin CMake loops over source list
+- [ ] Final binary `vms_engine` links successfully
+- [ ] No `LANTANA_WITH_*` or `backends/` references in source

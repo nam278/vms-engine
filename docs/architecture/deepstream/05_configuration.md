@@ -16,9 +16,9 @@ File ref: [`../../configs/deepstream_default.yml`](../../configs/deepstream_defa
 
 ```yaml
 # YAML (snake_case)          GStreamer property (kebab-case)
-config_file_path:  …     →   config-file-path
-ll_lib_file:       …     →   ll-lib-file
-max_size_buffers:  …     →   max-size-buffers
+config_file_path: …     →   config-file-path
+ll_lib_file: …     →   ll-lib-file
+max_size_buffers: …     →   max-size-buffers
 ```
 
 ### 2.2 Enum Fields là Integers
@@ -26,9 +26,9 @@ max_size_buffers:  …     →   max-size-buffers
 Tất cả enum properties trong GStreamer được represent bởi **integer** trong YAML:
 
 ```yaml
-smart_record: 1          # 0=off, 1=audio+video, 2=video-only
-process_mode: 1          # 1=primary (PGIE), 2=secondary (SGIE)
-compute_hw: 0            # 0=default, 1=GPU, 2=VIC
+smart_record: 1 # 0=off, 1=audio+video, 2=video-only
+process_mode: 1 # 1=primary (PGIE), 2=secondary (SGIE)
+compute_hw: 0 # 0=default, 1=GPU, 2=VIC
 ```
 
 ### 2.3 `queue: {}` Pattern
@@ -37,280 +37,241 @@ Thêm `queue: {}` vào bất kỳ element nào để auto-insert GstQueue với 
 
 ```yaml
 - id: "pgie"
-  queue: {}              # Insert queue trước pgie
+  queue: {} # Insert queue trước pgie
 
 # Hoặc override defaults:
 - id: "tracker"
   queue:
     max_size_buffers: 20
-    leaky: downstream
+    leaky: 2
 ```
 
 ## 3. Schema Đầy Đủ
 
+> **Canonical reference**: [`docs/configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+
 ```yaml
-# ─────────────────────────────────────────────────────────────────────
-# VMS Engine Pipeline Configuration
-# Version: 1.0.0
-# ─────────────────────────────────────────────────────────────────────
+# =============================================================================
+# VMS Engine — DeepStream Pipeline Configuration
+# =============================================================================
+# PIPELINE TOPOLOGY (left-to-right):
+#   [sources_bin] → output_queue →
+#   [processing_bin] → output_queue →
+#   [visuals_bin] → output_queue →
+#   [outputs_bin]
+#
+# QUEUE RULES:
+#   queue: {}         → insert queue, inherit queue_defaults
+#   queue: { ... }    → insert queue, override specific fields
+#   (no queue field)  → no queue before this element
+# =============================================================================
 
+version: "1.0.0"
+
+# ─────────────────────────────────────────────────────────────────────
+# Pipeline-level metadata
+# ─────────────────────────────────────────────────────────────────────
 pipeline:
-  id: "pipeline_main"              # Unique ID
-  name: "Main VMS Pipeline"       # Human-readable name
-  log_level: "INFO"                # TRACE|DEBUG|INFO|WARN|ERROR|CRITICAL
-  gst_log_level: "*:1"            # GStreamer debug categories
-  dot_file_dir: "dev/logs"        # Export DOT graph; empty = disabled
-  log_file: "dev/logs/app.log"    # spdlog file output; empty = stdout only
+  id: "de1"
+  name: "Intrusion Detection Pipeline"
+  log_level: "INFO" # DEBUG | INFO | WARN | ERROR
+  gst_log_level: "*:1" # GStreamer categories, e.g. "*:3,GST_PADS:5"
+  dot_file_dir: "/opt/engine/data/logs"
+  log_file: "/opt/engine/data/logs/app.log"
 
-# Queue defaults (áp dụng cho queue: {} shorthand)
+# Queue defaults — any queue: {} with no overrides inherits these
 queue_defaults:
   max_size_buffers: 10
   max_size_bytes_mb: 20
   max_size_time_sec: 0.5
-  leaky: "downstream"             # none|upstream|downstream
+  leaky: 2 # 0=none, 1=upstream, 2=downstream
   silent: true
 
-# ─────────────────────────────────────────────────────────────────────
-# SOURCES — nvmultiurisrcbin
-# ─────────────────────────────────────────────────────────────────────
+# =============================================================================
+# STAGE 1 — Sources Block (→ sources_bin)
+# Element: nvmultiurisrcbin
+# Properties in 3 groups: direct, nvurisrcbin passthrough, nvstreammux passthrough
+# =============================================================================
 sources:
-  id: "src_muxer"                  # Element ID trong GStreamer pipeline
-  gpu_id: 0
+  type: nvmultiurisrcbin
 
-  # Muxer settings (truyền qua nvmultiurisrcbin → nvstreammux)
+  # Group 1 — nvmultiurisrcbin direct
+  ip_address: "localhost"
+  port: 9000 # 0 = disable REST API
+  max_batch_size: 4
+  mode: 0 # 0=video  1=audio
+
+  # Group 2 — nvurisrcbin per-source passthrough
+  gpu_id: 0
+  num_extra_surfaces: 9
+  cudadec_memtype: 0 # 0=device  1=pinned  2=unified
+  dec_skip_frames: 0 # 0=all  1=non-ref  2=key-only
+  drop_frame_interval: 0
+  select_rtp_protocol: 4 # 0=multi  4=TCP-only
+  rtsp_reconnect_interval: 10
+  rtsp_reconnect_attempts: -1
+  latency: 400
+  udp_buffer_size: 4194304
+  disable_audio: false
+  disable_passthrough: false
+  drop_pipeline_eos: true
+
+  # Group 3 — nvstreammux passthrough
   width: 1920
   height: 1080
-  batched_push_timeout: 40000     # microseconds = 40ms (~25fps)
+  batched_push_timeout: 40000 # µs
   live_source: true
+  sync_inputs: false
 
-  # RTSP/connectivity
-  rtsp_reconnect_interval: 10     # seconds; 0 = disable
-  cudadec_memtype: 0              # 0=device, 1=pinned, 2=unified
-
-  # Smart record (embedded trong nvmultiurisrcbin)
-  smart_record: 0                 # 0=disabled (cấu hình riêng ở phần smart_record)
-
-  # Camera list (URI → thứ tự = stream index)
   cameras:
-    - id: "cam_01"
-      uri: "rtsp://192.168.1.100:554/stream1"
-      name: "Front Gate"
-      location: "entrance"
+    - name: camera-01
+      uri: rtsp://192.168.1.99:8554/view_cam_camera-01
+    - name: camera-02
+      uri: rtsp://192.168.1.99:8554/view_cam_camera-02
 
-    - id: "cam_02"
-      uri: "rtsp://192.168.1.101:554/stream1"
-      name: "Parking Lot"
+  # Smart Record — flat properties on nvmultiurisrcbin
+  smart_record: 2 # 0=disable  1=cloud-only  2=multi
+  smart_rec_dir_path: "/opt/engine/data/rec"
+  smart_rec_file_prefix: "lsr"
+  smart_rec_cache: 10 # pre-event buffer (sec)
+  smart_rec_default_duration: 20
+  smart_rec_mode: 0 # 0=audio+video  1=video  2=audio
+  smart_rec_container: 0 # 0=mp4  1=mkv
 
-    # Development / testing:
-    - id: "cam_test"
-      uri: "file:///opt/samples/video.mp4"
+  output_queue:
+    max_size_buffers: 5
+    leaky: 2
 
-# ─────────────────────────────────────────────────────────────────────
-# PROCESSING — nvinfer, nvtracker, nvstreamdemux, nvdsanalytics
-# ─────────────────────────────────────────────────────────────────────
+# =============================================================================
+# STAGE 2 — Processing Block (→ processing_bin)
+# Elements: nvinfer | nvinferserver, nvtracker, nvstreamdemux
+# =============================================================================
 processing:
   elements:
-
-    # ── Primary Inference (Object Detection) ─────────────────────────
-    - id: "pgie"
-      role: "primary_inference"
-      queue: {}
-
-      type: "nvinfer"              # nvinfer (TensorRT) | nvinferserver (Triton)
-      config_file_path: "configs/nvinfer/pgie_config.txt"
+    - id: pgie_detection
+      type: nvinfer # nvinfer | nvinferserver
+      role: primary_inference
       unique_id: 1
-      process_mode: 1             # 1 = primary (whole frame)
-      batch_size: 4               # Phải match số cameras
-      interval: 0                 # Process every N batches; 0 = every batch
+      config_file: "/opt/engine/data/components/pgie_detection/config.yml"
+      process_mode: 1 # 1=primary  2=secondary
+      interval: 3
+      batch_size: 4
       gpu_id: 0
-
-    # ── Tracker ─────────────────────────────────────────────────────
-    - id: "nvtracker"
-      role: "tracker"
       queue: {}
 
+    - id: tracker
+      type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-      ll_config_file: "configs/tracker/nvdcf_config.yml"
+      ll_config_file: "/opt/engine/data/config/tracker_NvDCF_perf.yml"
       tracker_width: 640
-      tracker_height: 384
+      tracker_height: 640
       gpu_id: 0
-      compute_hw: 0
-      display_tracking_id: true
-
-    # ── Secondary Inference (LPR — optional) ────────────────────────
-    - id: "sgie_lpr"
-      role: "secondary_inference"
-      queue: {}
-      enabled: false              # Set true để bật
-
-      type: "nvinfer"
-      config_file_path: "configs/nvinfer/sgie_lpr_config.txt"
-      unique_id: 2
-      process_mode: 2             # 2 = secondary (per-object)
-      batch_size: 16
-      operate_on_gie_id: 1        # Chạy trên output của pgie (unique_id=1)
-      operate_on_class_ids: "2"   # Chỉ trên class 2 (vehicles)
-      gpu_id: 0
-
-    # ── Analytics (optional) ─────────────────────────────────────────
-    - id: "analytics"
-      role: "analytics"
-      queue: {}
-      enabled: false
-
-      config_file: "configs/analytics/nvdsanalytics_config.txt"
-      gpu_id: 0
-
-    # ── Demuxer ───────────────────────────────────────────────────────
-    - id: "demuxer"
-      role: "demuxer"
+      compute_hw: 1 # 0=default  1=GPU  2=VIC
+      user_meta_pool_size: 512
       queue: {}
 
-# ─────────────────────────────────────────────────────────────────────
-# VISUALS — nvmultistreamtiler + nvdsosd
-# ─────────────────────────────────────────────────────────────────────
+  output_queue:
+    max_size_buffers: 10
+
+# =============================================================================
+# STAGE 3 — Visuals Block (→ visuals_bin)
+# =============================================================================
 visuals:
-  enabled: true
+  enable: true
+  elements:
+    - id: tiler
+      type: nvmultistreamtiler
+      gpu_id: 0
+      rows: 2
+      columns: 2
+      width: 1920
+      height: 1080
+      queue: {}
 
-  tiler:
-    enabled: true
-    rows: 2
-    columns: 2
-    width: 1280
-    height: 720
-    gpu_id: 0
+    - id: osd
+      type: nvdsosd
+      gpu_id: 0
+      process_mode: 1 # 0=cpu  1=gpu  2=auto
+      display_bbox: true
+      display_text: false
+      display_mask: false
+      queue: {}
 
-  osd:
-    enabled: true
-    process_mode: 0             # 0=CPU, 1=GPU, 2=HW
-    display_bbox: true
-    display_text: true
-    display_mask: false
-    border_width: 2
-    gpu_id: 0
+  output_queue: {}
 
-# ─────────────────────────────────────────────────────────────────────
-# OUTPUTS — per stream sinks
-# ─────────────────────────────────────────────────────────────────────
+# =============================================================================
+# STAGE 4 — Outputs Block (→ outputs_bin)
+# Each output = flat elements[] list in GStreamer link order
+# =============================================================================
 outputs:
-  - stream_id: "0"              # Tương ứng với stream index từ demuxer
-    sinks:
+  - id: rtsp_out
+    type: rtsp_client
+    elements:
+      - id: preencode_convert
+        type: nvvideoconvert
+        nvbuf_memory_type: nvbuf-mem-cuda-device
+        queue: {}
 
-      # Display sink
-      - id: "display_0"
-        type: "display"         # display|file|rtsp|fake
-        sync: false
+      - id: preencode_caps
+        type: capsfilter
+        caps: "video/x-raw(memory:NVMM), format=(string)NV12"
 
-      # RTSP output
-      - id: "rtsp_0"
-        type: "rtsp"
-        location: "rtsp://localhost:8554/stream0"
-        codec: "h264"
-        bitrate: 4000000
+      - id: encoder
+        type: nvv4l2h264enc
+        bitrate: 3000000
+        control_rate: cbr
+        profile: main
         iframeinterval: 30
-        preset_level: 1
 
-      # File recording (raw — không qua smart record)
-      - id: "file_0"
-        type: "file"
-        location: "dev/rec/output_%05d.mp4"
-        codec: "h264"
-        bitrate: 4000000
+      - id: parser
+        type: h264parse
+        queue:
+          max_size_buffers: 20
+          leaky: 2
 
-# ─────────────────────────────────────────────────────────────────────
-# SMART RECORD (embedded trong nvmultiurisrcbin)
-# ─────────────────────────────────────────────────────────────────────
-smart_record:
-  enabled: true
-  mode: 1                      # 1=audio+video, 2=video-only
+      - id: sink
+        type: rtspclientsink
+        location: rtsp://192.168.1.99:8554/de1
+        protocols: tcp
+        queue: {}
 
-  # Output directory
-  output_dir: "dev/rec"
-  file_prefix: "sr_"           # sr_cam01_20240101_120000.mp4
+# =============================================================================
+# EVENT HANDLERS — GStreamer pad probe callbacks
+# =============================================================================
+event_handlers:
+  - id: smart_record
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    source_element: sources
+    trigger: smart_record
+    label_filter: [bike, bus, car, person, truck]
+    pre_event_sec: 2
+    post_event_sec: 20
+    min_interval_sec: 2
+    broker:
+      host: 192.168.1.99
+      port: 6339
+      channel: worker_lsr
 
-  # Timing
-  pre_event_duration_sec: 5    # Buffer trước event (cache trong DTS)
-  post_event_duration_sec: 10  # Continue ghi sau event
-  default_duration_sec: 30     # Nếu không có stop signal → tự dừng sau N sec
-
-  # Trigger: qua REST API hoặc probe-based auto-trigger
-  auto_trigger:
-    enabled: false
-    class_ids: [0, 2]          # Trigger khi detect class 0 (person) hoặc 2 (vehicle)
-    min_confidence: 0.7
-
-# ─────────────────────────────────────────────────────────────────────
-# MESSAGE BROKER
-# ─────────────────────────────────────────────────────────────────────
-message_broker:
-  enabled: true
-
-  # nvmsgconv config
-  msgconv:
-    config: "configs/msgconv_config.txt"
-    payload_type: 1            # 0=DEEPSTREAM_SCHEMA, 1=MINIMAL
-
-  # nvmsgbroker
-  broker:
-    proto_lib: "/opt/nvidia/deepstream/deepstream/lib/libnvds_redis_proto.so"
-    conn_str: "localhost;6379;vms_events"
-    topic: "vms/events/detections"
-    sync: false
-
-    # Alternatives:
-    # Kafka:
-    # proto_lib: ".../libnvds_kafka_proto.so"
-    # conn_str: "localhost;9092"
-    # topic: "vms_detections"
-
-# ─────────────────────────────────────────────────────────────────────
-# REST API (Pistache HTTP server)
-# ─────────────────────────────────────────────────────────────────────
-rest_api:
-  enabled: false
-  host: "0.0.0.0"
-  port: 8080
-  threads: 4
-
-# ─────────────────────────────────────────────────────────────────────
-# STORAGE
-# ─────────────────────────────────────────────────────────────────────
-storage_configurations:
-  - id: "local_storage"
-    type: "local"
-    base_path: "dev/rec"
-    create_subdirs: true
-
-  # S3/MinIO:
-  # - id: "s3_storage"
-  #   type: "s3"
-  #   endpoint: "http://minio:9000"
-  #   bucket: "vms-snapshots"
-  #   access_key: "${S3_ACCESS_KEY}"
-  #   secret_key: "${S3_SECRET_KEY}"
-
-# ─────────────────────────────────────────────────────────────────────
-# EXTERNAL SERVICES
-# ─────────────────────────────────────────────────────────────────────
-external_services:
-  - id: "ext_proc"
-    type: "http"
-    base_url: "http://localhost:8000"
-    timeout_ms: 500
-    enabled: false
-
-# ─────────────────────────────────────────────────────────────────────
-# CUSTOM HANDLERS (signal/probe based)
-# ─────────────────────────────────────────────────────────────────────
-custom_handlers: []
-  # Example:
-  # - id: "crop_handler"
-  #   type: "crop_detected_obj"
-  #   target_element: "tiler_sink_0"
-  #   config:
-  #     output_dir: "dev/rec/objects"
-  #     min_confidence: 0.8
-  #     class_ids: [0, 2]
+  - id: crop_objects
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: crop_object
+    label_filter: [bike, bus, car, person, truck]
+    save_dir: "/opt/engine/data/rec/objects"
+    capture_interval_sec: 5
+    image_quality: 85
+    save_full_frame: true
+    cleanup:
+      stale_object_timeout_min: 5
+      check_interval_batches: 30
+      old_dirs_max_days: 7
+    broker:
+      host: 192.168.1.99
+      port: 6339
+      channel: worker_lsr_snap
 ```
 
 ## 4. nvinfer Config File (`.txt`)
@@ -348,7 +309,7 @@ TargetManagement:
   enableBboxUnClipping: 1
 
 PreProcessor:
-  pixelFormat: 3                   # 3=BGR, 1=GRAY
+  pixelFormat: 3 # 3=BGR, 1=GRAY
 
 DataAssociator:
   useMatching: 1
@@ -361,65 +322,71 @@ YamlConfigParser::parse(path)
   ├── parse_pipeline_meta()       → PipelineConfig.pipeline
   ├── parse_queue_defaults()      → PipelineConfig.queue_defaults
   ├── parse_sources()             → PipelineConfig.sources
-  ├── parse_processing()          → PipelineConfig.processing (vector)
+  │     ├── cameras[]
+  │     ├── smart_record flat props
+  │     └── output_queue
+  ├── parse_processing()          → PipelineConfig.processing
+  │     ├── elements[]            (nvinfer, nvtracker, ...)
+  │     └── output_queue
   ├── parse_visuals()             → PipelineConfig.visuals
+  │     ├── elements[]            (tiler, osd, ...)
+  │     └── output_queue
   ├── parse_outputs()             → PipelineConfig.outputs (vector)
-  ├── parse_smart_record()        → PipelineConfig.smart_record (optional)
-  ├── parse_message_broker()      → PipelineConfig.message_broker (optional)
-  ├── parse_rest_api()            → PipelineConfig.rest_api (optional)
-  ├── parse_storage()             → PipelineConfig.storage_configurations
-  ├── parse_external_services()   → PipelineConfig.external_services
-  └── parse_custom_handlers()     → PipelineConfig.custom_handlers
+  │     └── per output: elements[]
+  └── parse_event_handlers()      → PipelineConfig.event_handlers (vector)
 ```
 
 ```cpp
 // infrastructure/config_parser/src/yaml_config_parser.cpp
-std::expected<PipelineConfig, std::string>
-YamlConfigParser::parse(const std::string& file_path) {
+bool YamlConfigParser::parse(const std::string& file_path,
+                             PipelineConfig& config)
+{
     YAML::Node doc;
     try {
         doc = YAML::LoadFile(file_path);
     } catch (const YAML::Exception& e) {
-        return std::unexpected(fmt::format("YAML parse error: {}", e.what()));
+        LOG_E("YAML parse error: {}", e.what());
+        return false;
     }
 
-    PipelineConfig config;
-    parse_pipeline_meta(doc, config);
-    parse_queue_defaults(doc, config);
-    parse_sources(doc, config);
-    parse_processing(doc, config);
-    parse_visuals(doc, config);
-    parse_outputs(doc, config);
-    parse_smart_record(doc, config);
-    parse_message_broker(doc, config);
-    return config;
+    config.version = doc["version"].as<std::string>("");
+
+    parse_pipeline_meta(doc["pipeline"], config.pipeline);
+    parse_queue_defaults(doc["queue_defaults"], config.queue_defaults);
+    parse_sources(doc["sources"], config.sources);
+    parse_processing(doc["processing"], config.processing);
+    parse_visuals(doc["visuals"], config.visuals);
+    parse_outputs(doc["outputs"], config.outputs);
+    parse_event_handlers(doc["event_handlers"], config.event_handlers);
+
+    return true;
 }
 ```
 
 ## 7. Environment Variable Substitution
 
-Config hỗ trợ `${}` syntax cho env vars (thực hiện trong parser):
+Config hỗ trợ `${}` syntax cho env vars (thực hiện trong parser trước khi parse YAML nodes):
 
 ```yaml
-external_services:
-  - id: "s3_storage"
-    access_key: "${S3_ACCESS_KEY}"   # Substituted từ env
-    secret_key: "${S3_SECRET_KEY}"
+sources:
+  cameras:
+    - name: camera-01
+      uri: "${RTSP_URI_CAM01}" # Substituted từ env
 ```
 
 ## 8. Config Validation
 
 ```cpp
-// ConfigValidator check sau khi parse:
+// ConfigValidator — chạy sau khi parse, trước khi build pipeline:
 class ConfigValidator : public engine::core::config::IConfigValidator {
 public:
     ValidationResult validate(const PipelineConfig& config) {
-        check_sources_not_empty(config);
-        check_processing_order(config);    // demuxer phải là last
-        check_batch_size_consistency(config);
-        check_unique_ids_unique(config);   // pgie/sgie unique_id không dupe
-        check_operate_on_gie_references(config);  // sgie.operate_on_gie_id phải exist
-        check_output_stream_ids(config);
+        check_sources_has_cameras(config);         // ít nhất 1 camera
+        check_batch_size_consistency(config);       // max_batch_size >= cameras.size()
+        check_processing_unique_ids(config);        // pgie/sgie unique_id không dupe
+        check_operate_on_gie_references(config);    // sgie.operate_on_gie_id phải tồn tại
+        check_output_elements_order(config);        // encoder trước sink
+        check_event_handler_probe_refs(config);     // probe_element phải tồn tại trong pipeline
         return result_;
     }
 };

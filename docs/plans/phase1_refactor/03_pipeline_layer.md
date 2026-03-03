@@ -1,435 +1,501 @@
-# Plan 03 — Pipeline Layer (DeepStream Backend → Pipeline Module)
+# Plan 03 — Pipeline Layer (Builders, Manager, Probes, Event Handlers)
 
-> Migrate all files from `lantanav2/backends/deepstream/` → `vms-engine/pipeline/`.
-> This is the **largest sub-plan** (~73 files). DeepStream is now the only backend — no guards, no variants, no `ds_` prefix.
+> Create all files in `pipeline/` from scratch.
+> This layer implements the core interfaces defined in Plan 02 using GStreamer/DeepStream SDK.
+> No migration from lantanav2 — all files are new creations.
 
 ---
 
 ## Prerequisites
 
-- Plan 01 completed (scaffold exists)
-- Plan 02 completed (core interfaces compile)
-
-## Deliverables
-
-- [ ] All headers migrated under `pipeline/include/engine/pipeline/`
-- [ ] All sources migrated under `pipeline/src/`
-- [ ] `ds_` prefix removed from all filenames and class names
-- [ ] `lantana::backends::deepstream::` → `engine::pipeline::` namespace
-- [ ] v1/v2 duplicates consolidated (keep v2, remove v1)
-- [ ] Handler Redis coupling removed (use injected `IMessageProducer`)
-- [ ] `pipeline/CMakeLists.txt` updated
-- [ ] Pipeline library compiles
+- Plan 02 completed (`vms_engine_core` compiles — all `I*` interfaces and config types defined)
+- Specifically: `IElementBuilder`, `IPipelineBuilder`, `IBuilderFactory`, `IPipelineManager`, `IEventHandler`, `IHandlerManager`
+- Config types: `PipelineConfig`, `SourcesConfig`, `ProcessingConfig`, `VisualsConfig`, `OutputConfig`, `EventHandlerConfig`, `QueueConfig`
 
 ---
 
-## v1/v2 Consolidation Strategy
+## Architecture Overview
 
-Several files have `_v2` variants. **Always keep v2, rename it to drop `_v2` suffix, delete v1.**
-
-| v1 (delete)                      | v2 → rename to            | Notes                               |
-| --------------------------------- | ------------------------- | ------------------------------------ |
-| `crop_object_handler.hpp/cpp`    | `crop_object_handler.hpp` | Upgraded cropping logic              |
-| `smart_record_handler.hpp/cpp`   | `smart_record_handler.hpp`| Improved recording control           |
-| `ext_proc_svc.hpp/cpp`           | `ext_proc_svc.hpp/cpp`    | External processing service          |
-| `outputs_builder.hpp`            | `outputs_builder.hpp`     | Refactored output bin construction   |
-
----
-
-## File Migration Table
-
-### 3.1 — Root-Level Manager Classes
-
-| Source (lantanav2)                        | Target (vms-engine)                          | Rename                        |
-| ----------------------------------------- | -------------------------------------------- | ------------------------------ |
-| `ds_builder_factory.hpp/cpp`             | `builder_factory.hpp/cpp`                    | Drop `ds_`; class `BuilderFactory` |
-| `ds_pipeline_manager.hpp/cpp`            | `pipeline_manager.hpp/cpp`                   | Drop `ds_`; class `PipelineManager` |
-| `ds_runtime_stream_manager.hpp/cpp`      | `runtime_stream_manager.hpp/cpp`             | Drop `ds_`; class `RuntimeStreamManager` |
-| `ds_smart_record_controller.hpp/cpp`     | `smart_record_controller.hpp/cpp`            | Drop `ds_`; class `SmartRecordController` |
-| `link_manager.hpp`                        | `link_manager.hpp`                            | Namespace only                |
-| `queue_manager.hpp`                       | `queue_manager.hpp`                           | Namespace only                |
-
-Headers go to `pipeline/include/engine/pipeline/`, sources to `pipeline/src/`.
-
-### 3.2 — Block Builders (High-Level Pipeline Construction)
-
-| Source                                          | Target                                              | Rename         |
-| ----------------------------------------------- | --------------------------------------------------- | --------------- |
-| `block_builders/base_builder.hpp`              | `block_builders/base_builder.hpp`                   | Namespace       |
-| `block_builders/pipeline_builder.hpp`          | `block_builders/pipeline_builder.hpp`               | Namespace       |
-| `block_builders/source_builder.hpp`            | `block_builders/source_builder.hpp`                 | Namespace       |
-| `block_builders/processing_builder.hpp`        | `block_builders/processing_builder.hpp`             | Namespace       |
-| `block_builders/visuals_builder.hpp`           | `block_builders/visuals_builder.hpp`                | Namespace       |
-| `block_builders/standalone_builder.hpp`        | `block_builders/standalone_builder.hpp`             | Namespace       |
-
-### 3.3 — Outputs Builder (Sub-Module)
-
-| Source                                                         | Target                                                    | Rename / Action     |
-| -------------------------------------------------------------- | --------------------------------------------------------- | -------------------- |
-| `block_builders/outputs_builder/outputs_builder.hpp` (v1)     | **DELETE**                                                 | Replaced by v2       |
-| `block_builders/outputs_builder/outputs_builder_v2.hpp`       | `block_builders/outputs_builder/outputs_builder.hpp`       | Rename, drop `_v2`  |
-| `block_builders/outputs_builder/outputs_bin_builder.hpp`      | `block_builders/outputs_builder/outputs_bin_builder.hpp`   | Namespace            |
-| `block_builders/outputs_builder/output_branch_builder.hpp`    | `block_builders/outputs_builder/output_branch_builder.hpp` | Namespace            |
-| `block_builders/outputs_builder/tee_manager.hpp`              | `block_builders/outputs_builder/tee_manager.hpp`           | Namespace            |
-| `block_builders/outputs_builder/fakesink_handler.hpp`         | `block_builders/outputs_builder/fakesink_handler.hpp`      | Namespace            |
-
-### 3.4 — Element Builders (GStreamer Element Configuration)
-
-All `ds_*_builder` files have their `ds_` prefix removed:
-
-| Source                                | Target                            | Class Rename                       |
-| -------------------------------------- | --------------------------------- | ----------------------------------- |
-| `builders/ds_analytics_builder.hpp/cpp`      | `builders/analytics_builder.hpp/cpp`    | `DsAnalyticsBuilder` → `AnalyticsBuilder` |
-| `builders/ds_demuxer_builder.hpp/cpp`        | `builders/demuxer_builder.hpp/cpp`      | `DsDemuxerBuilder` → `DemuxerBuilder`     |
-| `builders/ds_encoder_builder.hpp/cpp`        | `builders/encoder_builder.hpp/cpp`      | `DsEncoderBuilder` → `EncoderBuilder`     |
-| `builders/ds_infer_builder.hpp/cpp`          | `builders/infer_builder.hpp/cpp`        | `DsInferBuilder` → `InferBuilder`         |
-| `builders/ds_msgconv_broker_builder.hpp/cpp` | `builders/msgconv_broker_builder.hpp/cpp`| `DsMsgconvBrokerBuilder` → `MsgconvBrokerBuilder` |
-| `builders/ds_muxer_builder.hpp/cpp`          | `builders/muxer_builder.hpp/cpp`        | `DsMuxerBuilder` → `MuxerBuilder`         |
-| `builders/ds_osd_builder.hpp/cpp`            | `builders/osd_builder.hpp/cpp`          | `DsOsdBuilder` → `OsdBuilder`             |
-| `builders/ds_queue_builder.hpp/cpp`          | `builders/queue_builder.hpp/cpp`        | `DsQueueBuilder` → `QueueBuilder`         |
-| `builders/ds_sink_builder.hpp/cpp`           | `builders/sink_builder.hpp/cpp`         | `DsSinkBuilder` → `SinkBuilder`           |
-| `builders/ds_smart_record_builder.hpp/cpp`   | `builders/smart_record_builder.hpp/cpp` | `DsSmartRecordBuilder` → `SmartRecordBuilder` |
-| `builders/ds_source_builder.hpp/cpp`         | `builders/source_builder.hpp/cpp`       | `DsSourceBuilder` → `SourceBuilder`       |
-| `builders/ds_tiler_builder.hpp/cpp`          | `builders/tiler_builder.hpp/cpp`        | `DsTilerBuilder` → `TilerBuilder`         |
-| `builders/ds_tracker_builder.hpp/cpp`        | `builders/tracker_builder.hpp/cpp`      | `DsTrackerBuilder` → `TrackerBuilder`     |
-
-**Additional src-only files** (no matching header — implementation helpers):
-
-| Source                                                | Target                                            | Notes                  |
-| ------------------------------------------------------ | ------------------------------------------------- | ----------------------- |
-| `src/builders/processing_flow_bin_builder.cpp`        | `src/builders/processing_flow_bin_builder.cpp`     | Namespace + includes   |
-| `src/builders/source_bin_builder.cpp`                 | `src/builders/source_bin_builder.cpp`              | Namespace + includes   |
-| `src/builders/ds_smuxer_builder.cpp`                  | `src/builders/smuxer_builder.cpp`                  | Drop `ds_` prefix      |
-
-### 3.5 — Config (Validator)
-
-| Source                                    | Target                                  | Rename                          |
-| ----------------------------------------- | --------------------------------------- | -------------------------------- |
-| `config/ds_config_validator.hpp/cpp`     | `config/config_validator.hpp/cpp`       | Drop `ds_`; class `ConfigValidator` |
-
-### 3.6 — Event Handlers
-
-| Source                                              | Target                                          | Action                  |
-| ----------------------------------------------------- | ----------------------------------------------- | ------------------------ |
-| `event_handlers/crop_detected_obj_handler.hpp/cpp` | `event_handlers/crop_detected_obj_handler.hpp/cpp` | Namespace; inject `IMessageProducer` |
-| `event_handlers/ext_proc_handler.hpp/cpp`          | `event_handlers/ext_proc_handler.hpp/cpp`          | Namespace; inject `IMessageProducer` |
-| `event_handlers/handler_manager.hpp/cpp`           | `event_handlers/handler_manager.hpp/cpp`           | Namespace               |
-| `event_handlers/object_crop.hpp`                    | `event_handlers/object_crop.hpp`                    | Namespace (utility header) |
-| `event_handlers/smart_record_handler.hpp/cpp` (v1) | **DELETE**                                          | Replaced by v2          |
-| `event_handlers/smart_record_handler_v2.hpp/cpp`   | `event_handlers/smart_record_handler.hpp/cpp`       | Rename, drop `_v2`; inject `IMessageProducer` |
-
-### 3.7 — Linking
-
-| Source                                  | Target                                  | Changes    |
-| ---------------------------------------- | ---------------------------------------- | ----------- |
-| `linking/pipeline_linker.hpp/cpp`      | `linking/pipeline_linker.hpp/cpp`        | Namespace  |
-
-### 3.8 — Probes
-
-| Source                                               | Target                                          | Action                  |
-| ------------------------------------------------------ | ----------------------------------------------- | ------------------------ |
-| `probes/class_id_namespace_handler.hpp/cpp`          | `probes/class_id_namespace_handler.hpp/cpp`      | Namespace               |
-| `probes/crop_object_handler.hpp/cpp` (v1)            | **DELETE**                                        | Replaced by v2          |
-| `probes/crop_object_handler_v2.hpp/cpp`              | `probes/crop_object_handler.hpp/cpp`              | Rename, drop `_v2`     |
-| `probes/probe_handler_manager.hpp/cpp`               | `probes/probe_handler_manager.hpp/cpp`            | Namespace               |
-| `probes/smart_record_probe_handler.hpp/cpp`          | `probes/smart_record_probe_handler.hpp/cpp`       | Namespace               |
-
-### 3.9 — Services (in-backend)
-
-| Source                                    | Target                                  | Action                |
-| ----------------------------------------- | --------------------------------------- | ---------------------- |
-| `services/ext_proc_svc.hpp/cpp` (v1)    | **DELETE**                               | Replaced by v2        |
-| `services/ext_proc_svc_v2.hpp/cpp`      | `services/ext_proc_svc.hpp/cpp`          | Rename, drop `_v2`   |
-
-### 3.10 — Utils
-
-| Source                             | Target                          | Changes    |
-| ----------------------------------- | ------------------------------- | ----------- |
-| `utils/uuid_manager.hpp/cpp`      | `utils/uuid_manager.hpp/cpp`    | Namespace  |
-
----
-
-## Critical Rework During Migration
-
-### Rework 1: Handler Dependency Injection
-
-In lantanav2, event handlers access Redis through a static `IHandler::redis_producer_` (removed in Plan 02). Each handler now receives `IMessageProducer*` via constructor:
-
-**Before:**
-```cpp
-class CropDetectedObjHandler : public IHandler {
-    void handle(/* ... */) {
-        // Uses static redis_producer_
-        IHandler::redis_producer_->publish("channel", msg);
-    }
-};
+```
+pipeline/
+  include/engine/pipeline/
+    pipeline_manager.hpp            # IPipelineManager implementation
+    runtime_stream_manager.hpp      # Runtime add/remove streams
+    smart_record_controller.hpp     # NvDsSR API wrapper
+    builder_factory.hpp             # IBuilderFactory implementation
+    config_validator.hpp            # Pipeline config validation
+    block_builders/
+      source_block_builder.hpp      # Phase 1: source bin (nvmultiurisrcbin)
+      processing_block_builder.hpp  # Phase 2: inference chain
+      visuals_block_builder.hpp     # Phase 3: tiler + OSD
+      outputs_block_builder.hpp     # Phase 4: encoders + sinks
+    builders/
+      source_builder.hpp            # nvmultiurisrcbin builder
+      muxer_builder.hpp             # nvstreammux (fallback/explicit)
+      queue_builder.hpp             # GStreamer queue element
+      infer_builder.hpp             # nvinfer (PGIE + SGIE)
+      tracker_builder.hpp           # nvtracker
+      analytics_builder.hpp         # nvdsanalytics
+      tiler_builder.hpp             # nvmultistreamtiler
+      osd_builder.hpp               # nvdsosd
+      encoder_builder.hpp           # nvv4l2h264enc / nvv4l2h265enc
+      sink_builder.hpp              # rtspclientsink / fakesink / filesink
+      msgconv_builder.hpp           # nvmsgconv
+      msgbroker_builder.hpp         # nvmsgbroker
+      demuxer_builder.hpp           # nvstreamdemux
+    event_handlers/
+      handler_manager.hpp           # IHandlerManager implementation
+      smart_record_handler.hpp      # smart record event handler
+      crop_detected_obj_handler.hpp # crop object on detection
+      ext_proc_handler.hpp          # external processor handler
+      object_crop.hpp               # crop utility (header-only)
+    linking/
+      pipeline_linker.hpp           # static/dynamic element linking
+    probes/
+      probe_handler_manager.hpp     # pad probe registration
+      smart_record_probe_handler.hpp
+      crop_object_handler.hpp       # pad probe for crop
+      class_id_namespace_handler.hpp
+  src/  (mirrors include structure)
 ```
 
-**After:**
+---
+
+## Full Config Pattern — ALL Builders
+
+Every element builder receives `const engine::core::config::PipelineConfig& config` (full config).
+The `index` parameter selects the element within the relevant config list.
+
 ```cpp
-class CropDetectedObjHandler : public engine::core::handlers::IHandler {
+// ✅ ALL builders follow this exact signature
+GstElement* SomeBuilder::build(
+    const engine::core::config::PipelineConfig& config,
+    int index = 0) override;
+```
+
+### Config Section Access Map
+
+| Builder               | Config access                                    | Type                     |
+| --------------------- | ------------------------------------------------ | ------------------------ |
+| `SourceBuilder`       | `config.sources`                                 | `SourcesConfig`          |
+| `MuxerBuilder`        | `config.sources` (batch_size, width, height)     | `SourcesConfig`          |
+| `QueueBuilder`        | `QueueConfig` directly (not PipelineConfig)      | `QueueConfig`            |
+| `InferBuilder`        | `config.processing.elements[index]`              | `ProcessingElementConfig`|
+| `TrackerBuilder`      | `config.processing.elements[index]`              | `ProcessingElementConfig`|
+| `AnalyticsBuilder`    | `config.processing.elements[index]`              | `ProcessingElementConfig`|
+| `TilerBuilder`        | `config.visuals.elements[index]`                 | `VisualsElementConfig`   |
+| `OsdBuilder`          | `config.visuals.elements[index]`                 | `VisualsElementConfig`   |
+| `EncoderBuilder`      | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
+| `SinkBuilder`         | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
+| `MsgconvBuilder`      | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
+| `MsgbrokerBuilder`    | `config.outputs[outputIdx].elements[elemIdx]`    | `OutputElementConfig`    |
+| `DemuxerBuilder`      | `config.sources` (num sources for pads)          | `SourcesConfig`          |
+
+**QueueBuilder exception**: Takes `QueueConfig` (not `PipelineConfig`) since queues are inline elements
+with their own config resolved by the block builders before calling `QueueBuilder`.
+
+---
+
+## Section 3.1 — Root-Level Manager Classes
+
+### Files to Create
+
+| File (header)                                   | File (source)                                   | Class                    |
+| ----------------------------------------------- | ----------------------------------------------- | ------------------------ |
+| `include/engine/pipeline/pipeline_manager.hpp`  | `src/pipeline_manager.cpp`                      | `PipelineManager`        |
+| `include/engine/pipeline/runtime_stream_manager.hpp` | `src/runtime_stream_manager.cpp`           | `RuntimeStreamManager`   |
+| `include/engine/pipeline/smart_record_controller.hpp` | `src/smart_record_controller.cpp`         | `SmartRecordController`  |
+| `include/engine/pipeline/builder_factory.hpp`   | `src/builder_factory.cpp`                       | `BuilderFactory`         |
+| `include/engine/pipeline/config_validator.hpp`  | `src/config_validator.cpp`                      | `ConfigValidator`        |
+
+### `PipelineManager` — Key Notes
+
+- Implements `engine::core::pipeline::IPipelineManager`
+- Owns `GstElement* pipeline_` as a `GstPipelineOwner` RAII wrapper (see RAII.md)
+- Sets up `GstBus` watch — `gst_bus_add_watch(bus, on_bus_message, this)`
+- State machine: `Uninitialized → Ready → Playing → Paused → Stopped → Error`
+- Does NOT include any DeepStream SDK headers — only GStreamer `<gst/gst.h>`
+- Delegates pipeline construction to `IPipelineBuilder` (injected via constructor)
+
+```cpp
+// pipeline/include/engine/pipeline/pipeline_manager.hpp
+#pragma once
+#include "engine/core/pipeline/ipipeline_manager.hpp"
+#include "engine/core/builders/ipipeline_builder.hpp"
+#include "engine/core/config/config_types.hpp"
+#include <gst/gst.h>
+#include <memory>
+
+namespace engine::pipeline {
+
+class PipelineManager : public engine::core::pipeline::IPipelineManager {
 public:
-    explicit CropDetectedObjHandler(engine::core::messaging::IMessageProducer* producer)
-        : producer_(producer) {}
+    explicit PipelineManager(
+        std::unique_ptr<engine::core::builders::IPipelineBuilder> builder);
 
-    void handle(/* ... */) {
-        if (producer_) {
-            producer_->publish("channel", msg);
-        }
-    }
+    bool initialize(engine::core::config::PipelineConfig& config) override;
+    bool start() override;
+    bool stop() override;
+    bool pause() override;
+    engine::core::pipeline::PipelineState get_state() const override;
+
+    ~PipelineManager() override;
+
 private:
-    engine::core::messaging::IMessageProducer* producer_{nullptr};
+    std::unique_ptr<engine::core::builders::IPipelineBuilder> builder_;
+    GstElement* pipeline_ = nullptr;
+    GMainLoop*  loop_     = nullptr;
+    engine::core::pipeline::PipelineState state_{
+        engine::core::pipeline::PipelineState::Uninitialized};
+
+    static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer data);
+    void handle_eos();
+    void handle_error(GError* err, const gchar* debug);
 };
+
+} // namespace engine::pipeline
 ```
 
-Apply to all event handlers: `crop_detected_obj_handler`, `ext_proc_handler`, `smart_record_handler`.
+---
 
-### Rework 2: Drop #ifdef Backend Guards
+## Section 3.2 — Block Builders (Pipeline Build Phases)
 
-Remove all conditional compilation guards:
+Block builders orchestrate groups of GStreamer elements for each pipeline phase.
+Each block builder is called once by `IPipelineBuilder::build()`.
+
+### Files to Create
+
+| File (header)                                                | File (source)                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------ |
+| `include/engine/pipeline/block_builders/source_block_builder.hpp`      | `src/block_builders/source_block_builder.cpp`     |
+| `include/engine/pipeline/block_builders/processing_block_builder.hpp`  | `src/block_builders/processing_block_builder.cpp` |
+| `include/engine/pipeline/block_builders/visuals_block_builder.hpp`     | `src/block_builders/visuals_block_builder.cpp`    |
+| `include/engine/pipeline/block_builders/outputs_block_builder.hpp`     | `src/block_builders/outputs_block_builder.cpp`    |
+
+### Build Phase Overview
+
+```
+Phase 1 — SourceBlockBuilder:
+    nvmultiurisrcbin → [output_queue]
+    tail: src_tail (GstElement*)
+
+Phase 2 — ProcessingBlockBuilder:
+    [input from src_tail]
+    → [queue?] → nvinfer(PGIE) → [queue?] → nvtracker → [queue?] → nvinfer(SGIE)* → [queue?]
+    → nvdsanalytics?
+    → [output_queue]
+    tail: proc_tail
+
+Phase 3 — VisualsBlockBuilder:
+    [input from proc_tail]
+    → [queue?] → nvmultistreamtiler → [queue?] → nvdsosd → [queue?]
+    → [output_queue]
+    tail: vis_tail
+
+Phase 4 — OutputsBlockBuilder:
+    For each output in config.outputs:
+      [input from tee or proc_tail/vis_tail]
+      → [queue?] → nvv4l2h264enc/nvv4l2h265enc → [queue?] → sink
+      OR
+      → [queue?] → nvmsgconv → nvmsgbroker
+    Connects: demuxer for multi-sink outputs
+```
+
+### `tails_` Map Pattern
+
+Block builders communicate which element is the "tail" (last element before next block)
+via the `tails_` map. This is the standard linkage contract.
 
 ```cpp
-// DELETE these patterns
-#ifdef LANTANA_WITH_DEEPSTREAM
-#endif
+// Each block builder updates this map after building its phase
+// key = descriptive name, value = GstElement* (tail of this phase's chain)
+std::unordered_map<std::string, GstElement*> tails_;
 
-#ifdef LANTANA_WITH_DLSTREAMER
-// ... entire block
-#endif
+// After Phase 1:  tails_["src"]  = last element of source block
+// After Phase 2:  tails_["proc"] = last element of processing block
+// After Phase 3:  tails_["vis"]  = last element of visuals block
+// Phase 4 reads tails_["proc"] or tails_["vis"] to connect sinks
 ```
 
-All code is now unconditionally compiled.
+---
 
-### Rework 3: Update Internal Cross-References
+## Section 3.3 — Element Builders
 
-After file renames, update all internal `#include` statements within pipeline code:
+Each element builder creates exactly **one** GstElement and configures its properties.
+All use the RAII `make_gst_element()` guard pattern.
 
-```bash
-cd vms-engine/pipeline
+### Files to Create
 
-# Update includes from old backend path
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's|#include "lantana/backends/deepstream/|#include "engine/pipeline/|g' \
-    -e 's|#include "lantana/core/|#include "engine/core/|g'
+| Header                                                 | Source                                          | GStreamer element       |
+| ------------------------------------------------------ | ----------------------------------------------- | ----------------------- |
+| `include/engine/pipeline/builders/source_builder.hpp`  | `src/builders/source_builder.cpp`               | `nvmultiurisrcbin`      |
+| `include/engine/pipeline/builders/muxer_builder.hpp`   | `src/builders/muxer_builder.cpp`                | `nvstreammux`           |
+| `include/engine/pipeline/builders/queue_builder.hpp`   | `src/builders/queue_builder.cpp`                | `queue`                 |
+| `include/engine/pipeline/builders/infer_builder.hpp`   | `src/builders/infer_builder.cpp`                | `nvinfer`               |
+| `include/engine/pipeline/builders/tracker_builder.hpp` | `src/builders/tracker_builder.cpp`              | `nvtracker`             |
+| `include/engine/pipeline/builders/analytics_builder.hpp` | `src/builders/analytics_builder.cpp`          | `nvdsanalytics`         |
+| `include/engine/pipeline/builders/tiler_builder.hpp`   | `src/builders/tiler_builder.cpp`                | `nvmultistreamtiler`    |
+| `include/engine/pipeline/builders/osd_builder.hpp`     | `src/builders/osd_builder.cpp`                  | `nvdsosd`               |
+| `include/engine/pipeline/builders/encoder_builder.hpp` | `src/builders/encoder_builder.cpp`              | `nvv4l2h264enc/265enc`  |
+| `include/engine/pipeline/builders/sink_builder.hpp`    | `src/builders/sink_builder.cpp`                 | `rtspclientsink` / `fakesink` / `filesink` |
+| `include/engine/pipeline/builders/msgconv_builder.hpp` | `src/builders/msgconv_builder.cpp`              | `nvmsgconv`             |
+| `include/engine/pipeline/builders/msgbroker_builder.hpp` | `src/builders/msgbroker_builder.cpp`          | `nvmsgbroker`           |
+| `include/engine/pipeline/builders/demuxer_builder.hpp` | `src/builders/demuxer_builder.cpp`              | `nvstreamdemux`         |
 
-# Update ds_ file references
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's|ds_analytics_builder|analytics_builder|g' \
-    -e 's|ds_demuxer_builder|demuxer_builder|g' \
-    -e 's|ds_encoder_builder|encoder_builder|g' \
-    -e 's|ds_infer_builder|infer_builder|g' \
-    -e 's|ds_msgconv_broker_builder|msgconv_broker_builder|g' \
-    -e 's|ds_muxer_builder|muxer_builder|g' \
-    -e 's|ds_osd_builder|osd_builder|g' \
-    -e 's|ds_queue_builder|queue_builder|g' \
-    -e 's|ds_sink_builder|sink_builder|g' \
-    -e 's|ds_smart_record_builder|smart_record_builder|g' \
-    -e 's|ds_source_builder|source_builder|g' \
-    -e 's|ds_tiler_builder|tiler_builder|g' \
-    -e 's|ds_tracker_builder|tracker_builder|g' \
-    -e 's|ds_builder_factory|builder_factory|g' \
-    -e 's|ds_pipeline_manager|pipeline_manager|g' \
-    -e 's|ds_runtime_stream_manager|runtime_stream_manager|g' \
-    -e 's|ds_smart_record_controller|smart_record_controller|g' \
-    -e 's|ds_config_validator|config_validator|g' \
-    -e 's|ds_smuxer_builder|smuxer_builder|g'
-
-# Update v2 references to v1 name (after deleting v1)
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's|outputs_builder_v2|outputs_builder|g' \
-    -e 's|crop_object_handler_v2|crop_object_handler|g' \
-    -e 's|smart_record_handler_v2|smart_record_handler|g' \
-    -e 's|ext_proc_svc_v2|ext_proc_svc|g'
-```
-
-### Rework 4: Class Name Updates (ds_ prefix + _v2 suffix)
-
-In addition to filenames, update class names within code:
-
-```bash
-# Drop Ds prefix from class names
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's/DsAnalyticsBuilder/AnalyticsBuilder/g' \
-    -e 's/DsDemuxerBuilder/DemuxerBuilder/g' \
-    -e 's/DsEncoderBuilder/EncoderBuilder/g' \
-    -e 's/DsInferBuilder/InferBuilder/g' \
-    -e 's/DsMsgconvBrokerBuilder/MsgconvBrokerBuilder/g' \
-    -e 's/DsMuxerBuilder/MuxerBuilder/g' \
-    -e 's/DsOsdBuilder/OsdBuilder/g' \
-    -e 's/DsQueueBuilder/QueueBuilder/g' \
-    -e 's/DsSinkBuilder/SinkBuilder/g' \
-    -e 's/DsSmartRecordBuilder/SmartRecordBuilder/g' \
-    -e 's/DsSourceBuilder/SourceBuilder/g' \
-    -e 's/DsTilerBuilder/TilerBuilder/g' \
-    -e 's/DsTrackerBuilder/TrackerBuilder/g' \
-    -e 's/DsBuilderFactory/BuilderFactory/g' \
-    -e 's/DsPipelineManager/PipelineManager/g' \
-    -e 's/DsRuntimeStreamManager/RuntimeStreamManager/g' \
-    -e 's/DsSmartRecordController/SmartRecordController/g' \
-    -e 's/DsConfigValidator/ConfigValidator/g'
-
-# Drop _v2 suffix from class names
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's/OutputsBuilderV2/OutputsBuilder/g' \
-    -e 's/CropObjectHandlerV2/CropObjectHandler/g' \
-    -e 's/SmartRecordHandlerV2/SmartRecordHandler/g' \
-    -e 's/ExtProcSvcV2/ExtProcSvc/g'
-```
-
-### Rework 5: Full Config Pattern — Builders Receive `PipelineConfig` Directly
-
-**lantanav2 pattern (slice-then-pass):**
-```cpp
-// PipelineBuilder extracts slice trước rồi mới pass xuống
-class SourceBuilder {
-    void build(const std::vector<SourceConfig>& sources) { ... }  // Chỉ nhận slice
-};
-
-class InferBuilder {
-    void build(const InferenceConfig& infer_cfg) { ... }         // Chỉ nhận slice
-};
-
-// Caller phải extract thủ công
-builder_factory->get_source_builder()->build(config.sources);
-builder_factory->get_infer_builder()->build(config.processing_flow[i]);
-```
-
-**vms-engine pattern (full config xuyên suốt):**
-```cpp
-// Mọi builder đều nhận full config — truy cập bất cứ section nào cần
-class SourceBuilder {
-    void build(const engine::core::config::PipelineConfig& config) {
-        for (const auto& src : config.sources) {
-            // Có thể check config.stream_muxer->batch_size ngay đây nếu cần
-        }
-    }
-};
-
-class InferBuilder {
-    void build(const engine::core::config::PipelineConfig& config, int index) {
-        const auto& infer = config.processing_flow[index];
-        // Cross-reference: check config.stream_muxer->batch_size
-        // Cross-reference: check config.sources.size() để tính batch
-        // Tất cả available — không cần ai pass thêm gì
-    }
-};
-
-class OutputsBuilder {
-    void build(const engine::core::config::PipelineConfig& config) {
-        // Check config.smart_record trực tiếp — không cần được pass từ ngoài
-        if (config.smart_record.has_value() && config.smart_record->enable) {
-            // wire smart record branch
-        }
-        for (const auto& output : config.outputs) { ... }
-    }
-};
-```
-
-**Lợi ích:**
-- Builders có thể **cross-reference** bất kỳ section nào của config
-- Không có boilerplate extract-and-pass ở caller
-- `PipelineConfig` là `const&` — read-only, không có side effects
-- Khi thêm config section mới không cần thay đổi interface của tất cả builders
-
-**Áp dụng cho tất cả:**
-- Tất cả `block_builders/*` — signature: `void build(const PipelineConfig& config)`
-- Tất cả `builders/*_builder` — signature: `void build(const PipelineConfig& config, int index = 0)`
-- `IElementBuilder` interface trong `core/builders/ielement_builder.hpp` cũng cập nhật theo (xem Plan 02)
-
-### Rework 6: Apply RAII to All Builder Error Paths
-
-All element builders in lantanav2 create `GstElement*` via `gst_element_factory_make()` and may
-return early before `gst_bin_add()`. Without RAII, these early returns silently leak memory.
-
-**Pattern to apply in every builder `.cpp`:**
+### Standard Builder Template
 
 ```cpp
-#include "engine/core/utils/gst_utils.hpp"  // add this include
+// pipeline/include/engine/pipeline/builders/infer_builder.hpp
+#pragma once
+#include "engine/core/builders/ielement_builder.hpp"
+#include "engine/core/config/config_types.hpp"
+#include <gst/gst.h>
 
-GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& config, int index) {
+namespace engine::pipeline::builders {
+
+/**
+ * @brief Builds nvinfer GStreamer element (PGIE or SGIE) from pipeline config.
+ *
+ * Reads config from config.processing.elements[index].
+ * Supports role: primary_inference (process_mode=1) and secondary_inference (process_mode=2).
+ */
+class InferBuilder : public engine::core::builders::IElementBuilder {
+public:
+    /**
+     * @param bin  GstBin to add the created element into (PipelineBuilder owns the bin)
+     */
+    explicit InferBuilder(GstElement* bin);
+
+    /**
+     * @brief Create and configure nvinfer element.
+     * @param config Full pipeline config.
+     * @param index  Index into config.processing.elements[].
+     * @return Configured GstElement* (bin owns it), or nullptr on failure.
+     */
+    GstElement* build(const engine::core::config::PipelineConfig& config,
+                      int index = 0) override;
+
+private:
+    GstElement* bin_ = nullptr;
+};
+
+} // namespace engine::pipeline::builders
+```
+
+```cpp
+// pipeline/src/builders/infer_builder.cpp
+#include "engine/pipeline/builders/infer_builder.hpp"
+#include "engine/core/utils/gst_utils.hpp"
+#include "engine/core/utils/logger.hpp"
+
+namespace engine::pipeline::builders {
+
+InferBuilder::InferBuilder(GstElement* bin) : bin_(bin) {}
+
+GstElement* InferBuilder::build(
+    const engine::core::config::PipelineConfig& config, int index)
+{
     const auto& elem_cfg = config.processing.elements[index];
+    const auto& id       = elem_cfg.id;
 
-    // ✅ RAII guard: auto-unref on any early return before gst_bin_add()
-    auto elem = engine::core::utils::make_gst_element("nvinfer", elem_cfg.id.c_str());
+    // ✅ RAII: auto-unref on any return before gst_bin_add()
+    auto elem = engine::core::utils::make_gst_element("nvinfer", id.c_str());
     if (!elem) {
-        LOG_E("Failed to create nvinfer '{}'", elem_cfg.id);
-        return nullptr;  // ~GstElementPtr → gst_object_unref automatically
+        LOG_E("Failed to create nvinfer '{}'", id);
+        return nullptr;
     }
 
     g_object_set(G_OBJECT(elem.get()),
-        "config-file-path", elem_cfg.config_file_path.c_str(),
+        "config-file-path", elem_cfg.config_file.c_str(),
+        "process-mode",     static_cast<gint>(elem_cfg.process_mode),
+        "batch-size",       static_cast<gint>(elem_cfg.batch_size),
+        "gie-unique-id",    static_cast<gint>(elem_cfg.unique_id),
+        "gpu-id",           static_cast<gint>(elem_cfg.gpu_id),
         nullptr);
 
-    if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
-        LOG_E("Failed to add nvinfer '{}' to bin", elem_cfg.id);
-        return nullptr;  // guard cleans up
+    // SGIE-only properties
+    if (elem_cfg.process_mode == 2) {
+        g_object_set(G_OBJECT(elem.get()),
+            "operate-on-gie-id",    static_cast<gint>(elem_cfg.operate_on_gie_id),
+            nullptr);
     }
+
+    if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
+        LOG_E("Failed to add nvinfer '{}' to bin", id);
+        return nullptr;  // RAII guard cleans up
+    }
+
+    LOG_I("Built nvinfer '{}' (mode={})", id, elem_cfg.process_mode);
     return elem.release();  // bin owns — disarm guard
 }
+
+} // namespace engine::pipeline::builders
 ```
 
-**Pad access in probes and handlers:**
+### QueueBuilder — Takes `QueueConfig` Directly
 
 ```cpp
-// ✅ Always wrap: gst_element_get_static_pad increments refcount
-void MyHandler::register_callback() {
-    engine::core::utils::GstPadPtr pad(
-        gst_element_get_static_pad(element_, "sink"), gst_object_unref);
-    if (!pad) { LOG_E("Pad not found"); return; }
-    gst_pad_add_probe(pad.get(), GST_PAD_PROBE_TYPE_BUFFER, my_cb, this, nullptr);
-}  // gst_object_unref(pad) at end of scope automatically
-```
+// pipeline/include/engine/pipeline/builders/queue_builder.hpp
+#pragma once
+#include "engine/core/config/config_types.hpp"
+#include <gst/gst.h>
 
-**Multi-step cleanup — use a class, not just unique_ptr:**
+namespace engine::pipeline::builders {
 
-```cpp
-// PipelineManager holds the top-level GstPipeline — must set NULL before unref
-class GstPipelineOwner {
+/**
+ * @brief Builds GStreamer queue element with QueueConfig settings.
+ *
+ * Called by BlockBuilders when a queue: {} entry appears in the config element list.
+ * Takes QueueConfig directly (already resolved by BlockBuilder from config).
+ */
+class QueueBuilder {
 public:
-    explicit GstPipelineOwner(const std::string& name)
-        : pipeline_(gst_pipeline_new(name.c_str())) {}
-    ~GstPipelineOwner() {
-        if (pipeline_) {
-            gst_element_set_state(pipeline_, GST_STATE_NULL);  // drain first
-            gst_object_unref(pipeline_);
-        }
-    }
-    GstPipelineOwner(const GstPipelineOwner&)            = delete;
-    GstPipelineOwner& operator=(const GstPipelineOwner&) = delete;
-    GstElement* get() const { return pipeline_; }
+    explicit QueueBuilder(GstElement* bin);
+
+    /**
+     * @param cfg   Resolved queue config (max_size_buffers, leaky, etc.)
+     * @param name  Element name (unique within the pipeline)
+     * @return Configured GstElement* (bin owns it), or nullptr on failure.
+     */
+    GstElement* build(const engine::core::config::QueueConfig& cfg,
+                      const std::string& name);
+
 private:
-    GstElement* pipeline_ = nullptr;
+    GstElement* bin_ = nullptr;
 };
+
+} // namespace engine::pipeline::builders
 ```
-
-**Files to review and update:**
-- All `pipeline/src/builders/*.cpp` — wrap `gst_element_factory_make()` return
-- All `pipeline/src/block_builders/*.cpp` — same
-- `pipeline/src/pipeline_manager.cpp` — wrap bus and top-level pipeline
-- `pipeline/src/event_handlers/*.cpp` — wrap `gst_element_get_static_pad()` returns
-- `pipeline/src/probes/*.cpp` — wrap `gst_element_get_static_pad()` returns
-
-> Reference: [Memory Management section in ARCHITECTURE_BLUEPRINT.md](../../architecture/ARCHITECTURE_BLUEPRINT.md#memory-management)
 
 ---
 
-## Namespace Replacement
+## Section 3.4 — Event Handlers
 
-```bash
-cd vms-engine/pipeline
+Event handlers fire in response to detection events from pad probes and GSignals.
+Each handler receives `IMessageProducer*` via constructor (no static coupling).
 
-# Replace namespace declarations
-find . -name "*.hpp" -o -name "*.cpp" | xargs sed -i \
-    -e 's/namespace lantana::backends::deepstream/namespace engine::pipeline/g' \
-    -e 's/namespace lantana {/namespace engine {/g' \
-    -e 's/lantana::backends::deepstream::/engine::pipeline::/g' \
-    -e 's/lantana::/engine::/g'
+### Files to Create
 
-# Replace include guards
-find . -name "*.hpp" | xargs sed -i \
-    -e 's/LANTANA_BACKENDS_DEEPSTREAM_/ENGINE_PIPELINE_/g' \
-    -e 's/LANTANA_/ENGINE_/g'
+| Header                                                           | Source                                               |
+| ---------------------------------------------------------------- | ---------------------------------------------------- |
+| `include/engine/pipeline/event_handlers/handler_manager.hpp`    | `src/event_handlers/handler_manager.cpp`             |
+| `include/engine/pipeline/event_handlers/smart_record_handler.hpp` | `src/event_handlers/smart_record_handler.cpp`      |
+| `include/engine/pipeline/event_handlers/crop_detected_obj_handler.hpp` | `src/event_handlers/crop_detected_obj_handler.cpp` |
+| `include/engine/pipeline/event_handlers/ext_proc_handler.hpp`   | `src/event_handlers/ext_proc_handler.cpp`            |
+| `include/engine/pipeline/event_handlers/object_crop.hpp`        | *(header-only utility)*                              |
+
+### Handler Dependency Injection Pattern
+
+```cpp
+// ✅ CORRECT: IMessageProducer* injected, no static coupling
+class SmartRecordHandler : public engine::core::handlers::IEventHandler {
+public:
+    SmartRecordHandler(
+        engine::core::messaging::IMessageProducer* producer,
+        engine::core::storage::IStorageManager* storage);
+
+    bool handle(const engine::core::handlers::HandlerContext& ctx) override;
+
+private:
+    engine::core::messaging::IMessageProducer* producer_{nullptr};
+    engine::core::storage::IStorageManager*    storage_{nullptr};
+};
 ```
+
+```cpp
+// ✅ CORRECT: Pad guard for probe registration
+void SmartRecordHandler::register_probe(GstElement* element) {
+    engine::core::utils::GstPadPtr pad(
+        gst_element_get_static_pad(element, "sink"), gst_object_unref);
+    if (!pad) { LOG_E("Pad not found"); return; }
+    gst_pad_add_probe(pad.get(), GST_PAD_PROBE_TYPE_BUFFER,
+                      on_probe_buffer, this, nullptr);
+}  // gst_object_unref(pad) called automatically
+```
+
+---
+
+## Section 3.5 — Linking
+
+### Files to Create
+
+| Header                                                  | Source                                     |
+| -------------------------------------------------------- | ------------------------------------------ |
+| `include/engine/pipeline/linking/pipeline_linker.hpp`   | `src/linking/pipeline_linker.cpp`          |
+
+### Key Linking Patterns
+
+```cpp
+// Static link: two elements with compatible fixed pads
+bool PipelineLinker::link(GstElement* src, GstElement* sink) {
+    if (!gst_element_link(src, sink)) {
+        LOG_E("Failed to link {} → {}",
+              GST_ELEMENT_NAME(src), GST_ELEMENT_NAME(sink));
+        return false;
+    }
+    return true;
+}
+
+// Dynamic link: nvmultiurisrcbin → muxer (request pads)
+// Registered via g_signal_connect(srcbin, "pad-added", G_CALLBACK(on_pad_added), muxer)
+static void on_pad_added(GstElement* src, GstPad* new_pad, GstElement* muxer) {
+    engine::core::utils::GstPadPtr sink_pad(
+        gst_element_get_request_pad(muxer, "sink_%u"), gst_object_unref);
+    if (!sink_pad) { LOG_E("Could not get muxer sink pad"); return; }
+    if (gst_pad_link(new_pad, sink_pad.get()) != GST_PAD_LINK_OK) {
+        LOG_E("Dynamic pad link failed");
+    }
+}
+```
+
+---
+
+## Section 3.6 — Probes
+
+### Files to Create
+
+| Header                                                               | Source                                              |
+| -------------------------------------------------------------------- | --------------------------------------------------- |
+| `include/engine/pipeline/probes/probe_handler_manager.hpp`           | `src/probes/probe_handler_manager.cpp`              |
+| `include/engine/pipeline/probes/smart_record_probe_handler.hpp`      | `src/probes/smart_record_probe_handler.cpp`         |
+| `include/engine/pipeline/probes/crop_object_handler.hpp`             | `src/probes/crop_object_handler.cpp`                |
+| `include/engine/pipeline/probes/class_id_namespace_handler.hpp`      | `src/probes/class_id_namespace_handler.cpp`         |
+
+### Probe Pattern (NvDs Metadata)
+
+```cpp
+static GstPadProbeReturn on_buffer_probe(
+    GstPad* /*pad*/, GstPadProbeInfo* info, gpointer user_data)
+{
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+    if (!batch_meta) return GST_PAD_PROBE_OK;
+
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list;
+         l_frame; l_frame = l_frame->next)
+    {
+        auto* frame_meta = static_cast<NvDsFrameMeta*>(l_frame->data);
+        for (NvDsMetaList* l_obj = frame_meta->obj_meta_list;
+             l_obj; l_obj = l_obj->next)
+        {
+            auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
+            // obj->class_id, obj->confidence, obj->object_id
+            // obj->rect_params.left/top/width/height
+        }
+    }
+    return GST_PAD_PROBE_OK;
+}
+```
+
+---
+
+## Section 3.7 — Services (Optional In-Pipeline)
+
+If the `ExtProcSvc` (external processor) is needed:
+
+| Header                                                 | Source                                      |
+| ------------------------------------------------------ | ------------------------------------------- |
+| `include/engine/pipeline/services/ext_proc_svc.hpp`   | `src/services/ext_proc_svc.cpp`             |
 
 ---
 
@@ -442,8 +508,9 @@ file(GLOB_RECURSE PIPELINE_SOURCES "src/*.cpp")
 add_library(vms_engine_pipeline STATIC ${PIPELINE_SOURCES})
 
 target_include_directories(vms_engine_pipeline
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PUBLIC ${DEEPSTREAM_DIR}/sources/includes
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${DEEPSTREAM_DIR}/sources/includes
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../deps/deepstream/includes
 )
 
 target_link_libraries(vms_engine_pipeline
@@ -451,13 +518,14 @@ target_link_libraries(vms_engine_pipeline
     PUBLIC  PkgConfig::GST
     PUBLIC  PkgConfig::GST_BASE
     PUBLIC  PkgConfig::GST_VIDEO
-    PUBLIC  PkgConfig::GST_APP
-    PUBLIC  PkgConfig::GST_RTSP
     PUBLIC  PkgConfig::GLIB2
-    PUBLIC  CUDA::cudart
-    PRIVATE ${NVDS_LIBS}    # nvds_meta, nvdsgst_meta, etc.
+    PRIVATE ${NVDS_LIBS}
     PRIVATE nlohmann_json::nlohmann_json
-    PRIVATE yaml-cpp
+)
+
+set_target_properties(vms_engine_pipeline PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
 )
 ```
 
@@ -465,57 +533,60 @@ target_link_libraries(vms_engine_pipeline
 
 ## File Count Summary
 
-| Category            | Headers | Sources | Deleted (v1) | Net Files |
-| -------------------- | ------- | ------- | ------------ | ---------- |
-| Root managers        | 6       | 4       | 0            | 10         |
-| Block builders       | 6       | 2       | 0            | 8          |
-| Outputs builder      | 5       | 0       | 1 (v1)       | 5          |
-| Element builders     | 13      | 16      | 0            | 29         |
-| Config               | 1       | 1       | 0            | 2          |
-| Event handlers       | 4       | 4       | 2 (v1 h+cpp) | 8          |
-| Linking              | 1       | 1       | 0            | 2          |
-| Probes               | 4       | 4       | 2 (v1 h+cpp) | 8          |
-| Services             | 1       | 1       | 2 (v1 h+cpp) | 2          |
-| Utils                | 1       | 1       | 0            | 2          |
-| **Total**            | **42**  | **34**  | **7**        | **76 → 69**|
+| Category            | Headers | Sources | Notes                                     |
+| ------------------- | ------- | ------- | ----------------------------------------- |
+| Root managers        | 5       | 5       | PipelineManager, BuilderFactory, etc.     |
+| Block builders       | 4       | 4       | One per build phase                       |
+| Element builders     | 13      | 13      | One per GStreamer element type            |
+| Event handlers       | 5       | 4       | + object_crop.hpp (header-only)           |
+| Linking              | 1       | 1       |                                           |
+| Probes               | 4       | 4       |                                           |
+| Services (optional)  | 1       | 1       |                                           |
+| **Total**            | **33**  | **32**  | ~65 files + headers                       |
 
 ---
 
 ## Verification
 
 ```bash
-# 1. Compile pipeline library
-cmake --build build --target vms_engine_pipeline -- -j$(nproc)
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
 
-# 2. Check no old references
-grep -r "lantana\|backends/deepstream\|ds_.*builder\|_v2" pipeline/ && echo "FAIL" || echo "PASS"
+# 1. Compile pipeline library only
+cmake --build build --target vms_engine_pipeline -- -j5
 
-# 3. Check no #ifdef guards for backends
-grep -r "LANTANA_WITH_DEEPSTREAM\|LANTANA_WITH_DLSTREAMER" pipeline/ && echo "FAIL" || echo "PASS"
+# 2. Check no layer dependency violations
+grep -rn '#include "engine/infrastructure\|#include "engine/domain\|#include "engine/services' \
+    pipeline/ --include="*.hpp" --include="*.cpp" && echo "FAIL" || echo "PASS"
 
-# 4. Verify all headers use engine::pipeline namespace
-grep -rL "engine::pipeline" pipeline/include/ | head -20
+# 3. Check namespace consistency
+grep -rL "engine::pipeline" pipeline/include/ --include="*.hpp" | head -10
+
+# 4. Check RAII usage in builders
+grep -rn "gst_element_factory_make" pipeline/src/builders/ --include="*.cpp"
+# Every occurrence should be paired with make_gst_element() or followed by RAII guard
+
+# 5. Build full binary
+cmake --build build -- -j5
+ls -la build/bin/vms_engine
 ```
 
 ---
 
 ## Checklist
 
-- [ ] 42 headers → `pipeline/include/engine/pipeline/`
-- [ ] 34 source files → `pipeline/src/`
-- [ ] 7 v1 files deleted (smart_record_handler, crop_object_handler, ext_proc_svc, outputs_builder v1)
-- [ ] v2 files renamed to drop `_v2` suffix
-- [ ] `ds_` prefix removed from all filenames
-- [ ] `Ds`/`DS` prefix removed from all class names
-- [ ] `lantana::backends::deepstream::` → `engine::pipeline::`
-- [ ] Include paths updated to `engine/pipeline/`
-- [ ] Include guards updated to `ENGINE_PIPELINE_*`
-- [ ] All `#ifdef LANTANA_WITH_*` guards removed
-- [ ] Event handlers use injected `IMessageProducer*` (no static Redis)
-- [ ] All builders use `build(const PipelineConfig& config, ...)` — full config pattern (no sliced pass)
-- [ ] `IElementBuilder` interface updated in core (see Plan 02)
-- [ ] **RAII applied to all builders** — `make_gst_element()` + `elem.release()` after `gst_bin_add()`
-- [ ] **RAII applied to all pad accesses** — `GstPadPtr` wraps `gst_element_get_static_pad()`
-- [ ] **`GstPipelineOwner` class** in `PipelineManager` — `set_state(NULL)` before unref
-- [ ] `pipeline/CMakeLists.txt` updated
-- [ ] `vms_engine_pipeline` compiles against `vms_engine_core`
+- [ ] 5 root-level manager class headers + sources
+- [ ] 4 block builder headers + sources
+- [ ] 13 element builder headers + sources (source through demuxer)
+- [ ] `QueueBuilder` takes `QueueConfig` directly (not `PipelineConfig`)
+- [ ] ALL other builders take `const PipelineConfig& config, int index = 0`
+- [ ] All builders use `make_gst_element()` RAII guard; call `elem.release()` after `gst_bin_add()`
+- [ ] All pad accesses wrapped with `GstPadPtr`
+- [ ] `PipelineManager` uses `GstPipelineOwner` RAII (set_state NULL before unref)
+- [ ] Event handlers take `IMessageProducer*` via constructor (no static coupling)
+- [ ] `HandlerManager` implements `IHandlerManager` from core
+- [ ] `ProbeHandlerManager` registers pad probes based on `EventHandlerConfig`
+- [ ] All files in `engine::pipeline` namespace
+- [ ] All includes use `"engine/pipeline/..."` or `"engine/core/..."` paths
+- [ ] `pipeline/CMakeLists.txt` defines `vms_engine_pipeline` static library
+- [ ] `vms_engine_pipeline` only links against `vms_engine_core` (no infrastructure, no domain)

@@ -1,6 +1,7 @@
-# Phase 1 Refactor — Master Plan
+# Phase 1 — Master Plan
 
-> Refactor **lantanav2** → **vms-engine**: Clean Architecture, DeepStream-only, new namespace.
+> **vms-engine** is built **from scratch** (greenfield). Clean Architecture, DeepStream-only, `engine::` namespace.
+> No migration from lantanav2 — every file is a new creation following these conventions.
 
 ---
 
@@ -45,74 +46,96 @@ Plans 03, 04, 05 can be worked on **in parallel** since they only depend on core
 
 ---
 
-## Global Refactoring Rules
+## Global Architecture Rules
 
-### Namespace Change
+### Namespace Conventions
 
-| Before (lantanav2)                           | After (vms-engine)                          |
-| -------------------------------------------- | ------------------------------------------- |
-| `lantana::core::*`                           | `engine::core::*`                           |
-| `lantana::backends::deepstream::*`           | `engine::pipeline::*`                       |
-| `lantana::domain::*`                         | `engine::domain::*`                         |
-| `lantana::infrastructure::*`                 | `engine::infrastructure::*`                 |
-| `lantana::services::*`                       | `engine::services::*`                       |
+| Layer                                | Namespace                           |
+| ------------------------------------ | ----------------------------------- |
+| Interfaces + config + utils          | `engine::core::*`                   |
+| Pipeline builders, managers, probes  | `engine::pipeline::*`               |
+| Business rules                       | `engine::domain::*`                 |
+| Config parser, messaging, storage    | `engine::infrastructure::*`         |
+| External clients                     | `engine::services::*`               |
 
-### Include Path Change
+### Include Path Conventions
 
-| Before                                           | After                                     |
+| Layer                                            | Include prefix                            |
 | ------------------------------------------------ | ----------------------------------------- |
-| `#include "lantana/core/..."`                    | `#include "engine/core/..."`              |
-| `#include "lantana/backends/deepstream/..."`     | `#include "engine/pipeline/..."`          |
-| `#include "lantana/infrastructure/..."`          | `#include "engine/infrastructure/..."`    |
-| `#include "lantana/domain/..."`                  | `#include "engine/domain/..."`            |
-| `#include "lantana/services/..."`                | `#include "engine/services/..."`          |
+| Core interfaces                                  | `#include "engine/core/..."`              |
+| Pipeline implementations                         | `#include "engine/pipeline/..."`          |
+| Infrastructure adapters                          | `#include "engine/infrastructure/..."`    |
+| Domain services                                  | `#include "engine/domain/..."`            |
+| External service clients                         | `#include "engine/services/..."`          |
 
-### File Rename Rules
+### File Naming Rules
 
-| Rule                                    | Example                                           |
-| --------------------------------------- | ------------------------------------------------- |
-| Drop `ds_` prefix from builder files    | `ds_source_builder.hpp` → `source_builder.hpp`    |
-| Drop `ds_` prefix from manager files    | `ds_pipeline_manager.hpp` → `pipeline_manager.hpp`|
-| Drop `ds_` prefix from factory          | `ds_builder_factory.hpp` → `builder_factory.hpp`  |
-| Drop `Ds` prefix from class names       | `DsBuilderFactory` → `BuilderFactory`             |
-| Drop `Ds` prefix from class names       | `DsPipelineManager` → `PipelineManager`           |
+| Rule                                    | Example                                                           |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| No `ds_` prefix on builder files        | `source_builder.hpp` ✅ — NOT `ds_source_builder.hpp`             |
+| No `ds_` prefix on manager files        | `pipeline_manager.hpp` ✅ — NOT `ds_pipeline_manager.hpp`         |
+| No `Ds` prefix on class names           | `BuilderFactory` ✅ — NOT `DsBuilderFactory`                       |
+| No `_v2` suffix                         | `smart_record_handler.hpp` ✅ — NOT `smart_record_handler_v2.hpp` |
+| All filenames `snake_case`              | `yaml_config_parser.cpp`                                          |
 
-### Code Cleanup Rules
+### Code Standards
 
-1. **Remove DLStreamer code** — Delete all `#ifdef LANTANA_WITH_DLSTREAMER` blocks
-2. **Remove `std::variant` backend wrappers** — Replace with direct DeepStream types
-3. **Remove `LANTANA_WITH_DEEPSTREAM` guards** — DeepStream is always on
-4. **Fix IHandler Redis coupling** — Remove `static redis_producer_` from base interface
-5. **Fix IPipelineManager backend leak** — Remove `#include` of deepstream headers in core
-6. **Apply RAII to all GStreamer resources** — Never leave raw `GstElement*`, `GstPad*`, `GstCaps*`, `GstBus*`, `gchar*` unguarded on error paths; use `GstElementPtr`, `GstPadPtr`, etc. from `engine::core::utils` (see [Memory Management](../../architecture/ARCHITECTURE_BLUEPRINT.md#memory-management))
+1. **DeepStream-only** — No DLStreamer code paths
+2. **No `std::variant` backend wrappers** — Config structs are DeepStream-native, flat
+3. **No backend guards** — No `#ifdef LANTANA_WITH_DEEPSTREAM` or `LANTANA_WITH_DLSTREAMER`; DeepStream is always on
+4. **No static Redis coupling in handlers** — `IMessageProducer*` injected via constructor
+5. **No DeepStream headers in `core/`** — Core depends only on std + GStreamer forward-declares
+6. **Full config pattern** — All builders receive `const engine::core::config::PipelineConfig&`; no config slicing
+7. **RAII for all GStreamer resources** — Use `GstElementPtr`, `GstPadPtr`, `GstCapsPtr`, `GstBusPtr`, `GCharPtr` from `engine::core::utils`; never leave raw `GstElement*` unguarded on error paths
+8. **`engine::` namespace everywhere** — Never use `lantana::` (old name)
+
+### Dependency Rule (strictly enforced)
+
+```
+app/          → may depend on: core, pipeline, domain, infrastructure, services
+pipeline/     → depends on: core ONLY
+domain/       → depends on: core ONLY
+infrastructure/ → depends on: core ONLY
+services/     → depends on: core ONLY
+core/         → depends on: std library + GStreamer forward-declares ONLY
+```
 
 ### Verification After Each Plan
 
-After completing each plan, verify:
+After completing each plan, verify inside the dev container:
 
-- [ ] `cmake -S . -B build` succeeds (configure)
-- [ ] `cmake --build build -- -j$(nproc)` succeeds (compile)
-- [ ] No `lantana` string in any `#include` directive
-- [ ] No `lantana` namespace in any source file
-- [ ] `grep -r "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/` returns nothing
+```bash
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
+
+# Configure
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream -G Ninja
+
+# Build
+cmake --build build -- -j5
+
+# Check for namespace violations
+grep -r "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ \
+    --include="*.hpp" --include="*.cpp" 2>/dev/null && echo "FAIL: lantana found" || echo "PASS"
+```
 
 ---
 
 ## File Count Summary
 
-| Layer            | lantanav2 Files | vms-engine Files | Notes                      |
-| ---------------- | --------------- | ---------------- | -------------------------- |
-| **core/**        | 42 (.hpp) + 3 (.cpp) | 42 (.hpp) + 3 (.cpp) | Rename + clean interfaces |
-| **pipeline/**    | 38 (.hpp) + 35 (.cpp) | ~36 (.hpp) + ~33 (.cpp) | Flatten, drop v1/v2 dups |
-| **domain/**      | 3 (.hpp) + 2 (.cpp) | 3 (.hpp) + 3 (.cpp) | Fill empty files           |
-| **infrastructure/** | 5 (.hpp) + 18 (.cpp) | 5 (.hpp) + 18 (.cpp) | Rename only           |
-| **services/**    | 1 (.hpp) + 1 (.cpp) | 1 (.hpp) + 1 (.cpp) | Rename only               |
-| **app/**         | 1 (.cpp)        | 1 (.cpp)         | Rewrite wiring             |
-| **plugins/**     | 7 (.cpp)        | 7 (.cpp)         | Copy, minimal changes      |
-| **CMake**        | 7 files         | 7 files          | Rewrite from scratch       |
-| **Configs**      | ~5 .yml         | ~5 .yml          | Rename references          |
-| **Docker**       | 3 files         | 3 files          | Update paths               |
-| **Total**        | ~170            | ~165             |                            |
+| Layer               | Headers (.hpp) | Sources (.cpp) | CMake  | Notes                              |
+| ------------------- | -------------- | -------------- | ------ | ---------------------------------- |
+| **core/**           | ~42            | ~3             | 1      | Interfaces, config types, utils    |
+| **pipeline/**       | ~36            | ~33            | 1      | Builders, manager, probes, events  |
+| **domain/**         | 3              | 3              | 1      | Business rules, metadata types     |
+| **infrastructure/** | ~6             | ~20            | 1      | Config parser, messaging, storage  |
+| **services/**       | 1              | 1              | 1      | Triton client                      |
+| **app/**            | 0              | 1              | 1      | main.cpp only                      |
+| **plugins/**        | 0              | 7              | 1      | Custom NvDsInfer parsers           |
+| **Root CMake**      | —              | —              | 1      | Top-level wiring                   |
+| **Total**           | **~88**        | **~68**        | **8**  |                                    |
 
 ---
 
@@ -121,7 +144,7 @@ After completing each plan, verify:
 | Risk                                      | Impact  | Mitigation                                         |
 | ----------------------------------------- | ------- | -------------------------------------------------- |
 | Missing DeepStream header in new path     | Build   | Build after each plan; fix immediately              |
-| Broken element linking after rename       | Runtime | Test with simple single-source config first         |
+| Broken element linking                    | Runtime | Test with simple single-source config first         |
 | Handler registration fails                | Runtime | Test handler loading in Plan 07                     |
-| Config parser breaks with renamed structs | Runtime | Parse test in Plan 05 with existing YAML files      |
-| GstBus message handling changes           | Runtime | Keep PipelineManager logic identical, only rename   |
+| Config parser breaks with new schema      | Runtime | Parse test in Plan 05 with a reference YAML file    |
+| GstBus message handling issues            | Runtime | Keep PipelineManager logic close to DS 8.0 samples  |

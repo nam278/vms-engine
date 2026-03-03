@@ -51,7 +51,7 @@ queue_defaults:
   max_size_buffers: 10 # small = low latency
   max_size_bytes_mb: 20
   max_size_time_sec: 0.5
-  leaky: downstream # downstream = drop oldest buffer in queue when full → keep newest frames — realtime friendly
+  leaky: 2 # GstQueueLeaky: 0=none, 1=upstream, 2=downstream (drop oldest, keep newest)
   silent: true
 
 # =============================================================================
@@ -114,7 +114,7 @@ sources:
   # Queue at the EXIT of sources_bin → thread boundary before processing_bin
   output_queue:
     max_size_buffers: 5
-    leaky: downstream # drop oldest frame when full → stay realtime
+    leaky: 2 # GstQueueLeaky downstream
 
 # =============================================================================
 # STAGE 2 — Processing Block  (→ processing_bin)
@@ -241,7 +241,7 @@ outputs:
           max_size_buffers: 20
           max_size_bytes_mb: 40
           max_size_time_sec: 1.5
-          leaky: downstream
+          leaky: 2
 
       - id: sink
         type: rtspclientsink

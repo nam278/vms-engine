@@ -1,14 +1,14 @@
 # Plan 07 — Integration Testing & Verification
 
-> End-to-end verification that the fully-migrated vms-engine builds, runs, and behaves identically to lantanav2.
-> This plan is executed **after all code migration (Plans 01–06) is complete**.
+> End-to-end verification that the fully-built vms-engine builds, runs, and processes video.
+> This plan is executed **after all implementation (Plans 01–06) is complete**.
 
 ---
 
 ## Prerequisites
 
 - Plans 01–06 completed
-- `cmake --build build -- -j$(nproc)` succeeds (full build)
+- `cmake --build build -- -j5` succeeds (full build)
 - All targets: `vms_engine_core`, `vms_engine_pipeline`, `vms_engine_domain`, `vms_engine_infrastructure`, `vms_engine_services`, `vms_engine` (binary), 7 plugin `.so` files
 
 ---
@@ -44,7 +44,7 @@ grep -rn "dlstreamer\|DLStreamer\|DLSTREAMER\|dl_pipeline" \
 # Expected: 0 results
 ```
 
-### 1.4 — Zero ds_ Prefixes (Excluding Plugins & DeepStream SDK Includes)
+### 1.4 — Zero ds\_ Prefixes (Excluding Plugins & DeepStream SDK Includes)
 
 ```bash
 # Check for ds_ prefixed file names
@@ -95,32 +95,35 @@ grep -rn '#include "engine/pipeline\|#include "engine/infrastructure\|#include "
 ### 2.1 — Clean Build
 
 ```bash
-rm -rf build/*
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
+rm -rf build
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
-    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
-cmake --build build -- -j$(nproc)
+    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
+    -G Ninja
+cmake --build build -- -j5
 ```
 
 ### 2.2 — Individual Target Build
 
 ```bash
-cmake --build build --target vms_engine_core -- -j$(nproc)
-cmake --build build --target vms_engine_domain -- -j$(nproc)
-cmake --build build --target vms_engine_pipeline -- -j$(nproc)
-cmake --build build --target vms_engine_config_parser -- -j$(nproc)
-cmake --build build --target vms_engine_messaging -- -j$(nproc)
-cmake --build build --target vms_engine_storage -- -j$(nproc)
-cmake --build build --target vms_engine_rest_api -- -j$(nproc)
-cmake --build build --target vms_engine_services -- -j$(nproc)
-cmake --build build --target vms_engine -- -j$(nproc)
+cmake --build build --target vms_engine_core -- -j5
+cmake --build build --target vms_engine_domain -- -j5
+cmake --build build --target vms_engine_pipeline -- -j5
+cmake --build build --target vms_engine_config_parser -- -j5
+cmake --build build --target vms_engine_messaging -- -j5
+cmake --build build --target vms_engine_storage -- -j5
+cmake --build build --target vms_engine_rest_api -- -j5
+cmake --build build --target vms_engine_services -- -j5
+cmake --build build --target vms_engine -- -j5
 ```
 
 ### 2.3 — Plugin Build
 
 ```bash
 # All 7 plugins should produce .so files
-cmake --build build -- -j$(nproc)
+cmake --build build -- -j5
 find build/ -name "*.so" | sort
 # Expected: 7 .so files
 ```
@@ -151,66 +154,98 @@ ldd build/bin/vms_engine | grep -i "not found"
 Create a minimal test config:
 
 ```yaml
-# test_config.yml
+# test_minimal.yml
 version: "1.0"
-application:
+pipeline:
+  id: test
   name: vms_engine_test
   log_level: DEBUG
-  log_file: ""
-  backend:
-    type: deepstream
-sources: []
-processing_flow: []
+
+queue_defaults:
+  max_size_buffers: 3
+  leaky: 2
+
+sources:
+  type: nvmultiurisrcbin
+  max_batch_size: 1
+  gpu_id: 0
+  width: 1280
+  height: 720
+  cameras: []
+
+processing:
+  elements: []
+
+visuals:
+  enable: false
+  elements: []
+
 outputs: []
+event_handlers: []
 ```
 
 ```bash
-./build/bin/vms_engine -c test_config.yml
-# Expected: loads config, logs summary, may fail with "no sources" but should NOT crash
+./build/bin/vms_engine -c test_minimal.yml
+# Expected: loads config, logs summary, exits cleanly (no cameras = no pipeline start)
 # Should see: "Configuration loaded successfully"
 ```
 
 ### 3.3 — Single Source Pipeline Test
 
-Use a test config with a single RTSP or file source:
+Use a config with a single RTSP or file source:
 
 ```yaml
 # test_single_source.yml
 version: "1.0"
-application:
-  name: vms_engine_test
+pipeline:
+  id: smoke_test
+  name: smoke_test
   log_level: DEBUG
-  backend:
-    type: deepstream
+
+queue_defaults:
+  max_size_buffers: 5
+  leaky: 2
 
 sources:
-  - id: "src_0"
-    type: rtsp
-    uri: "rtsp://localhost:8554/test"
-    # OR for file:
-    # type: file
-    # uri: "/path/to/test_video.mp4"
-
-stream_muxer:
-  id: "muxer_0"
-  enable: true
+  type: nvmultiurisrcbin
+  max_batch_size: 1
+  gpu_id: 0
   width: 1920
   height: 1080
-  batch_size: 1
+  live_source: false
+  cameras:
+    - name: test_cam
+      uri: "file:///path/to/test_video.mp4"
+  output_queue: {}
 
-processing_flow:
-  - id: "pgie_0"
-    type: nvinfer
-    config_path: "models/config_infer_primary.txt"
+processing:
+  elements:
+    - id: pgie
+      type: nvinfer
+      role: primary_inference
+      config_file: "/opt/engine/data/components/pgie/config.yml"
+      process_mode: 1
+      batch_size: 1
+      queue: {}
+  output_queue: {}
+
+visuals:
+  enable: false
+  elements: []
 
 outputs:
-  - id: "sink_0"
+  - id: sink_0
     type: fakesink
+    elements:
+      - id: fake
+        type: fakesink
+
+event_handlers: []
 ```
 
 ```bash
 timeout 30 ./build/bin/vms_engine -c test_single_source.yml
-# Expected: pipeline starts, processes frames, exits cleanly on timeout
+# Expected: pipeline starts, processes frames for 30s, exits
 # Watch for: "Pipeline started successfully" in logs
 ```
 
@@ -227,54 +262,36 @@ echo "Exit code: $?"
 # Expected: graceful shutdown, exit code 0
 ```
 
-### 3.5 — Comparison with lantanav2
-
-Run the exact same config on both binaries and compare:
-
-```bash
-# lantanav2
-cd /home/vms/Lantana/Dev/lantanav2
-timeout 30 ./build/bin/lantana -c configs/deepstream_default.yml 2>&1 | tee /tmp/lantanav2.log
-
-# vms-engine
-cd /home/vms/Lantana/Dev/vms-engine
-timeout 30 ./build/bin/vms_engine -c configs/deepstream_default.yml 2>&1 | tee /tmp/vms_engine.log
-
-# Compare key log lines (ignoring timestamps and minor formatting)
-diff <(grep -E "Configuration loaded|Pipeline.*initialized|Pipeline started|Pipeline.*state" /tmp/lantanav2.log) \
-     <(grep -E "Configuration loaded|Pipeline.*initialized|Pipeline started|Pipeline.*state" /tmp/vms_engine.log)
-```
-
 ---
 
-## Phase 4: Regression Checklist
+## Phase 4: Feature Checklist
 
-### Feature Parity Matrix
+### Feature Status Matrix
 
-| Feature                    | lantanav2 | vms-engine | How to Test                              |
-| -------------------------- | --------- | ---------- | ---------------------------------------- |
-| RTSP source ingestion      | ✅        | ☐          | RTSP stream → fakesink config            |
-| File source ingestion      | ✅        | ☐          | MP4 file → fakesink config               |
-| Multi-source muxing        | ✅        | ☐          | 2+ sources in config                     |
-| Primary inference (nvinfer)| ✅        | ☐          | PGIE with model config                   |
-| Secondary inference        | ✅        | ☐          | SGIE chained after PGIE                  |
-| Object tracking            | ✅        | ☐          | Tracker in processing_flow               |
-| OSD (display overlay)      | ✅        | ☐          | OSD enabled in visuals config            |
-| Tiler (multi-view grid)    | ✅        | ☐          | Tiler with batch_size > 1               |
-| RTSP output sink           | ✅        | ☐          | RTSP sink in outputs                     |
-| File output sink           | ✅        | ☐          | File sink in outputs                     |
-| Smart recording            | ✅        | ☐          | Smart record config enabled              |
-| Event handling (crop+save) | ✅        | ☐          | Custom handler with storage              |
-| Redis stream publishing    | ✅        | ☐          | MQ publisher enabled + Redis running     |
-| REST API control           | ✅        | ☐          | REST API enabled, curl test              |
-| S3 storage upload          | ✅        | ☐          | S3 storage config + event trigger        |
-| Local storage save         | ✅        | ☐          | Local storage config + event trigger     |
-| Triton inference           | ✅        | ☐          | External service config                  |
-| Analytics (nvdsanalytics)  | ✅        | ☐          | Analytics config in processing_flow      |
-| Graceful shutdown (SIGINT) | ✅        | ☐          | kill -SIGINT PID                         |
-| Crash recovery (SIGSEGV)   | ✅        | ☐          | Deliberate segfault test                 |
-| Runtime param update       | ✅        | ☐          | REST API endpoint                        |
-| Runtime stream add/remove  | ✅        | ☐          | REST API endpoint                        |
+| Feature                     | Status | How to Test                             |
+| --------------------------- | ------ | --------------------------------------- |
+| RTSP source ingestion       | ☐      | RTSP stream → fakesink config           |
+| File source ingestion       | ☐      | MP4 file → fakesink config              |
+| Multi-source muxing         | ☐      | 2+ cameras in config                    |
+| Primary inference (nvinfer) | ☐      | PGIE with model config                  |
+| Secondary inference         | ☐      | SGIE chained after PGIE                 |
+| Object tracking             | ☐      | nvtracker in processing elements        |
+| OSD (display overlay)       | ☐      | nvdsosd enabled in visuals block        |
+| Tiler (multi-view grid)     | ☐      | nvmultistreamtiler with batch_size > 1  |
+| RTSP output sink            | ☐      | rtspclientsink in outputs               |
+| File output sink            | ☐      | filesink in outputs                     |
+| Smart recording             | ☐      | `smart_record: 2` in sources config     |
+| Event handling (crop+save)  | ☐      | Custom handler with storage             |
+| Redis stream publishing     | ☐      | Messaging config + Redis running        |
+| REST API control            | ☐      | REST API enabled, curl test             |
+| S3 storage upload           | ☐      | S3 storage config + event trigger       |
+| Local storage save          | ☐      | Local storage config + event trigger    |
+| Triton inference            | ☐      | External service config                 |
+| Analytics (nvdsanalytics)   | ☐      | Analytics config in processing elements |
+| Graceful shutdown (SIGINT)  | ☐      | `kill -SIGINT PID`                      |
+| Crash recovery (SIGSEGV)    | ☐      | Deliberate segfault test                |
+| Runtime param update        | ☐      | REST API endpoint                       |
+| Runtime stream add/remove   | ☐      | REST API endpoint                       |
 
 ---
 
@@ -283,28 +300,28 @@ diff <(grep -E "Configuration loaded|Pipeline.*initialized|Pipeline started|Pipe
 ### Dockerfile.ci
 
 ```dockerfile
-FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
+FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
-    cmake build-essential pkg-config \
+    cmake ninja-build build-essential pkg-config \
     libglib2.0-dev libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
     libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /opt/vms_engine
 COPY . .
 
 RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
-    && cmake --build build -- -j$(nproc)
+    -G Ninja \
+    && cmake --build build -- -j5
 
 # Run static checks
-RUN grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ \
-    --include="*.hpp" --include="*.cpp" \
-    | grep -v "// lantana" | wc -l | grep -q "^0$"
+RUN ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ \
+    --include="*.hpp" --include="*.cpp" | grep -v "// lantana"
 ```
 
 ### GitHub Actions (if applicable)
@@ -315,13 +332,15 @@ name: Build & Verify
 on: [push, pull_request]
 jobs:
   build:
-    runs-on: self-hosted  # GPU runner with DeepStream SDK
+    runs-on: self-hosted # GPU runner with DeepStream SDK
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          cmake -S . -B build -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream
-          cmake --build build -- -j$(nproc)
+          cmake -S . -B build \
+            -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
+            -G Ninja
+          cmake --build build -- -j5
       - name: Static Checks
         run: |
           ! grep -rn "lantana" core/ pipeline/ domain/ infrastructure/ services/ app/ --include="*.hpp" --include="*.cpp" | grep -v "//"
@@ -338,10 +357,9 @@ jobs:
 - [ ] Phase 3.2: Config load works (logs summary)
 - [ ] Phase 3.3: Single source pipeline runs (frames processed)
 - [ ] Phase 3.4: Signal handling works (graceful shutdown)
-- [ ] Phase 3.5: Output matches lantanav2 for same config
-- [ ] Phase 4: All 20+ features checked in regression matrix
+- [ ] Phase 4: All 22 features checked in feature matrix
 - [ ] Layer dependency rule enforced (core → ∅, domain → core only)
-- [ ] No `ds_` prefixed files or classes remain
-- [ ] No `_v2` suffixed files or classes remain
-- [ ] README.md updated with new build instructions
-- [ ] Configs copied/updated to `vms-engine/configs/`
+- [ ] No `ds_` prefixed files or classes in engine code
+- [ ] `engine::` namespace used throughout all layers
+- [ ] configs/ directory has `default.yml` and example configs
+- [ ] `docs/configs/deepstream_default.yml` matches implemented parser schema

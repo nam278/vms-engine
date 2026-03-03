@@ -18,7 +18,7 @@ RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh
 # RUN apt-get update && apt-get install -y gstreamer1.0-plugins-{good,bad,ugly} gstreamer1.0-libav && rm -rf /var/lib/apt/lists/*
 
 # Tạo thư mục gốc cho ứng dụng bên trong container
-ARG APP_ROOT_DIR=/opt/lantana
+ARG APP_ROOT_DIR=/opt/vms_engine
 RUN mkdir -p ${APP_ROOT_DIR}
 
 EXPOSE 9000
@@ -31,21 +31,21 @@ COPY ./build/bin/ ${APP_ROOT_DIR}/
 # Đặt WORKDIR tới thư mục chứa file thực thi
 WORKDIR ${APP_ROOT_DIR}
 
-# Đảm bảo file thực thi 'lantana' có quyền execute.
-# Đường dẫn './lantana' là tương đối với WORKDIR hiện tại.
-RUN chmod +x ./lantana
+# Đảm bảo file thực thi 'vms_engine' có quyền execute.
+# Đường dẫn './vms_engine' là tương đối với WORKDIR hiện tại.
+RUN chmod +x ./vms_engine
 
 # (Tùy chọn) In ra thông báo
-RUN echo "Lantana application setup complete. Current directory: $(pwd). Ready to run ./lantana"
+RUN echo "vms_engine application setup complete. Current directory: $(pwd). Ready to run ./vms_engine"
 
 # Lệnh mặc định để chạy khi container khởi động.
-# Nó sẽ chạy './lantana' từ thư mục WORKDIR hiện tại (${APP_ROOT_DIR}/build/bin).
-# Các đối số cho 'lantana' có thể được truyền vào khi chạy 'docker run'.
+# Nó sẽ chạy './vms_engine' từ thư mục WORKDIR hiện tại (${APP_ROOT_DIR}).
+# Các đối số cho 'vms_engine' có thể được truyền vào khi chạy 'docker run'.
 # CRITICAL: Use tini as PID 1 to properly handle signals and reap zombie processes
 # This prevents memory leaks and ensures graceful shutdown
-# ENTRYPOINT ["/usr/bin/tini", "--", "./lantana"]
-ENTRYPOINT ["./lantana"]
-# ENTRYPOINT ["bash", "-c", "./lantana || (echo 'App crashed. Keeping container alive for debugging...' && tail -f /dev/null)"]
+# ENTRYPOINT ["/usr/bin/tini", "--", "./vms_engine"]
+ENTRYPOINT ["./vms_engine"]
+# ENTRYPOINT ["bash", "-c", "./vms_engine || (echo 'App crashed. Keeping container alive for debugging...' && tail -f /dev/null)"]
 
 # Ví dụ về cách truyền đối số mặc định nếu lantana cần một file config
 # và file config đó nằm ở ${APP_ROOT_DIR}/configs/default_config.txt

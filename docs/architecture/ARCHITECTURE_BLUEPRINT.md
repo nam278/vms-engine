@@ -150,6 +150,7 @@ Inner layers NEVER depend on outer layers. The core defines interfaces; infrastr
 ```
 
 **Key Concepts:**
+
 - **Ports** (Interfaces): `IPipelineManager`, `IBuilderFactory`, `IElementBuilder`, `IHandler`, `IProbeHandler`, `IStorageManager`, `IMessageProducer`, `IConfigParser`
 - **Driving Adapters** (Input): `main.cpp`, REST API — push commands into the system
 - **Driven Adapters** (Output): Redis, Kafka, S3, Local FS — system pushes data out
@@ -161,6 +162,7 @@ Unlike lantanav2 which abstracted over DeepStream/DLStreamer, vms-engine is **De
 ### 4. Config-Driven Pipeline Construction
 
 Pipeline topology is 100% defined by a YAML file. Zero code changes needed for:
+
 - Adding/removing cameras
 - Changing inference models
 - Enabling/disabling analytics
@@ -171,19 +173,19 @@ Pipeline topology is 100% defined by a YAML file. Zero code changes needed for:
 
 ## Technology Stack
 
-| Component          | Technology                   | Purpose                               |
-| ------------------ | ---------------------------- | ------------------------------------- |
-| **Language**        | C++17                        | Performance-critical video processing |
-| **Build System**    | CMake 3.16+ + vcpkg          | Cross-platform build with pkg mgmt   |
-| **Video Framework** | GStreamer 1.0                | Pipeline-based multimedia framework   |
-| **AI Backend**      | NVIDIA DeepStream SDK 7.1    | GPU-accelerated video analytics       |
-| **GPU Inference**   | TensorRT, CUDA               | Model optimization & GPU execution    |
-| **Configuration**   | YAML (yaml-cpp)              | Human-readable pipeline config        |
-| **Logging**         | spdlog + fmt                 | Structured, leveled logging           |
-| **Messaging**       | Redis Streams, Kafka         | Event publishing to external systems  |
-| **Storage**         | Local FS, S3 (MinIO)         | Snapshot/recording persistence        |
-| **REST API**        | Pistache (lightweight HTTP)  | Runtime control & monitoring          |
-| **Ext. Inference**  | Triton Inference Client      | External model serving integration    |
+| Component           | Technology                  | Purpose                               |
+| ------------------- | --------------------------- | ------------------------------------- |
+| **Language**        | C++17                       | Performance-critical video processing |
+| **Build System**    | CMake 3.16+ + vcpkg         | Cross-platform build with pkg mgmt    |
+| **Video Framework** | GStreamer 1.0               | Pipeline-based multimedia framework   |
+| **AI Backend**      | NVIDIA DeepStream SDK 7.1   | GPU-accelerated video analytics       |
+| **GPU Inference**   | TensorRT, CUDA              | Model optimization & GPU execution    |
+| **Configuration**   | YAML (yaml-cpp)             | Human-readable pipeline config        |
+| **Logging**         | spdlog + fmt                | Structured, leveled logging           |
+| **Messaging**       | Redis Streams, Kafka        | Event publishing to external systems  |
+| **Storage**         | Local FS, S3 (MinIO)        | Snapshot/recording persistence        |
+| **REST API**        | Pistache (lightweight HTTP) | Runtime control & monitoring          |
+| **Ext. Inference**  | Triton Inference Client     | External model serving integration    |
 
 ---
 
@@ -235,15 +237,15 @@ vms-engine/
 
 ### Layer Dependency Rules
 
-| Layer              | Can Depend On                            | Cannot Depend On              |
-| ------------------ | ---------------------------------------- | ----------------------------- |
-| **app/**           | core, pipeline, infrastructure, services | ∅                             |
-| **core/**          | ∅ (only std lib + GStreamer fwd-declares) | pipeline, infra, services     |
-| **pipeline/**      | core                                     | infra, services (directly)    |
-| **domain/**        | core                                     | pipeline, infra               |
-| **infrastructure/**| core                                     | pipeline, domain              |
-| **services/**      | core                                     | pipeline, domain, infra       |
-| **plugins/**       | core                                     | pipeline (linked at runtime)  |
+| Layer               | Can Depend On                             | Cannot Depend On             |
+| ------------------- | ----------------------------------------- | ---------------------------- |
+| **app/**            | core, pipeline, infrastructure, services  | ∅                            |
+| **core/**           | ∅ (only std lib + GStreamer fwd-declares) | pipeline, infra, services    |
+| **pipeline/**       | core                                      | infra, services (directly)   |
+| **domain/**         | core                                      | pipeline, infra              |
+| **infrastructure/** | core                                      | pipeline, domain             |
+| **services/**       | core                                      | pipeline, domain, infra      |
+| **plugins/**        | core                                      | pipeline (linked at runtime) |
 
 ---
 
@@ -786,6 +788,7 @@ public:
 ### 5-Phase Pipeline Construction
 
 The pipeline is built in **5 sequential phases**. Each phase is a `BaseBuilder` subclass that:
+
 1. Creates a `GstBin` containing related elements
 2. Uses `IBuilderFactory` to create element builders
 3. Links elements within its bin
@@ -923,6 +926,7 @@ GstElement* PipelineBuilder::build_pipeline(const PipelineConfig& config,
 ```
 
 **Tee Branching Topology:**
+
 ```
 src ──► queue ──► tee ──► queue ──► sink1
                      ├──► queue ──► sink2
@@ -971,6 +975,7 @@ public:
 ```
 
 **Rules:**
+
 - `config` is **always `const PipelineConfig&`** — read-only; no side effects.
 - `index = 0` for single-instance builders (sources, visuals blocks).
 - `index > 0` meaningful for repeated sections (outputs, processing.elements).
@@ -989,13 +994,13 @@ top-level block; nested `queue: {}` declares a `GstQueue` inline before its elem
 ```yaml
 version: "1.0.0"
 
-pipeline:          # Pipeline metadata — id, name, log settings
-queue_defaults:    # Default GstQueue params; any `queue: {}` inherits these
-sources:           # Single block → nvmultiurisrcbin (cameras[], smart_record)
-processing:        # elements: [] list — nvinfer, nvtracker, nvstreamdemux
-visuals:           # elements: [] list — nvmultistreamtiler, nvdsosd
-outputs:           # [] list of output sinks (rtsp_client, filesink, appsink)
-event_handlers:    # [] probe/signal-based callbacks (smart_record, crop_object)
+pipeline: # Pipeline metadata — id, name, log settings
+queue_defaults: # Default GstQueue params; any `queue: {}` inherits these
+sources: # Single block → nvmultiurisrcbin (cameras[], smart_record)
+processing: # elements: [] list — nvinfer, nvtracker, nvstreamdemux
+visuals: # elements: [] list — nvmultistreamtiler, nvdsosd
+outputs: # [] list of output sinks (rtsp_client, filesink, appsink)
+event_handlers: # [] probe/signal-based callbacks (smart_record, crop_object)
 ```
 
 **Queue Semantics:**
@@ -1024,10 +1029,10 @@ struct QueueConfig {
     int  max_size_buffers = 10;
     int  max_size_bytes_mb = 20;
     float max_size_time_sec = 0.5f;
-    // downstream(=2): drop OLDEST in queue → newest frame always enters  ← USE for realtime
-    // upstream  (=1): drop NEWEST incoming → old frames kept, new ones lost
-    // no        (=0): block upstream until space → causes pipeline stall on live streams
-    std::string leaky = "downstream";
+    // 2 (downstream): drop OLDEST in queue → newest frame always enters  ← USE for realtime
+    // 1 (upstream):   drop NEWEST incoming → old frames kept, new ones lost
+    // 0 (none):       block upstream until space → causes pipeline stall on live streams
+    int leaky = 2;
     bool silent = true;
 };
 
@@ -1064,29 +1069,29 @@ sources:
   type: nvmultiurisrcbin
 
   # Section 1 — nvmultiurisrcbin direct
-  ip_address: "localhost"         # REST API bind addr; "0.0.0.0" = all interfaces
-  port: 9000                      # REST port; 0 = disable
-  max_batch_size: 4               # max sources to mux (NOT batch_size)
-  mode: 0                         # 0=video-only  1=audio-only
+  ip_address: "localhost" # REST API bind addr; "0.0.0.0" = all interfaces
+  port: 9000 # REST port; 0 = disable
+  max_batch_size: 4 # max sources to mux (NOT batch_size)
+  mode: 0 # 0=video-only  1=audio-only
 
   # Section 2 — per-source nvurisrcbin
   gpu_id: 0
   num_extra_surfaces: 9
-  cudadec_memtype: 0              # 0=device(GPU)  1=pinned  2=unified
-  dec_skip_frames: 0              # 0=all  1=non-ref  2=key-only
+  cudadec_memtype: 0 # 0=device(GPU)  1=pinned  2=unified
+  dec_skip_frames: 0 # 0=all  1=non-ref  2=key-only
   drop_frame_interval: 0
-  select_rtp_protocol: 4          # 0=multi  4=TCP-only (recommended)
-  rtsp_reconnect_interval: 10     # seconds; 0=disable
-  rtsp_reconnect_attempts: -1     # -1=infinite
-  latency: 400                    # RTSP jitter buffer ms (default 100)
-  udp_buffer_size: 4194304        # bytes; 4MB (default 524288)
+  select_rtp_protocol: 4 # 0=multi  4=TCP-only (recommended)
+  rtsp_reconnect_interval: 10 # seconds; 0=disable
+  rtsp_reconnect_attempts: -1 # -1=infinite
+  latency: 400 # RTSP jitter buffer ms (default 100)
+  udp_buffer_size: 4194304 # bytes; 4MB (default 524288)
   disable_audio: false
-  drop_pipeline_eos: true         # prevent one-source EOS killing pipeline
+  drop_pipeline_eos: true # prevent one-source EOS killing pipeline
 
   # Section 3 — nvstreammux passthrough
   width: 1920
   height: 1080
-  batched_push_timeout: 40000     # µs to wait for full batch
+  batched_push_timeout: 40000 # µs to wait for full batch
   live_source: true
   sync_inputs: false
 
@@ -1098,17 +1103,17 @@ sources:
 
   # Smart Record — flat integer enum properties (NOT a sub-object)
   # smart_rec_video_cache is DEPRECATED — use smart_rec_cache
-  smart_record: 2               # 0=disable  1=cloud-only  2=multi(cloud+local)
+  smart_record: 2 # 0=disable  1=cloud-only  2=multi(cloud+local)
   smart_rec_dir_path: "/opt/engine/data/rec"
   smart_rec_file_prefix: "lsr"
-  smart_rec_cache: 10           # pre-event buffer seconds
+  smart_rec_cache: 10 # pre-event buffer seconds
   smart_rec_default_duration: 20
-  smart_rec_mode: 0             # 0=audio+video  1=video-only  2=audio-only
-  smart_rec_container: 0        # 0=mp4  1=mkv
+  smart_rec_mode: 0 # 0=audio+video  1=video-only  2=audio-only
+  smart_rec_container: 0 # 0=mp4  1=mkv
 
-  output_queue:                 # queue at EXIT of sources_bin
+  output_queue: # queue at EXIT of sources_bin
     max_size_buffers: 5
-    leaky: downstream           # drop oldest frame when full → stay realtime
+    leaky: 2 # 0=none, 1=upstream, 2=downstream (drop oldest)
 ```
 
 ```cpp
@@ -1167,15 +1172,15 @@ Each element declares `queue: {}` inline to insert a `GstQueue` before itself.
 processing:
   elements:
     - id: pgie_detection
-      type: nvinfer             # nvinfer (TensorRT direct) | nvinferserver (Triton)
-      role: primary_inference   # primary_inference | secondary_inference
-      unique_id: 1              # gie-unique-id — identifies metadata downstream
+      type: nvinfer # nvinfer (TensorRT direct) | nvinferserver (Triton)
+      role: primary_inference # primary_inference | secondary_inference
+      unique_id: 1 # gie-unique-id — identifies metadata downstream
       config_file: "/opt/engine/data/components/pgie/config.pbtxt"
-      process_mode: 1           # 1=Primary (full-frame)  2=Secondary (per-object)
-      interval: 3               # skip N batches between inferences (0=every frame)
-      batch_size: 4             # must equal sources.max_batch_size
+      process_mode: 1 # 1=Primary (full-frame)  2=Secondary (per-object)
+      interval: 3 # skip N batches between inferences (0=every frame)
+      batch_size: 4 # must equal sources.max_batch_size
       gpu_id: 0
-      queue: {}                 # → GstQueue before pgie (use queue_defaults)
+      queue: {} # → GstQueue before pgie (use queue_defaults)
 
     # SGIE example (commented — uncomment to enable secondary inference)
     # - id: sgie_classification
@@ -1194,18 +1199,18 @@ processing:
       type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
       ll_config_file: "/opt/engine/data/config/tracker_NvDCF_perf.yml"
-      tracker_width: 640        # frame scaled to this size before tracking
+      tracker_width: 640 # frame scaled to this size before tracking
       tracker_height: 640
       gpu_id: 0
-      compute_hw: 1             # 0=default  1=GPU  2=VIC (Jetson only)
+      compute_hw: 1 # 0=default  1=GPU  2=VIC (Jetson only)
       user_meta_pool_size: 512
-      queue: {}                 # → GstQueue before tracker
+      queue: {} # → GstQueue before tracker
 
     - id: demuxer
       type: nvstreamdemux
-      queue: {}                 # → GstQueue before demuxer
+      queue: {} # → GstQueue before demuxer
 
-  output_queue:                 # queue at EXIT of processing_bin
+  output_queue: # queue at EXIT of processing_bin
     max_size_buffers: 10
 ```
 
@@ -1253,6 +1258,7 @@ struct ProcessingConfig {
 Each element uses `queue: {}` to insert a `GstQueue` before itself.
 
 Full RTSP output chain (confirmed from `demo_build_graph.dot`):
+
 ```
 queue → nvvideoconvert → capsfilter → nvv4l2h264enc → queue → h264parse → queue → rtspclientsink
 ```
@@ -1267,32 +1273,32 @@ outputs:
         nvbuf_memory_type: nvbuf-mem-cuda-device
         src_crop: "0:0:0:0"
         dest_crop: "0:0:0:0"
-        queue: {}             # → entry queue before videoconvert (thread boundary from visuals)
+        queue: {} # → entry queue before videoconvert (thread boundary from visuals)
 
       - id: preencode_caps
         type: capsfilter
         caps: "video/x-raw(memory:NVMM), format=(string)NV12, width=(int)1920, height=(int)1080"
 
       - id: encoder
-        type: nvv4l2h264enc   # nvv4l2h264enc | nvv4l2h265enc
-        bitrate: 3000000      # bps
-        control_rate: cbr     # cbr | vbr
-        profile: main         # baseline | main | high
-        iframeinterval: 30    # keyframe every N frames
+        type: nvv4l2h264enc # nvv4l2h264enc | nvv4l2h265enc
+        bitrate: 3000000 # bps
+        control_rate: cbr # cbr | vbr
+        profile: main # baseline | main | high
+        iframeinterval: 30 # keyframe every N frames
 
       - id: parser
-        type: h264parse       # h264parse | h265parse
-        queue:                # → queue after encoder; absorbs I-frame bitrate bursts
+        type: h264parse # h264parse | h265parse
+        queue: # → queue after encoder; absorbs I-frame bitrate bursts
           max_size_buffers: 20
           max_size_bytes_mb: 40
           max_size_time_sec: 1.5
-          leaky: downstream
+          leaky: 2
 
       - id: sink
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
-        protocols: tcp        # tcp | udp
-        queue: {}             # → queue after parser, before sink
+        protocols: tcp # tcp | udp
+        queue: {} # → queue after parser, before sink
 ```
 
 ```cpp
@@ -1375,8 +1381,8 @@ custom_handlers:
     signal_name: "new-sample"
     label_filter: ["car", "truck", "bus"]
     min_confidence: 0.7
-    min_interval: 1000              # ms between triggers per object
-    snapshot: 2                     # 0=none, 1=crop, 2=crop+fullframe
+    min_interval: 1000 # ms between triggers per object
+    snapshot: 2 # 0=none, 1=crop, 2=crop+fullframe
     evidence_from: "tiler"
     mbroker_host: "localhost"
     mbroker_port: "6379"
@@ -1424,10 +1430,10 @@ private:
 
 ### Two Metadata Access Mechanisms
 
-| Mechanism   | Access Point          | Can Modify? | Latency   | Use Case                          |
-| ----------- | --------------------- | ----------- | --------- | --------------------------------- |
-| **Signal**  | appsink (end of pipe) | Read-only   | Higher    | Event publishing, HTTP calls      |
-| **Probe**   | Any pad in pipeline   | Read+Write  | Minimal   | Metadata modification, real-time  |
+| Mechanism  | Access Point          | Can Modify? | Latency | Use Case                         |
+| ---------- | --------------------- | ----------- | ------- | -------------------------------- |
+| **Signal** | appsink (end of pipe) | Read-only   | Higher  | Event publishing, HTTP calls     |
+| **Probe**  | Any pad in pipeline   | Read+Write  | Minimal | Metadata modification, real-time |
 
 ### Signal Flow (Event Handler)
 
@@ -1493,10 +1499,10 @@ This prevents label flickering in OSD when multiple inference engines produce ov
 
 ### Messaging
 
-| Adapter               | Protocol       | Interface          | Use Case                    |
-| --------------------- | -------------- | ------------------ | --------------------------- |
-| `RedisStreamProducer` | Redis Streams  | `IMessageProducer` | Real-time event publishing  |
-| `KafkaAdapter`        | Apache Kafka   | `IMessageProducer` | High-throughput event log   |
+| Adapter               | Protocol      | Interface          | Use Case                   |
+| --------------------- | ------------- | ------------------ | -------------------------- |
+| `RedisStreamProducer` | Redis Streams | `IMessageProducer` | Real-time event publishing |
+| `KafkaAdapter`        | Apache Kafka  | `IMessageProducer` | High-throughput event log  |
 
 ```yaml
 broker_configurations:
@@ -1514,10 +1520,10 @@ broker_configurations:
 
 ### Storage
 
-| Adapter               | Backend      | Interface          | Use Case                    |
-| --------------------- | ------------ | ------------------ | --------------------------- |
-| `LocalStorageManager` | Local FS     | `IStorageManager`  | Dev, edge deployment        |
-| `S3StorageManager`    | S3 / MinIO   | `IStorageManager`  | Cloud, shared storage       |
+| Adapter               | Backend    | Interface         | Use Case              |
+| --------------------- | ---------- | ----------------- | --------------------- |
+| `LocalStorageManager` | Local FS   | `IStorageManager` | Dev, edge deployment  |
+| `S3StorageManager`    | S3 / MinIO | `IStorageManager` | Cloud, shared storage |
 
 ```yaml
 storage_configurations:
@@ -1606,13 +1612,13 @@ gst_deinit();
 
 The `PipelineManager` installs a bus watch to process asynchronous GStreamer messages:
 
-| Message Type       | Action                                         |
-| ------------------ | ---------------------------------------------- |
-| `GST_MESSAGE_EOS`  | Log, emit event, optionally restart pipeline   |
-| `GST_MESSAGE_ERROR`| Log error, transition to ERROR state, quit loop|
-| `GST_MESSAGE_WARNING` | Log warning                                 |
-| `GST_MESSAGE_STATE_CHANGED` | Log state transitions, export DOT file |
-| `GST_MESSAGE_ELEMENT` | Forward to HandlerManager for custom processing |
+| Message Type                | Action                                          |
+| --------------------------- | ----------------------------------------------- |
+| `GST_MESSAGE_EOS`           | Log, emit event, optionally restart pipeline    |
+| `GST_MESSAGE_ERROR`         | Log error, transition to ERROR state, quit loop |
+| `GST_MESSAGE_WARNING`       | Log warning                                     |
+| `GST_MESSAGE_STATE_CHANGED` | Log state transitions, export DOT file          |
+| `GST_MESSAGE_ELEMENT`       | Forward to HandlerManager for custom processing |
 
 ---
 
@@ -1649,8 +1655,8 @@ smart_record:
   input_from: "demuxer_main"
   container: "mp4"
   storage_target_id: "local_recordings"
-  default_duration: 10            # seconds
-  cache_size: 15                  # seconds of lookback buffer
+  default_duration: 10 # seconds
+  cache_size: 15 # seconds of lookback buffer
   trigger_on:
     labels: ["car", "person"]
     min_confidence: 0.7
@@ -1658,6 +1664,7 @@ smart_record:
 ```
 
 **Smart Record Flow:**
+
 ```
 Probe detects event ─► SmartRecordController::start_recording()
                             │
@@ -1675,12 +1682,12 @@ Probe detects event ─► SmartRecordController::start_recording()
 
 ### nvdsanalytics Capabilities
 
-| Feature                    | Description                                          |
-| -------------------------- | ---------------------------------------------------- |
-| **ROI Filtering**          | Filter objects to specific polygonal regions         |
-| **Line Crossing Detection**| Detect objects crossing defined lines with direction |
-| **Overcrowding Detection** | Alert when object count exceeds threshold in region  |
-| **Direction Detection**    | Determine movement direction of tracked objects      |
+| Feature                     | Description                                          |
+| --------------------------- | ---------------------------------------------------- |
+| **ROI Filtering**           | Filter objects to specific polygonal regions         |
+| **Line Crossing Detection** | Detect objects crossing defined lines with direction |
+| **Overcrowding Detection**  | Alert when object count exceeds threshold in region  |
+| **Direction Detection**     | Determine movement direction of tracked objects      |
 
 ### Analytics Config Flow
 
@@ -1698,20 +1705,20 @@ YAML Config ──► AnalyticsBuilder ──► Generated INI File ──► nv
 
 ## Design Patterns
 
-| Pattern                | Where                                        | Purpose                                            |
-| ---------------------- | -------------------------------------------- | -------------------------------------------------- |
-| **Builder**            | `block_builders/`, `builders/`               | Sequential pipeline construction from config       |
-| **Abstract Factory**   | `IBuilderFactory` / `BuilderFactory`         | Create typed element builders (no config slice)    |
-| **Full Config Pattern**| All `IElementBuilder::build()` impls         | Each builder reads what it needs from full config  |
-| **Strategy**           | `IHandler` / `IProbeHandler`                 | Interchangeable event/probe processing             |
-| **Observer**           | GstBus watch, `pad-added` signals            | Async event notification                           |
-| **Chain of Responsibility** | `ProcessingBuilder` flow items          | Sequential processing stages                       |
-| **Template Method**    | `BaseBuilder.build()`                        | Common build flow with customizable steps          |
-| **Facade**             | `PipelineManager`                            | Single entry point for pipeline lifecycle          |
-| **Adapter**            | `RedisStreamProducer`, `S3StorageManager`    | External system integration                        |
-| **Singleton**          | Logger (`spdlog`)                            | Global logging instance                            |
-| **Plugin**             | `plugins/` + `HandlerRegistry`               | Runtime-loadable handlers (.so)                    |
-| **Composite**          | `GstBin` containing `GstElement`s            | Treat groups of elements as single unit            |
+| Pattern                     | Where                                     | Purpose                                           |
+| --------------------------- | ----------------------------------------- | ------------------------------------------------- |
+| **Builder**                 | `block_builders/`, `builders/`            | Sequential pipeline construction from config      |
+| **Abstract Factory**        | `IBuilderFactory` / `BuilderFactory`      | Create typed element builders (no config slice)   |
+| **Full Config Pattern**     | All `IElementBuilder::build()` impls      | Each builder reads what it needs from full config |
+| **Strategy**                | `IHandler` / `IProbeHandler`              | Interchangeable event/probe processing            |
+| **Observer**                | GstBus watch, `pad-added` signals         | Async event notification                          |
+| **Chain of Responsibility** | `ProcessingBuilder` flow items            | Sequential processing stages                      |
+| **Template Method**         | `BaseBuilder.build()`                     | Common build flow with customizable steps         |
+| **Facade**                  | `PipelineManager`                         | Single entry point for pipeline lifecycle         |
+| **Adapter**                 | `RedisStreamProducer`, `S3StorageManager` | External system integration                       |
+| **Singleton**               | Logger (`spdlog`)                         | Global logging instance                           |
+| **Plugin**                  | `plugins/` + `HandlerRegistry`            | Runtime-loadable handlers (.so)                   |
+| **Composite**               | `GstBin` containing `GstElement`s         | Treat groups of elements as single unit           |
 
 ---
 
@@ -1723,20 +1730,20 @@ YAML Config ──► AnalyticsBuilder ──► Generated INI File ──► nv
 
 ### GStreamer / GLib Ownership Rules
 
-| Object | Obtained via | Release via | Notes |
-|---|---|---|---|
-| `GstElement*` (floating/unowned) | `gst_element_factory_make()` | `gst_object_unref()` | Caller owns until `gst_bin_add()` |
-| `GstElement*` in bin | `gst_bin_add(bin, elem)` | *(bin owns)* | **Do NOT unref after add** |
-| `GstPad*` | `gst_element_get_static_pad()` | `gst_object_unref()` | Must unref even read-only use |
-| `GstPad*` (request) | `gst_element_get_request_pad()` | `gst_element_release_request_pad()` + `gst_object_unref()` | Release before unref |
-| `GstCaps*` | `gst_caps_new_*()`, `gst_caps_copy()` | `gst_caps_unref()` | Reference-counted |
-| `GstBus*` | `gst_pipeline_get_bus()` | `gst_object_unref()` | |
-| `GMainLoop*` | `g_main_loop_new()` | `g_main_loop_unref()` | |
-| `GError*` | set by GStreamer (out param) | `g_error_free()` | Check non-null before freeing |
-| `gchar*` | `g_object_get()`, `g_strdup()` | `g_free()` | GLib heap allocation |
-| `NvDsBatchMeta*` | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE** | Owned by GstBuffer / pipeline |
-| `NvDsFrameMeta*` | iterated from `batch_meta` | **DO NOT FREE** | |
-| `NvDsObjectMeta*` | iterated from `frame_meta` | **DO NOT FREE** | |
+| Object                           | Obtained via                          | Release via                                                | Notes                             |
+| -------------------------------- | ------------------------------------- | ---------------------------------------------------------- | --------------------------------- |
+| `GstElement*` (floating/unowned) | `gst_element_factory_make()`          | `gst_object_unref()`                                       | Caller owns until `gst_bin_add()` |
+| `GstElement*` in bin             | `gst_bin_add(bin, elem)`              | _(bin owns)_                                               | **Do NOT unref after add**        |
+| `GstPad*`                        | `gst_element_get_static_pad()`        | `gst_object_unref()`                                       | Must unref even read-only use     |
+| `GstPad*` (request)              | `gst_element_get_request_pad()`       | `gst_element_release_request_pad()` + `gst_object_unref()` | Release before unref              |
+| `GstCaps*`                       | `gst_caps_new_*()`, `gst_caps_copy()` | `gst_caps_unref()`                                         | Reference-counted                 |
+| `GstBus*`                        | `gst_pipeline_get_bus()`              | `gst_object_unref()`                                       |                                   |
+| `GMainLoop*`                     | `g_main_loop_new()`                   | `g_main_loop_unref()`                                      |                                   |
+| `GError*`                        | set by GStreamer (out param)          | `g_error_free()`                                           | Check non-null before freeing     |
+| `gchar*`                         | `g_object_get()`, `g_strdup()`        | `g_free()`                                                 | GLib heap allocation              |
+| `NvDsBatchMeta*`                 | `gst_buffer_get_nvds_batch_meta()`    | **DO NOT FREE**                                            | Owned by GstBuffer / pipeline     |
+| `NvDsFrameMeta*`                 | iterated from `batch_meta`            | **DO NOT FREE**                                            |                                   |
+| `NvDsObjectMeta*`                | iterated from `frame_meta`            | **DO NOT FREE**                                            |                                   |
 
 ### RAII Strategy — `gst_utils.hpp`
 
@@ -1786,45 +1793,45 @@ For detailed patterns (heap, sockets, mutex/locks, timers, scope guards, custom 
 
 ### Root Namespace: `engine`
 
-| Namespace                                | Maps To                             |
-| ---------------------------------------- | ----------------------------------- |
-| `engine::core::pipeline`                 | `core/include/engine/core/pipeline/` |
-| `engine::core::builders`                 | `core/include/engine/core/builders/` |
-| `engine::core::config`                   | `core/include/engine/core/config/`   |
-| `engine::core::events`                   | `core/include/engine/core/eventing/` |
-| `engine::core::probes`                   | `core/include/engine/core/probes/`   |
-| `engine::core::handlers`                 | `core/include/engine/core/handlers/` |
-| `engine::core::messaging`                | `core/include/engine/core/messaging/`|
-| `engine::core::storage`                  | `core/include/engine/core/storage/`  |
-| `engine::core::recording`                | `core/include/engine/core/recording/`|
-| `engine::core::runtime`                  | `core/include/engine/core/runtime/`  |
-| `engine::core::utils`                    | `core/include/engine/core/utils/`    |
-| `engine::pipeline`                       | `pipeline/include/engine/pipeline/`  |
-| `engine::pipeline::block_builders`       | `pipeline/.../block_builders/`       |
-| `engine::pipeline::builders`             | `pipeline/.../builders/`             |
-| `engine::pipeline::linking`              | `pipeline/.../linking/`              |
-| `engine::pipeline::probes`               | `pipeline/.../probes/`               |
-| `engine::pipeline::event_handlers`       | `pipeline/.../event_handlers/`       |
-| `engine::domain`                         | `domain/include/engine/domain/`      |
-| `engine::infrastructure::config_parser`  | `infrastructure/config_parser/`      |
-| `engine::infrastructure::messaging`      | `infrastructure/messaging/`          |
-| `engine::infrastructure::storage`        | `infrastructure/storage/`            |
-| `engine::infrastructure::rest_api`       | `infrastructure/rest_api/`           |
-| `engine::services`                       | `services/include/engine/services/`  |
+| Namespace                               | Maps To                               |
+| --------------------------------------- | ------------------------------------- |
+| `engine::core::pipeline`                | `core/include/engine/core/pipeline/`  |
+| `engine::core::builders`                | `core/include/engine/core/builders/`  |
+| `engine::core::config`                  | `core/include/engine/core/config/`    |
+| `engine::core::events`                  | `core/include/engine/core/eventing/`  |
+| `engine::core::probes`                  | `core/include/engine/core/probes/`    |
+| `engine::core::handlers`                | `core/include/engine/core/handlers/`  |
+| `engine::core::messaging`               | `core/include/engine/core/messaging/` |
+| `engine::core::storage`                 | `core/include/engine/core/storage/`   |
+| `engine::core::recording`               | `core/include/engine/core/recording/` |
+| `engine::core::runtime`                 | `core/include/engine/core/runtime/`   |
+| `engine::core::utils`                   | `core/include/engine/core/utils/`     |
+| `engine::pipeline`                      | `pipeline/include/engine/pipeline/`   |
+| `engine::pipeline::block_builders`      | `pipeline/.../block_builders/`        |
+| `engine::pipeline::builders`            | `pipeline/.../builders/`              |
+| `engine::pipeline::linking`             | `pipeline/.../linking/`               |
+| `engine::pipeline::probes`              | `pipeline/.../probes/`                |
+| `engine::pipeline::event_handlers`      | `pipeline/.../event_handlers/`        |
+| `engine::domain`                        | `domain/include/engine/domain/`       |
+| `engine::infrastructure::config_parser` | `infrastructure/config_parser/`       |
+| `engine::infrastructure::messaging`     | `infrastructure/messaging/`           |
+| `engine::infrastructure::storage`       | `infrastructure/storage/`             |
+| `engine::infrastructure::rest_api`      | `infrastructure/rest_api/`            |
+| `engine::services`                      | `services/include/engine/services/`   |
 
 ### Naming Conventions
 
-| Element        | Convention                       | Example                            |
-| -------------- | -------------------------------- | ---------------------------------- |
-| Namespaces     | `snake_case`                     | `engine::core::pipeline`           |
-| Classes        | `PascalCase`                     | `PipelineManager`, `BuilderFactory`|
-| Interfaces     | `IPascalCase`                    | `IPipelineManager`, `IHandler`     |
-| Methods        | `snake_case`                     | `build_pipeline()`, `get_state()`  |
-| Member vars    | `snake_case_`                    | `pipeline_`, `config_`, `tails_`   |
-| Constants      | `UPPER_SNAKE_CASE`               | `DEFAULT_MBROKER_PORT`             |
-| Enums          | `PascalCase` (type), `PascalCase` (values) | `PipelineState::Playing` |
-| Files          | `snake_case.hpp` / `.cpp`        | `pipeline_manager.hpp`             |
-| Config IDs     | `snake_case`                     | `"pgie_detector"`, `"muxer_main"` |
+| Element     | Convention                                 | Example                             |
+| ----------- | ------------------------------------------ | ----------------------------------- |
+| Namespaces  | `snake_case`                               | `engine::core::pipeline`            |
+| Classes     | `PascalCase`                               | `PipelineManager`, `BuilderFactory` |
+| Interfaces  | `IPascalCase`                              | `IPipelineManager`, `IHandler`      |
+| Methods     | `snake_case`                               | `build_pipeline()`, `get_state()`   |
+| Member vars | `snake_case_`                              | `pipeline_`, `config_`, `tails_`    |
+| Constants   | `UPPER_SNAKE_CASE`                         | `DEFAULT_MBROKER_PORT`              |
+| Enums       | `PascalCase` (type), `PascalCase` (values) | `PipelineState::Playing`            |
+| Files       | `snake_case.hpp` / `.cpp`                  | `pipeline_manager.hpp`              |
+| Config IDs  | `snake_case`                               | `"pgie_detector"`, `"muxer_main"`   |
 
 ---
 
@@ -1863,18 +1870,18 @@ vms_engine (executable)
 
 ### External Dependencies
 
-| Dependency       | Discovery Method        | Required? | Notes                    |
-| ---------------- | ----------------------- | --------- | ------------------------ |
-| GLib 2.56+       | `pkg_check_modules`     | Yes       | GStreamer foundation     |
-| GStreamer 1.14+   | `pkg_check_modules`     | Yes       | Multimedia framework     |
-| DeepStream SDK   | `DEEPSTREAM_DIR` env    | Yes       | AI video analytics       |
-| spdlog 1.12+     | `FetchContent`          | Yes       | Logging                  |
-| yaml-cpp         | `FetchContent`          | Yes       | Config parsing           |
-| libcurl          | `pkg_check_modules`     | Yes       | HTTP client              |
-| Threads          | `find_package`          | Yes       | std::thread support      |
-| hiredis          | `pkg_check_modules`     | Optional  | Redis client             |
-| librdkafka       | `pkg_check_modules`     | Optional  | Kafka client             |
-| Pistache         | `find_package`          | Optional  | REST API server          |
+| Dependency      | Discovery Method     | Required? | Notes                |
+| --------------- | -------------------- | --------- | -------------------- |
+| GLib 2.56+      | `pkg_check_modules`  | Yes       | GStreamer foundation |
+| GStreamer 1.14+ | `pkg_check_modules`  | Yes       | Multimedia framework |
+| DeepStream SDK  | `DEEPSTREAM_DIR` env | Yes       | AI video analytics   |
+| spdlog 1.12+    | `FetchContent`       | Yes       | Logging              |
+| yaml-cpp        | `FetchContent`       | Yes       | Config parsing       |
+| libcurl         | `pkg_check_modules`  | Yes       | HTTP client          |
+| Threads         | `find_package`       | Yes       | std::thread support  |
+| hiredis         | `pkg_check_modules`  | Optional  | Redis client         |
+| librdkafka      | `pkg_check_modules`  | Optional  | Kafka client         |
+| Pistache        | `find_package`       | Optional  | REST API server      |
 
 ### Build Commands
 
@@ -1916,43 +1923,43 @@ build/
 
 ### Key Changes
 
-| Aspect                 | lantanav2                                      | vms-engine                              |
-| ---------------------- | ---------------------------------------------- | --------------------------------------- |
-| **Project name**       | `lantana`                                      | `vms_engine`                            |
-| **Root namespace**     | `lantana::`                                    | `engine::`                              |
-| **Include prefix**     | `lantana/core/`, `lantana/backends/deepstream/` | `engine/core/`, `engine/pipeline/`     |
-| **Backend structure**  | `backends/deepstream/` + `backends/dlstreamer/` | `pipeline/` (single, flat)             |
-| **Backend config**     | `std::variant<DeepStream, DLStreamer>`          | Direct DeepStream types                |
-| **Builder factory**    | `DsBuilderFactory` (passes config slices)      | `BuilderFactory` (no config at creation)|
-| **Builder signature**  | `build(const SpecificConfig& slice, int idx)`  | `build(const PipelineConfig& cfg, int idx)` |
-| **Pipeline manager**   | `DsPipelineManager`                            | `PipelineManager`                       |
-| **Element builders**   | `ds_source_builder.hpp`                        | `source_builder.hpp`                    |
-| **Executable**         | `lantana`                                      | `vms_engine`                            |
-| **Library names**      | `liblantana_*.so`                              | `libvms_engine_*.a`                     |
-| **Config prefix**      | `deepstream_*.yml`                             | `default.yml`, `example_*.yml`          |
-| **YAML sources**       | `sources[].backend_options.deepstream.*`        | `sources.cameras[]` + flat fields       |
-| **YAML processing**    | `processing_flow[].backend_config.deepstream.*` | `processing.elements[]` flat fields    |
-| **YAML queue**         | Implicit / `QueueManager` internal heuristics  | Explicit `queue: {}` inline per element |
-| **YAML smart_record**  | `sources[].backend_options.deepstream.smart_record.*` | `sources.smart_record` (int enum) + `sources.smart_rec_*` flat fields |
-| **YAML outputs**       | `outputs[].encoding.*` + `outputs[].destination.*`    | `outputs[].elements[]` flat list (nvvideoconvert→capsfilter→encoder→parser→sink) |
+| Aspect                | lantanav2                                             | vms-engine                                                                       |
+| --------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Project name**      | `lantana`                                             | `vms_engine`                                                                     |
+| **Root namespace**    | `lantana::`                                           | `engine::`                                                                       |
+| **Include prefix**    | `lantana/core/`, `lantana/backends/deepstream/`       | `engine/core/`, `engine/pipeline/`                                               |
+| **Backend structure** | `backends/deepstream/` + `backends/dlstreamer/`       | `pipeline/` (single, flat)                                                       |
+| **Backend config**    | `std::variant<DeepStream, DLStreamer>`                | Direct DeepStream types                                                          |
+| **Builder factory**   | `DsBuilderFactory` (passes config slices)             | `BuilderFactory` (no config at creation)                                         |
+| **Builder signature** | `build(const SpecificConfig& slice, int idx)`         | `build(const PipelineConfig& cfg, int idx)`                                      |
+| **Pipeline manager**  | `DsPipelineManager`                                   | `PipelineManager`                                                                |
+| **Element builders**  | `ds_source_builder.hpp`                               | `source_builder.hpp`                                                             |
+| **Executable**        | `lantana`                                             | `vms_engine`                                                                     |
+| **Library names**     | `liblantana_*.so`                                     | `libvms_engine_*.a`                                                              |
+| **Config prefix**     | `deepstream_*.yml`                                    | `default.yml`, `example_*.yml`                                                   |
+| **YAML sources**      | `sources[].backend_options.deepstream.*`              | `sources.cameras[]` + flat fields                                                |
+| **YAML processing**   | `processing_flow[].backend_config.deepstream.*`       | `processing.elements[]` flat fields                                              |
+| **YAML queue**        | Implicit / `QueueManager` internal heuristics         | Explicit `queue: {}` inline per element                                          |
+| **YAML smart_record** | `sources[].backend_options.deepstream.smart_record.*` | `sources.smart_record` (int enum) + `sources.smart_rec_*` flat fields            |
+| **YAML outputs**      | `outputs[].encoding.*` + `outputs[].destination.*`    | `outputs[].elements[]` flat list (nvvideoconvert→capsfilter→encoder→parser→sink) |
 
 ### File Mapping (Key Files)
 
-| lantanav2 Path                                                | vms-engine Path                                          |
-| ------------------------------------------------------------- | -------------------------------------------------------- |
-| `core/include/lantana/core/pipeline/ipipeline_manager.hpp`    | `core/include/engine/core/pipeline/ipipeline_manager.hpp` |
-| `core/include/lantana/core/builders/ibuilder_factory.hpp`     | `core/include/engine/core/builders/ibuilder_factory.hpp`  |
-| `backends/deepstream/include/.../ds_pipeline_manager.hpp`     | `pipeline/include/engine/pipeline/pipeline_manager.hpp`   |
-| `backends/deepstream/include/.../ds_builder_factory.hpp`      | `pipeline/include/engine/pipeline/builder_factory.hpp`    |
-| `backends/deepstream/include/.../block_builders/*.hpp`        | `pipeline/include/engine/pipeline/block_builders/*.hpp`   |
-| `backends/deepstream/include/.../builders/ds_*.hpp`           | `pipeline/include/engine/pipeline/builders/*.hpp`         |
+| lantanav2 Path                                                | vms-engine Path                                                |
+| ------------------------------------------------------------- | -------------------------------------------------------------- |
+| `core/include/lantana/core/pipeline/ipipeline_manager.hpp`    | `core/include/engine/core/pipeline/ipipeline_manager.hpp`      |
+| `core/include/lantana/core/builders/ibuilder_factory.hpp`     | `core/include/engine/core/builders/ibuilder_factory.hpp`       |
+| `backends/deepstream/include/.../ds_pipeline_manager.hpp`     | `pipeline/include/engine/pipeline/pipeline_manager.hpp`        |
+| `backends/deepstream/include/.../ds_builder_factory.hpp`      | `pipeline/include/engine/pipeline/builder_factory.hpp`         |
+| `backends/deepstream/include/.../block_builders/*.hpp`        | `pipeline/include/engine/pipeline/block_builders/*.hpp`        |
+| `backends/deepstream/include/.../builders/ds_*.hpp`           | `pipeline/include/engine/pipeline/builders/*.hpp`              |
 | `backends/deepstream/include/.../linking/pipeline_linker.hpp` | `pipeline/include/engine/pipeline/linking/pipeline_linker.hpp` |
-| `backends/deepstream/include/.../probes/*.hpp`                | `pipeline/include/engine/pipeline/probes/*.hpp`           |
-| `backends/deepstream/include/.../event_handlers/*.hpp`        | `pipeline/include/engine/pipeline/event_handlers/*.hpp`   |
-| `infrastructure/config_parser/...`                            | `infrastructure/config_parser/...`                        |
-| `infrastructure/messaging/...`                                | `infrastructure/messaging/...`                            |
-| `infrastructure/storage/...`                                  | `infrastructure/storage/...`                              |
-| `domain/include/lantana/domain/...`                           | `domain/include/engine/domain/...`                        |
+| `backends/deepstream/include/.../probes/*.hpp`                | `pipeline/include/engine/pipeline/probes/*.hpp`                |
+| `backends/deepstream/include/.../event_handlers/*.hpp`        | `pipeline/include/engine/pipeline/event_handlers/*.hpp`        |
+| `infrastructure/config_parser/...`                            | `infrastructure/config_parser/...`                             |
+| `infrastructure/messaging/...`                                | `infrastructure/messaging/...`                                 |
+| `infrastructure/storage/...`                                  | `infrastructure/storage/...`                                   |
+| `domain/include/lantana/domain/...`                           | `domain/include/engine/domain/...`                             |
 
 ### Migration Checklist
 
@@ -1975,17 +1982,17 @@ build/
 
 ### Common Operations
 
-| Task                               | Command / Action                                   |
-| ---------------------------------- | -------------------------------------------------- |
-| Build (debug)                      | `cmake --build build -- -j$(nproc)`                |
-| Run                                | `./build/bin/vms_engine -c configs/default.yml`    |
-| Export DOT graph                   | Set `dot_file_dir` in YAML; auto-exported          |
-| View DOT graph                     | `dot -Tpng graph.dot -o graph.png`                 |
-| Add new element builder            | Create in `pipeline/builders/`, register in `BuilderFactory` |
-| Add new event handler              | Implement `IEventHandler`, register in `HandlerManager` |
-| Add new probe                      | Implement `IProbeHandler`, register in `ProbeHandlerManager` |
-| Add new messaging adapter          | Implement `IMessageProducer` in `infrastructure/messaging/` |
-| Add new storage backend            | Implement `IStorageManager` in `infrastructure/storage/` |
+| Task                      | Command / Action                                             |
+| ------------------------- | ------------------------------------------------------------ |
+| Build (debug)             | `cmake --build build -- -j$(nproc)`                          |
+| Run                       | `./build/bin/vms_engine -c configs/default.yml`              |
+| Export DOT graph          | Set `dot_file_dir` in YAML; auto-exported                    |
+| View DOT graph            | `dot -Tpng graph.dot -o graph.png`                           |
+| Add new element builder   | Create in `pipeline/builders/`, register in `BuilderFactory` |
+| Add new event handler     | Implement `IEventHandler`, register in `HandlerManager`      |
+| Add new probe             | Implement `IProbeHandler`, register in `ProbeHandlerManager` |
+| Add new messaging adapter | Implement `IMessageProducer` in `infrastructure/messaging/`  |
+| Add new storage backend   | Implement `IStorageManager` in `infrastructure/storage/`     |
 
 ### Adding a New Pipeline Element Builder
 
@@ -2026,20 +2033,20 @@ LOG_C("Critical: Pipeline initialization failed");
 
 For deep-dive technical documentation on the DeepStream-specific implementation, see:
 
-| File | Topic |
-|------|-------|
-| [`docs/architecture/deepstream/README.md`](deepstream/README.md) | Index & reading order |
-| [`00_project_overview.md`](deepstream/00_project_overview.md) | Tech stack, pipeline diagram, conventions |
-| [`01_directory_structure.md`](deepstream/01_directory_structure.md) | Full project layout with file purposes |
-| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md) | All core interfaces (engine:: namespace) |
-| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md) | 5-phase build, tails_ map pattern |
-| [`04_linking_system.md`](deepstream/04_linking_system.md) | Static/dynamic pad linking, queue: {} |
-| [`05_configuration.md`](deepstream/05_configuration.md) | Full YAML schema, parser architecture |
-| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md) | GstBus, state machine, RTSP reconnect |
-| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md) | HandlerManager, probes, built-in handlers |
-| [`08_analytics.md`](deepstream/08_analytics.md) | nvdsanalytics ROI/line crossing/overcrowding |
-| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md) | Sinks, encoders, smart record API |
-| [`10_signal_vs_probe_deep_dive.md`](deepstream/10_signal_vs_probe_deep_dive.md) | When to use signal vs pad probe |
+| File                                                                            | Topic                                        |
+| ------------------------------------------------------------------------------- | -------------------------------------------- |
+| [`docs/architecture/deepstream/README.md`](deepstream/README.md)                | Index & reading order                        |
+| [`00_project_overview.md`](deepstream/00_project_overview.md)                   | Tech stack, pipeline diagram, conventions    |
+| [`01_directory_structure.md`](deepstream/01_directory_structure.md)             | Full project layout with file purposes       |
+| [`02_core_interfaces.md`](deepstream/02_core_interfaces.md)                     | All core interfaces (engine:: namespace)     |
+| [`03_pipeline_building.md`](deepstream/03_pipeline_building.md)                 | 5-phase build, tails\_ map pattern           |
+| [`04_linking_system.md`](deepstream/04_linking_system.md)                       | Static/dynamic pad linking, queue: {}        |
+| [`05_configuration.md`](deepstream/05_configuration.md)                         | Full YAML schema, parser architecture        |
+| [`06_runtime_lifecycle.md`](deepstream/06_runtime_lifecycle.md)                 | GstBus, state machine, RTSP reconnect        |
+| [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md)         | HandlerManager, probes, built-in handlers    |
+| [`08_analytics.md`](deepstream/08_analytics.md)                                 | nvdsanalytics ROI/line crossing/overcrowding |
+| [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)           | Sinks, encoders, smart record API            |
+| [`10_signal_vs_probe_deep_dive.md`](deepstream/10_signal_vs_probe_deep_dive.md) | When to use signal vs pad probe              |
 
 ---
 

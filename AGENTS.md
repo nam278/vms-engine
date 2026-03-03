@@ -16,17 +16,19 @@ Root namespace: `engine::` (maps to include prefix `engine/`).
 
 There are **two Docker images** with distinct purposes:
 
-| Image | Dockerfile | Tag | Purpose |
-|---|---|---|---|
-| Dev image | `Dockerfile` | `vms-engine-dev:latest` | Full build tools, GDB, Valgrind — for development |
-| Prod image | `Dockerfile.image` | `vms-engine:latest` | Lightweight runtime — binary baked in |
+| Image      | Dockerfile         | Tag                     | Purpose                                           |
+| ---------- | ------------------ | ----------------------- | ------------------------------------------------- |
+| Dev image  | `Dockerfile`       | `vms-engine-dev:latest` | Full build tools, GDB, Valgrind — for development |
+| Prod image | `Dockerfile.image` | `vms-engine:latest`     | Lightweight runtime — binary baked in             |
 
 **Build the dev image:**
+
 ```bash
 docker build -t vms-engine-dev:latest .
 ```
 
 **Start dev container:**
+
 ```bash
 # Copy and fill env vars first:
 cp .env.example .env  # set APP_UID, APP_GID
@@ -35,7 +37,7 @@ docker compose up -d
 docker compose exec app bash
 ```
 
-The container mounts `.:/opt/lantana` — all source edits on the host are reflected immediately inside the container.
+The container mounts `.:/opt/vms_engine` — all source edits on the host are reflected immediately inside the container.
 
 ---
 
@@ -47,7 +49,9 @@ The container mounts `.:/opt/lantana` — all source edits on the host are refle
 > 📖 **DeepStream Architecture Docs** → [`docs/architecture/deepstream/README.md`](docs/architecture/deepstream/README.md)  
 > 11 files covering: pipeline building, linking, config system, runtime lifecycle, event handlers/probes, analytics, outputs, smart record, signal vs probe.
 
-All build commands run **inside the dev container** at `/opt/lantana`.
+**Dev workflow**: Source code is edited on the host (mounted into container at `/opt/vms_engine`). Only these commands need to run **inside the container**: cmake configure, cmake build, and running the binary.
+
+All build commands run **inside the dev container** at `/opt/vms_engine`.
 
 ```bash
 # Configure (Debug — default for development)
@@ -57,7 +61,7 @@ cmake -S . -B build \
     -G Ninja
 
 # Build (parallel)
-cmake --build build -- -j$(nproc)
+cmake --build build -- -j5
 
 # Run
 ./build/bin/vms_engine -c configs/default.yml
@@ -67,15 +71,16 @@ cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
     -G Ninja
-cmake --build build -- -j$(nproc)
+cmake --build build -- -j5
 
 # Clean rebuild
-rm -rf build && cmake -S . -B build ... && cmake --build build -- -j$(nproc)
+rm -rf build && cmake -S . -B build ... && cmake --build build -- -j5
 ```
 
 **`DEEPSTREAM_DIR`** is automatically set to `/opt/nvidia/deepstream/deepstream` inside the container via the `ENV` in Dockerfile. Can be overridden.
 
 **Build output:**
+
 - Executable: `build/bin/vms_engine`
 - Libraries: `build/lib/libvms_engine_*.a`
 - Compile DB: `build/compile_commands.json` (used by clangd)
@@ -87,9 +92,9 @@ rm -rf build && cmake -S . -B build ... && cmake --build build -- -j$(nproc)
 Typical development cycle inside the container:
 
 ```bash
-# 1. Edit source on host (IDE), changes appear immediately in container
-# 2. Rebuild
-cmake --build build -- -j$(nproc)
+# 1. Edit source on HOST (IDE/editor) — changes appear immediately in container via mount
+# 2. Enter container and rebuild
+cmake --build build -- -j5
 
 # 3. Run with a config
 ./build/bin/vms_engine -c configs/default.yml
@@ -99,12 +104,14 @@ gdb --args ./build/bin/vms_engine -c configs/default.yml
 ```
 
 **GStreamer debug logging:**
+
 ```bash
 GST_DEBUG=3 ./build/bin/vms_engine -c configs/default.yml
 GST_DEBUG=nvmultiurisrcbin:5,nvinfer:4 ./build/bin/vms_engine -c configs/default.yml
 ```
 
 **Runtime data** lands in `dev/` (git-ignored, only `dev/.gitkeep` is tracked):
+
 - Logs: `dev/logs/`
 - Smart record clips: `dev/rec/`
 - Object crops: `dev/rec/objects/`
@@ -169,17 +176,17 @@ These rules are **strictly enforced**. Violations break the architecture:
 
 ## Naming Conventions
 
-| Element | Convention | Example |
-|---|---|---|
-| Namespaces | `snake_case` | `engine::core::pipeline` |
-| Classes | `PascalCase` | `PipelineManager`, `BuilderFactory` |
-| Interfaces | `IPascalCase` | `IPipelineManager`, `IHandler` |
-| Methods | `snake_case()` | `build_pipeline()`, `get_state()` |
-| Member vars | `snake_case_` (trailing `_`) | `pipeline_`, `config_`, `tails_` |
-| Constants | `UPPER_SNAKE_CASE` | `DEFAULT_MBROKER_PORT` |
-| Enum values | `PascalCase` | `PipelineState::Playing` |
-| Files | `snake_case.hpp` / `.cpp` | `pipeline_manager.hpp` |
-| Config IDs | `snake_case` in YAML | `"pgie_detector"`, `"muxer_main"` |
+| Element     | Convention                   | Example                             |
+| ----------- | ---------------------------- | ----------------------------------- |
+| Namespaces  | `snake_case`                 | `engine::core::pipeline`            |
+| Classes     | `PascalCase`                 | `PipelineManager`, `BuilderFactory` |
+| Interfaces  | `IPascalCase`                | `IPipelineManager`, `IHandler`      |
+| Methods     | `snake_case()`               | `build_pipeline()`, `get_state()`   |
+| Member vars | `snake_case_` (trailing `_`) | `pipeline_`, `config_`, `tails_`    |
+| Constants   | `UPPER_SNAKE_CASE`           | `DEFAULT_MBROKER_PORT`              |
+| Enum values | `PascalCase`                 | `PipelineState::Playing`            |
+| Files       | `snake_case.hpp` / `.cpp`    | `pipeline_manager.hpp`              |
+| Config IDs  | `snake_case` in YAML         | `"pgie_detector"`, `"muxer_main"`   |
 
 ---
 
@@ -192,19 +199,50 @@ These rules are **strictly enforced**. Violations break the architecture:
 
 ```yaml
 # Example: correct YAML property conventions
+queue_defaults:
+  max_size_buffers: 10
+  max_size_bytes_mb: 20
+  max_size_time_sec: 0.5
+  leaky: 2 # 0=none, 1=upstream, 2=downstream
+  silent: true
+
 sources:
+  type: nvmultiurisrcbin
+  max_batch_size: 4
+  gpu_id: 0
+  width: 1920
+  height: 1080
   cameras:
-    - id: "cam_01"
+    - name: camera-01
       uri: "rtsp://192.168.1.100:554/stream"
-      smart_record: 1           # int: 0=disabled, 1=audio+video, 2=video-only
-      smart_rec_dir_path: "dev/rec"
+  smart_record: 2 # int: 0=disabled, 1=cloud-only, 2=multi
+  smart_rec_dir_path: "/opt/engine/data/rec"
+  output_queue:
+    max_size_buffers: 5
+    leaky: 2
 
 processing:
   elements:
-    - id: "pgie"
-      type: "nvinfer"
-      config_file_path: "configs/nvinfer/pgie_config.txt"
-      process_mode: 1           # int: 1=primary, 2=secondary
+    - id: pgie_detection
+      type: nvinfer
+      role: primary_inference
+      config_file: "/opt/engine/data/components/pgie/config.yml"
+      process_mode: 1 # int: 1=primary, 2=secondary
+      batch_size: 4
+      queue: {} # insert queue with defaults
+    - id: tracker
+      type: nvtracker
+      ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+      queue: {}
+  output_queue: {}
+
+event_handlers:
+  - id: smart_record
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: smart_record
+    label_filter: [car, person, truck]
 ```
 
 ---
@@ -217,117 +255,152 @@ YAML uses `snake_case`; GStreamer docs use `kebab-case` — they map to the same
 
 Properties in 3 groups:
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `max_batch_size` | `max-batch-size` | int | number of streams |
-| `uri_list` | `uri-list` | string | semicolon-separated URIs |
-| `smart_record` | `smart-record` | int | **0**=off, **1**=audio+video, **2**=video-only |
-| `smart_rec_dir_path` | `smart-rec-dir-path` | string | output directory |
-| `smart_rec_file_prefix` | `smart-rec-file-prefix` | string | filename prefix |
-| `smart_rec_cache` | `smart-rec-cache` | int | post-event cache (sec) |
-| `smart_rec_default_duration` | `smart-rec-default-duration` | int | clip duration (sec) |
-| `gpu_id` | `gpu-id` | int | passthrough → nvurisrcbin |
-| `latency` | `latency` | int | buffer latency (ms), passthrough |
-| `rtsp_reconnect_interval` | `rtsp-reconnect-interval` | int | sec, 0=disable |
-| `cudadec_memtype` | `cudadec-memtype` | int | **0**=device, **1**=pinned, **2**=unified |
-| `width` | `width` | int | passthrough → nvstreammux |
-| `height` | `height` | int | passthrough → nvstreammux |
-| `batched_push_timeout` | `batched-push-timeout` | int | µs; 40000 = 40ms |
-| `live_source` | `live-source` | bool | true for RTSP |
+**Group 1 — nvmultiurisrcbin direct:**
+
+| YAML key         | GStreamer        | Type   | Notes                                          |
+| ---------------- | ---------------- | ------ | ---------------------------------------------- |
+| `ip_address`     | `ip-address`     | string | REST API bind address (`localhost`, `0.0.0.0`) |
+| `port`           | `port`           | int    | REST API port; **0** = disable                 |
+| `max_batch_size` | `max-batch-size` | int    | max number of streams to mux (NOT batch_size)  |
+| `mode`           | `mode`           | int    | **0**=video-only, **1**=audio-only             |
+
+**Group 2 — per-source nvurisrcbin pass-through:**
+
+| YAML key                  | GStreamer                 | Type | Notes                                              |
+| ------------------------- | ------------------------- | ---- | -------------------------------------------------- |
+| `gpu_id`                  | `gpu-id`                  | int  | GPU device ID                                      |
+| `num_extra_surfaces`      | `num-extra-surfaces`      | int  | extra decoder surfaces for stability               |
+| `cudadec_memtype`         | `cudadec-memtype`         | int  | **0**=device, **1**=pinned, **2**=unified          |
+| `dec_skip_frames`         | `dec-skip-frames`         | int  | **0**=all, **1**=non-ref, **2**=key-only           |
+| `drop_frame_interval`     | `drop-frame-interval`     | int  | drop every N frames at source (0=none)             |
+| `select_rtp_protocol`     | `select-rtp-protocol`     | int  | **0**=multi(UDP+TCP), **4**=TCP-only (recommended) |
+| `rtsp_reconnect_interval` | `rtsp-reconnect-interval` | int  | seconds between reconnects (0=disable)             |
+| `rtsp_reconnect_attempts` | `rtsp-reconnect-attempts` | int  | reconnect attempts (-1=infinite)                   |
+| `latency`                 | `latency`                 | int  | RTSP jitter buffer latency (ms)                    |
+| `udp_buffer_size`         | `udp-buffer-size`         | int  | UDP receive buffer bytes (default 524288)          |
+| `disable_audio`           | `disable-audio`           | bool | true = skip audio decode                           |
+| `disable_passthrough`     | `disable-passthrough`     | bool | disable passthrough mode                           |
+| `drop_pipeline_eos`       | `drop-pipeline-eos`       | bool | prevent single-source EOS from killing pipeline    |
+
+**Group 3 — nvstreammux passthrough:**
+
+| YAML key               | GStreamer              | Type | Notes                                    |
+| ---------------------- | ---------------------- | ---- | ---------------------------------------- |
+| `width`                | `width`                | int  | muxer output width                       |
+| `height`               | `height`               | int  | muxer output height                      |
+| `batched_push_timeout` | `batched-push-timeout` | int  | µs to wait for full batch (40000 = 40ms) |
+| `live_source`          | `live-source`          | bool | true for RTSP                            |
+| `sync_inputs`          | `sync-inputs`          | bool | sync timestamps across sources           |
+
+**Smart Record properties (on nvmultiurisrcbin):**
+
+| YAML key                     | GStreamer                    | Type   | Notes                                       |
+| ---------------------------- | ---------------------------- | ------ | ------------------------------------------- |
+| `smart_record`               | `smart-record`               | int    | **0**=off, **1**=cloud-only, **2**=multi    |
+| `smart_rec_dir_path`         | `smart-rec-dir-path`         | string | output directory for recordings             |
+| `smart_rec_file_prefix`      | `smart-rec-file-prefix`      | string | filename prefix                             |
+| `smart_rec_cache`            | `smart-rec-cache`            | int    | pre-event circular buffer (sec)             |
+| `smart_rec_default_duration` | `smart-rec-default-duration` | int    | post-event recording length (sec)           |
+| `smart_rec_mode`             | `smart-rec-mode`             | int    | **0**=audio+video, **1**=video, **2**=audio |
+| `smart_rec_container`        | `smart-rec-container`        | int    | **0**=mp4, **1**=mkv                        |
 
 ### nvinfer (TensorRT inference)
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `config_file_path` | `config-file-path` | string | points to `.txt` nvinfer config |
-| `process_mode` | `process-mode` | int | **1**=PGIE (full frame), **2**=SGIE (per-object) |
-| `batch_size` | `batch-size` | int | must match muxer batch |
-| `interval` | `interval` | int | infer every N batches (0=every batch) |
-| `gpu_id` | `gpu-id` | int | |
-| `operate_on_gie_id` | `operate-on-gie-id` | int | SGIE only — PGIE's unique-id |
-| `operate_on_class_ids` | `operate-on-class-ids` | string | SGIE — colon-separated class ids |
-| `gie_unique_id` | `gie-unique-id` | int | unique id for this infer element |
+| YAML key               | GStreamer              | Type   | Notes                                            |
+| ---------------------- | ---------------------- | ------ | ------------------------------------------------ |
+| `config_file`          | `config-file-path`     | string | points to nvinfer YAML/txt config                |
+| `role`                 | _(vms-engine only)_    | string | `primary_inference` / `secondary_inference`      |
+| `unique_id`            | `gie-unique-id`        | int    | unique ID for this infer element                 |
+| `process_mode`         | `process-mode`         | int    | **1**=PGIE (full frame), **2**=SGIE (per-object) |
+| `batch_size`           | `batch-size`           | int    | must match muxer batch                           |
+| `interval`             | `interval`             | int    | skip N batches between inferences (0=every)      |
+| `gpu_id`               | `gpu-id`               | int    |                                                  |
+| `operate_on_gie_id`    | `operate-on-gie-id`    | int    | SGIE only — PGIE's unique-id                     |
+| `operate_on_class_ids` | `operate-on-class-ids` | string | SGIE — colon-separated class ids                 |
 
 nvinfer `.txt` config key fields: `network-type` (0=Detector, 1=Classifier, 2=Segmentation), `gie-unique-id`, `model-engine-file`, `labelfile-path`, `batch-size`, `input-dims`.
 
 ### nvtracker
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `ll_lib_file` | `ll-lib-file` | string | tracker `.so` path |
-| `ll_config_file` | `ll-config-file` | string | tracker YAML config |
-| `tracker_width` | `tracker-width` | int | processing resolution |
-| `tracker_height` | `tracker-height` | int | processing resolution |
-| `gpu_id` | `gpu-id` | int | |
-| `compute_hw` | `compute-hw` | int | **0**=default, **1**=GPU, **2**=VIC |
-| `display_tracking_id` | `display-tracking-id` | bool | show IDs on OSD |
+| YAML key              | GStreamer             | Type   | Notes                                |
+| --------------------- | --------------------- | ------ | ------------------------------------ |
+| `ll_lib_file`         | `ll-lib-file`         | string | tracker `.so` path                   |
+| `ll_config_file`      | `ll-config-file`      | string | tracker YAML config                  |
+| `tracker_width`       | `tracker-width`       | int    | processing resolution                |
+| `tracker_height`      | `tracker-height`      | int    | processing resolution                |
+| `gpu_id`              | `gpu-id`              | int    |                                      |
+| `compute_hw`          | `compute-hw`          | int    | **0**=default, **1**=GPU, **2**=VIC  |
+| `display_tracking_id` | `display-tracking-id` | bool   | show IDs on OSD                      |
+| `user_meta_pool_size` | `user-meta-pool-size` | int    | buffer pool for tracker extra output |
 
 Tracker `.so` files in `/opt/nvidia/deepstream/deepstream/lib/`:
+
 - `libnvds_nvmultiobjecttracker.so` — NvDCF/IOU/NvDeepSORT (recommended)
 
 ### nvdsosd (on-screen display)
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `process_mode` | `process-mode` | int | **0**=CPU, **1**=GPU, **2**=HW/VIC |
-| `display_bbox` | `display-bbox` | bool | draw bounding boxes |
-| `display_text` | `display-text` | bool | draw labels |
-| `display_mask` | `display-mask` | bool | draw segmentation masks |
-| `border_width` | `border-width` | int | bbox line thickness |
-| `gpu_id` | `gpu-id` | int | |
+| YAML key       | GStreamer      | Type | Notes                              |
+| -------------- | -------------- | ---- | ---------------------------------- |
+| `process_mode` | `process-mode` | int  | **0**=CPU, **1**=GPU, **2**=HW/VIC |
+| `display_bbox` | `display-bbox` | bool | draw bounding boxes                |
+| `display_text` | `display-text` | bool | draw labels                        |
+| `display_mask` | `display-mask` | bool | draw segmentation masks            |
+| `border_width` | `border-width` | int  | bbox line thickness                |
+| `gpu_id`       | `gpu-id`       | int  |                                    |
 
 ### nvmultistreamtiler
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `rows` | `rows` | int | tiling grid rows |
-| `columns` | `columns` | int | tiling grid columns |
-| `width` | `width` | int | output width |
-| `height` | `height` | int | output height |
-| `gpu_id` | `gpu-id` | int | |
+| YAML key  | GStreamer | Type | Notes               |
+| --------- | --------- | ---- | ------------------- |
+| `rows`    | `rows`    | int  | tiling grid rows    |
+| `columns` | `columns` | int  | tiling grid columns |
+| `width`   | `width`   | int  | output width        |
+| `height`  | `height`  | int  | output height       |
+| `gpu_id`  | `gpu-id`  | int  |                     |
 
 ### nvdsanalytics
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `config_file` | `config-file` | string | analytics config file |
-| `gpu_id` | `gpu-id` | int | |
-| `enable_secondary_input` | `enable-secondary-input` | bool | use SGIE metadata |
+| YAML key                 | GStreamer                | Type   | Notes                 |
+| ------------------------ | ------------------------ | ------ | --------------------- |
+| `config_file`            | `config-file`            | string | analytics config file |
+| `gpu_id`                 | `gpu-id`                 | int    |                       |
+| `enable_secondary_input` | `enable-secondary-input` | bool   | use SGIE metadata     |
 
 ### nvmsgconv + nvmsgbroker (event publishing)
 
 **nvmsgconv:**
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `config` | `config` | string | schema config file |
-| `payload_type` | `payload-type` | int | **0**=DEEPSTREAM, **1**=MINIMAL |
-| `comp_id` | `comp-id` | int | component identifier |
+| YAML key       | GStreamer      | Type   | Notes                           |
+| -------------- | -------------- | ------ | ------------------------------- |
+| `config`       | `config`       | string | schema config file              |
+| `payload_type` | `payload-type` | int    | **0**=DEEPSTREAM, **1**=MINIMAL |
+| `comp_id`      | `comp-id`      | int    | component identifier            |
 
 **nvmsgbroker:**
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `proto_lib` | `proto-lib` | string | adapter `.so` path |
-| `conn_str` | `conn-str` | string | broker connection string |
-| `topic` | `topic` | string | message topic |
-| `config` | `config` | string | broker config file |
-| `sync` | `sync` | bool | synchronous publish |
+| YAML key    | GStreamer   | Type   | Notes                    |
+| ----------- | ----------- | ------ | ------------------------ |
+| `proto_lib` | `proto-lib` | string | adapter `.so` path       |
+| `conn_str`  | `conn-str`  | string | broker connection string |
+| `topic`     | `topic`     | string | message topic            |
+| `config`    | `config`    | string | broker config file       |
+| `sync`      | `sync`      | bool   | synchronous publish      |
 
 Protocol adapters in `/opt/nvidia/deepstream/deepstream/lib/`:
+
 - `libnvds_kafka_proto.so` — Kafka
 - `libnvds_redis_proto.so` — Redis
 - `libnvds_amqp_proto.so` — AMQP / RabbitMQ
 
 ### nvv4l2h264enc / nvv4l2h265enc (hardware encoder)
 
-| YAML key | GStreamer | Type | Notes |
-|---|---|---|---|
-| `bitrate` | `bitrate` | int | bps (e.g. 4000000 = 4 Mbps) |
-| `iframeinterval` | `iframeinterval` | int | keyframe interval |
-| `preset_level` | `preset-level` | int | **1**=UltraFast … **4**=Medium |
+| YAML key         | GStreamer        | Type | Notes                                |
+| ---------------- | ---------------- | ---- | ------------------------------------ |
+| `bitrate`        | `bitrate`        | int  | bps (e.g. 4000000 = 4 Mbps)          |
+| `iframeinterval` | `iframeinterval` | int  | keyframe interval                    |
+| `preset_level`   | `preset-level`   | int  | **1**=UltraFast … **4**=Medium       |
 | `insert_sps_pps` | `insert-sps-pps` | bool | **true** required for RTSP streaming |
-| `maxperf_enable` | `maxperf-enable` | bool | max hardware throughput |
+| `maxperf_enable` | `maxperf-enable` | bool | max hardware throughput              |
 
 ### NvDs Metadata structs (in pad probes)
 
@@ -371,6 +444,31 @@ LOG_C("Critical: Pipeline initialization failed");
 - **Constructors**: prefer constructor injection for dependencies; avoid global state
 - **Error handling**: return `bool` for build/init operations with `LOG_E` before returning false; throw only in constructors when unrecoverable
 
+## Doxygen Comment Standard
+
+All public interfaces and non-trivial implementations must use Doxygen-style comments.
+
+- **Public class/interface**: use `/** ... */` with `@brief` and short behavioral contract.
+- **Public methods/functions**: document parameters (`@param`), return (`@return`), and side effects.
+- **Enums/constants**: add one-line `/** @brief ... */` explaining runtime semantics.
+- **Avoid noise**: do not restate obvious code; document intent, invariants, ownership, lifecycle.
+
+```cpp
+/**
+ * @brief Builds and wires the DeepStream pipeline from validated runtime config.
+ * @param config Full immutable pipeline configuration object.
+ * @param loop Main loop used by async bus watch and signal callbacks.
+ * @return true when build completed and all mandatory links succeeded.
+ */
+virtual bool build(const engine::core::config::PipelineConfig& config,
+                   GMainLoop* loop) = 0;
+```
+
+```cpp
+/** @brief Runtime event key for PGIE object detections. */
+inline constexpr std::string_view ON_DETECT = "on_detect";
+```
+
 ---
 
 ## Memory Management & RAII
@@ -382,19 +480,19 @@ LOG_C("Critical: Pipeline initialization failed");
 
 ### GStreamer Ownership Quick Reference
 
-| Object | Created via | Release via | Notes |
-|---|---|---|---|
-| `GstElement*` (not in bin) | `gst_element_factory_make()` | `gst_object_unref()` | Caller owns until `gst_bin_add()` |
-| `GstElement*` in bin | `gst_bin_add(bin, elem)` | *(bin owns)* | **Do NOT unref after add** |
-| `GstPad*` | `gst_element_get_static_pad()` | `gst_object_unref()` | Must unref even read-only |
-| `GstCaps*` | `gst_caps_new_*()` / `gst_caps_copy()` | `gst_caps_unref()` | |
-| `GstBus*` | `gst_pipeline_get_bus()` | `gst_object_unref()` | |
-| `GMainLoop*` | `g_main_loop_new()` | `g_main_loop_unref()` | |
-| `GError*` | GStreamer out param | `g_error_free()` | |
-| `gchar*` | `g_object_get()` / `g_strdup()` | `g_free()` | |
-| `NvDsBatchMeta*` | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE** | pipeline owns |
-| `NvDsFrameMeta*` | iterated from `batch_meta` | **DO NOT FREE** | |
-| `NvDsObjectMeta*` | iterated from `frame_meta` | **DO NOT FREE** | |
+| Object                     | Created via                            | Release via           | Notes                             |
+| -------------------------- | -------------------------------------- | --------------------- | --------------------------------- |
+| `GstElement*` (not in bin) | `gst_element_factory_make()`           | `gst_object_unref()`  | Caller owns until `gst_bin_add()` |
+| `GstElement*` in bin       | `gst_bin_add(bin, elem)`               | _(bin owns)_          | **Do NOT unref after add**        |
+| `GstPad*`                  | `gst_element_get_static_pad()`         | `gst_object_unref()`  | Must unref even read-only         |
+| `GstCaps*`                 | `gst_caps_new_*()` / `gst_caps_copy()` | `gst_caps_unref()`    |                                   |
+| `GstBus*`                  | `gst_pipeline_get_bus()`               | `gst_object_unref()`  |                                   |
+| `GMainLoop*`               | `g_main_loop_new()`                    | `g_main_loop_unref()` |                                   |
+| `GError*`                  | GStreamer out param                    | `g_error_free()`      |                                   |
+| `gchar*`                   | `g_object_get()` / `g_strdup()`        | `g_free()`            |                                   |
+| `NvDsBatchMeta*`           | `gst_buffer_get_nvds_batch_meta()`     | **DO NOT FREE**       | pipeline owns                     |
+| `NvDsFrameMeta*`           | iterated from `batch_meta`             | **DO NOT FREE**       |                                   |
+| `NvDsObjectMeta*`          | iterated from `frame_meta`             | **DO NOT FREE**       |                                   |
 
 ### RAII Helpers (`gst_utils.hpp`)
 
@@ -422,6 +520,7 @@ LOG_I("URI: {}", uri.get());  // g_free called automatically
 ```
 
 **Choosing the right tool:**
+
 - Single-call cleanup → `GstPadPtr`, `GstCapsPtr`, … (`unique_ptr` alias)
 - Multi-step cleanup (remove_watch → unref; set_state(NULL) → unref) → custom class with `~Destructor()`
 - See `GstBusGuard` and `GstPipelineOwner` in [RAII.md](docs/architecture/RAII.md#9-custom-raii-class-with-destructor)
@@ -444,7 +543,7 @@ LOG_I("URI: {}", uri.get());  // g_free called automatically
 1. Create `pipeline/include/engine/pipeline/event_handlers/my_handler.hpp` — implement `IEventHandler`
 2. Create `pipeline/src/event_handlers/my_handler.cpp`
 3. Register in `HandlerManager`
-4. Add YAML under `custom_handlers:` + update handler config parser if new fields
+4. Add YAML under `event_handlers:` + update handler config parser if new fields
 
 ### New Infrastructure Adapter
 
@@ -460,7 +559,7 @@ Currently no automated test suite. Manual validation:
 
 ```bash
 # Syntax-only build check (catches compile errors)
-cmake --build build -- -j$(nproc) 2>&1 | head -50
+cmake --build build -- -j5 2>&1 | head -50
 
 # Runtime smoke test
 ./build/bin/vms_engine -c configs/default.yml
@@ -492,6 +591,7 @@ echo $DEEPSTREAM_DIR   # should be /opt/nvidia/deepstream/deepstream
 ```
 
 **Common build errors:**
+
 - `nvdsstreammux.h: No such file` → `DEEPSTREAM_DIR` incorrect or DeepStream not installed
 - `glib-2.0 not found` → `pkg-config` not finding GLib; check `pkg-config --list-all | grep glib`
 - `yaml-cpp not found` → CMake auto-fetches via FetchContent, check internet access in container
@@ -503,7 +603,7 @@ echo $DEEPSTREAM_DIR   # should be /opt/nvidia/deepstream/deepstream
 - Title format: `[layer] Brief description` — e.g., `[pipeline] Add nvdsanalytics support to ProcessingBuilder`
 - Keep changes layer-scoped where possible
 - Do not mix architecture changes with feature additions in one PR
-- Run build and verify no warnings before committing: `cmake --build build -- -j$(nproc) 2>&1 | grep -i warning`
+- Run build and verify no warnings before committing: `cmake --build build -- -j5 2>&1 | grep -i warning`
 
 ---
 
@@ -511,10 +611,10 @@ echo $DEEPSTREAM_DIR   # should be /opt/nvidia/deepstream/deepstream
 
 This project is a refactor of `lantanav2`. Do **not** mix up names/paths:
 
-| Item | lantanav2 (OLD) | vms-engine (THIS) |
-|---|---|---|
-| Namespace | `lantana::` | `engine::` |
-| Include prefix | `lantana/core/` | `engine/core/` |
-| Executable | `lantana` | `vms_engine` |
-| Backend dir | `backends/deepstream/` | `pipeline/` |
+| Item             | lantanav2 (OLD)         | vms-engine (THIS)    |
+| ---------------- | ----------------------- | -------------------- |
+| Namespace        | `lantana::`             | `engine::`           |
+| Include prefix   | `lantana/core/`         | `engine/core/`       |
+| Executable       | `lantana`               | `vms_engine`         |
+| Backend dir      | `backends/deepstream/`  | `pipeline/`          |
 | Element builders | `ds_source_builder.hpp` | `source_builder.hpp` |

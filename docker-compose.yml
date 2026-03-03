@@ -2,7 +2,7 @@ services:
   app:
     image: vms-engine-dev:latest
     container_name: vms-engine-dev
-    working_dir: /opt/lantana
+    working_dir: /opt/vms_engine
     # CHẠY CÙNG MẠNG HOST → RTSP/UDP không bị chặn (Linux-only)
     network_mode: host
     # GPU (cách 1: đơn giản)
@@ -17,7 +17,7 @@ services:
               capabilities: [gpu]
     # mount code + models + data để sửa là thấy ngay
     volumes:
-      - .:/opt/lantana
+      - .:/opt/vms_engine
       # - /tmp/.X11-unix:/tmp/.X11-unix:rw
     # chạy tiến trình dưới UID:GID của user host (lấy từ .env)
     user: "${APP_UID}:${APP_GID}"

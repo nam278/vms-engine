@@ -17,37 +17,37 @@ When generating code for this repository:
 
 Before implementing anything DeepStream-related, consult the deep-dive docs in `docs/architecture/`:
 
-| Document | Topic |
-|---|---|
-| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md) | Index & reading order |
-| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md) | Tech stack, pipeline diagram, conventions |
-| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md) | All `I*` interfaces with `engine::` namespace |
-| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md) | 5-phase build, `tails_` map pattern |
-| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md) | Static/dynamic linking, `queue: {}` pattern |
-| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md) | Full YAML schema, parser architecture |
-| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md) | GstBus, state machine, RTSP reconnect |
-| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md) | HandlerManager, probes, built-in handlers |
-| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md) | nvdsanalytics ROI / line crossing |
-| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md) | Sinks, encoders, NvDsSR API |
-| [`10_signal_vs_probe_deep_dive.md`](../../docs/architecture/deepstream/10_signal_vs_probe_deep_dive.md) | Signal vs pad probe — when to use which |
-| [`RAII.md`](../../docs/architecture/RAII.md) | GStreamer / CUDA resource management |
-| [`CMAKE.md`](../../docs/architecture/CMAKE.md) | Build system reference |
+| Document                                                                                                | Topic                                         |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md)                | Index & reading order                         |
+| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md)                   | Tech stack, pipeline diagram, conventions     |
+| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md)                     | All `I*` interfaces with `engine::` namespace |
+| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md)                 | 5-phase build, `tails_` map pattern           |
+| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)                       | Static/dynamic linking, `queue: {}` pattern   |
+| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                         | Full YAML schema, parser architecture         |
+| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)                 | GstBus, state machine, RTSP reconnect         |
+| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)         | HandlerManager, probes, built-in handlers     |
+| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                                 | nvdsanalytics ROI / line crossing             |
+| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)           | Sinks, encoders, NvDsSR API                   |
+| [`10_signal_vs_probe_deep_dive.md`](../../docs/architecture/deepstream/10_signal_vs_probe_deep_dive.md) | Signal vs pad probe — when to use which       |
+| [`RAII.md`](../../docs/architecture/RAII.md)                                                            | GStreamer / CUDA resource management          |
+| [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                          | Build system reference                        |
 
 ---
 
 ## Technology Version Detection
 
-| Technology | Version | Config File |
-|---|---|---|
-| C++ | **C++17** | `CMakeLists.txt` — `set(CMAKE_CXX_STANDARD 17)` |
-| CMake | **3.16+** | `CMakeLists.txt` — `cmake_minimum_required(VERSION 3.16)` |
-| NVIDIA DeepStream | **8.0** | `Dockerfile` — `FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel` |
-| GStreamer | **1.0 / 1.14+** | `pkg_check_modules(GST gstreamer-1.0)` |
-| spdlog | **1.14.1** | Fetched via `FetchContent` in CMakeLists — `GIT_TAG v1.14.1` |
-| yaml-cpp | **0.8.0** | Fetched via `FetchContent` in CMakeLists — `GIT_TAG 0.8.0` |
-| hiredis | **1.3.0** | Fetched via `FetchContent` — Redis client |
-| nlohmann/json | **3.11.3** | Fetched via `FetchContent` — JSON parsing |
-| Build generator | **Ninja** | Preferred; fallback to Make |
+| Technology        | Version         | Config File                                                         |
+| ----------------- | --------------- | ------------------------------------------------------------------- |
+| C++               | **C++17**       | `CMakeLists.txt` — `set(CMAKE_CXX_STANDARD 17)`                     |
+| CMake             | **3.16+**       | `CMakeLists.txt` — `cmake_minimum_required(VERSION 3.16)`           |
+| NVIDIA DeepStream | **8.0**         | `Dockerfile` — `FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel` |
+| GStreamer         | **1.0 / 1.14+** | `pkg_check_modules(GST gstreamer-1.0)`                              |
+| spdlog            | **1.14.1**      | Fetched via `FetchContent` in CMakeLists — `GIT_TAG v1.14.1`        |
+| yaml-cpp          | **0.8.0**       | Fetched via `FetchContent` in CMakeLists — `GIT_TAG 0.8.0`          |
+| hiredis           | **1.3.0**       | Fetched via `FetchContent` — Redis client                           |
+| nlohmann/json     | **3.11.3**      | Fetched via `FetchContent` — JSON parsing                           |
+| Build generator   | **Ninja**       | Preferred; fallback to Make                                         |
 
 Do **not** use features beyond these versions.
 
@@ -67,6 +67,7 @@ core/         → depends on: std library + GStreamer forward-declares ONLY
 ```
 
 **Violations to avoid:**
+
 - `#include "engine/pipeline/..."` inside `core/` → ❌ FORBIDDEN
 - `#include "engine/infrastructure/..."` inside `pipeline/` → ❌ FORBIDDEN
 - `#include "engine/domain/..."` inside `pipeline/` → ❌ FORBIDDEN
@@ -132,6 +133,30 @@ enum class PipelineState { Uninitialized, Ready, Playing, Paused, Stopped, Error
 // pipeline_manager.hpp, source_builder.cpp, yaml_config_parser.hpp
 ```
 
+## Doxygen Comment Requirements
+
+When creating or refactoring C++ in this repository, use Doxygen comments as a hard rule for maintainability.
+
+- Use `/** ... */` on all public interfaces (`I*`), public methods, and non-obvious structs.
+- Start with `@brief`, then add `@param`, `@return`, and ownership/lifecycle notes when relevant.
+- For constants/enums used across modules, add one-line Doxygen comments.
+- Keep comments architecture-focused (contract, invariants, ownership), not line-by-line narration.
+
+```cpp
+/**
+ * @brief Registers and activates event handlers defined in runtime configuration.
+ * @param handlers_config Handler list parsed from YAML `event_handlers` block.
+ * @return true if every enabled handler is validated and attached successfully.
+ */
+virtual bool register_event_handlers(
+    std::vector<engine::core::config::CustomHandlerConfig>& handlers_config) = 0;
+```
+
+```cpp
+/** @brief End-of-stream event key emitted from GstBus EOS messages. */
+inline constexpr std::string_view ON_EOS = "on_eos";
+```
+
 ---
 
 ## Config Types — Core Patterns
@@ -141,24 +166,23 @@ All config structs live in `core/include/engine/core/config/`. Builders receive 
 ```cpp
 // PipelineConfig is the single root config
 struct PipelineConfig {
-    ApplicationConfig   application;
-    SourcesConfig       sources;
-    StreamMuxerConfig   stream_muxer;
-    ProcessingConfig    processing;
-    AnalyticsConfig     analytics;
-    VisualsConfig       visuals;
-    OutputsConfig       outputs;
-    SmartRecordConfig   smart_record;
-    MessagingConfig     message_queue_publisher;
-    StorageConfig       storage_configurations;
-    HandlerConfig       custom_handlers;
-    ExternalSvcsConfig  external_services;
-    RestApiConfig       rest_api;
+    std::string         version;
+    PipelineMetaConfig  pipeline;       // id, name, log_level, gst_log_level, dot_file_dir, log_file
+    QueueConfig         queue_defaults; // default for every queue: {}
+
+    SourcesConfig       sources;        // nvmultiurisrcbin + cameras[] + smart_record + output_queue
+    ProcessingConfig    processing;     // elements[] (nvinfer, nvtracker, ...) + output_queue
+    VisualsConfig       visuals;        // enable + elements[] (tiler, osd) + output_queue
+    std::vector<OutputConfig>       outputs;        // each has id, type, elements[]
+    std::vector<EventHandlerConfig> event_handlers; // pad probes (smart_record, crop_objects, ...)
 };
 
-// Element builders access via index:
-// config.processing.elements[index]
-// config.sources.cameras[index]
+// Element builders access via:
+// config.sources                         — SourcesConfig (single block)
+// config.processing.elements[index]      — ProcessingElementConfig
+// config.visuals.elements[index]         — VisualsElementConfig
+// config.outputs[i].elements[j]          — OutputElementConfig
+// config.event_handlers[i]               — EventHandlerConfig
 ```
 
 **No `std::variant` over backend types** — vms-engine is DeepStream-native. Do not use patterns from lantanav2 like `ProcessingBackendOptions` or `SourceBackendOptions`.
@@ -256,30 +280,79 @@ gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
 YAML property names use `snake_case`. The parser maps them to GStreamer's `kebab-case`:
 
 ```yaml
-# ✅ YAML uses snake_case
+# ✅ YAML uses snake_case — matches new deepstream_default.yml
+queue_defaults:
+  max_size_buffers: 10
+  leaky: 2 # 0=none, 1=upstream, 2=downstream
+
 sources:
+  type: nvmultiurisrcbin
+  max_batch_size: 4
+  gpu_id: 0
+  width: 1920
+  height: 1080
   cameras:
-    - id: "cam_01"
+    - name: camera-01
       uri: "rtsp://host/stream"
-      smart_record: 1           # int enum, NOT string
-      smart_rec_dir_path: "dev/rec"
+  smart_record: 2 # int enum, NOT string
+  smart_rec_dir_path: "/opt/engine/data/rec"
+  output_queue:
+    max_size_buffers: 5
+    leaky: 2
 
 processing:
   elements:
-    - id: "pgie"
-      type: "nvinfer"
-      config_file_path: "configs/nvinfer/pgie.txt"
-      process_mode: 1           # int: 1=primary, 2=secondary
+    - id: pgie_detection
+      type: nvinfer
+      role: primary_inference
+      config_file: "/opt/engine/data/components/pgie/config.yml"
+      process_mode: 1 # int: 1=primary, 2=secondary
       batch_size: 4
-      queue: {}                 # explicit queue inline
-
-    - id: "tracker"
-      type: "nvtracker"
+      queue: {} # explicit queue inline
+    - id: tracker
+      type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-      ll_config_file: "configs/tracker/nvdcf_config.yml"
-      tracker_width: 960
-      tracker_height: 544
-      compute_hw: 1             # int: 0=default, 1=GPU, 2=VIC
+      ll_config_file: "/opt/engine/data/config/tracker_NvDCF_perf.yml"
+      tracker_width: 640
+      tracker_height: 640
+      compute_hw: 1 # int: 0=default, 1=GPU, 2=VIC
+      queue: {}
+  output_queue: {}
+
+visuals:
+  enable: true
+  elements:
+    - id: tiler
+      type: nvmultistreamtiler
+      rows: 2
+      columns: 2
+      queue: {}
+    - id: osd
+      type: nvdsosd
+      process_mode: 1
+      display_bbox: true
+      queue: {}
+  output_queue: {}
+
+outputs:
+  - id: rtsp_out
+    type: rtsp_client
+    elements:
+      - id: encoder
+        type: nvv4l2h264enc
+        bitrate: 3000000
+      - id: sink
+        type: rtspclientsink
+        location: rtsp://host:8554/stream
+        queue: {}
+
+event_handlers:
+  - id: smart_record
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    trigger: smart_record
+    label_filter: [car, person, truck]
 ```
 
 - All `enum` values → **integers** in YAML (never strings)
@@ -296,21 +369,28 @@ When calling `g_object_set`, use the GStreamer **kebab-case** property name as a
 
 ```cpp
 g_object_set(G_OBJECT(src_bin),
-    "max-batch-size",           (gint)  config.sources.cameras.size(),
-    "uri-list",                 (const gchar*) uri_list_str.c_str(),
+    "ip-address",               (const gchar*) cfg.ip_address.c_str(),
+    "port",                     (gint)  cfg.port,                 // 0=disable REST
+    "max-batch-size",           (gint)  cfg.max_batch_size,
+    "mode",                     (gint)  cfg.mode,                 // 0=video, 1=audio
     "gpu-id",                   (gint)  cfg.gpu_id,
+    "num-extra-surfaces",       (gint)  cfg.num_extra_surfaces,
+    "cudadec-memtype",          (gint)  cfg.cudadec_memtype,      // 0=device,1=pinned,2=unified
+    "select-rtp-protocol",      (gint)  cfg.select_rtp_protocol,  // 4=TCP-only
+    "rtsp-reconnect-interval",  (gint)  cfg.rtsp_reconnect_interval,
+    "rtsp-reconnect-attempts",  (gint)  cfg.rtsp_reconnect_attempts,
+    "latency",                  (guint) cfg.latency,              // ms
+    "udp-buffer-size",          (guint) cfg.udp_buffer_size,
+    "drop-pipeline-eos",        (gboolean) cfg.drop_pipeline_eos,
     "smart-record",             (gint)  cfg.smart_record,         // 0/1/2
     "smart-rec-dir-path",       (const gchar*) cfg.smart_rec_dir_path.c_str(),
     "smart-rec-file-prefix",    (const gchar*) cfg.smart_rec_file_prefix.c_str(),
     "smart-rec-cache",          (gint)  cfg.smart_rec_cache,
     "smart-rec-default-duration",(gint) cfg.smart_rec_default_duration,
-    "latency",                  (guint) cfg.latency,              // ms
-    "rtsp-reconnect-interval",  (gint)  cfg.rtsp_reconnect_interval,
-    "cudadec-memtype",          (gint)  cfg.cudadec_memtype,      // 0=device,1=pinned,2=unified
-    "width",                    (gint)  config.stream_muxer.width,
-    "height",                   (gint)  config.stream_muxer.height,
-    "batched-push-timeout",     (gint)  config.stream_muxer.batched_push_timeout, // µs
-    "live-source",              (gboolean) config.stream_muxer.live_source,
+    "width",                    (gint)  cfg.width,
+    "height",                   (gint)  cfg.height,
+    "batched-push-timeout",     (gint)  cfg.batched_push_timeout, // µs
+    "live-source",              (gboolean) cfg.live_source,
     nullptr);
 ```
 
@@ -318,7 +398,7 @@ g_object_set(G_OBJECT(src_bin),
 
 ```cpp
 g_object_set(G_OBJECT(infer),
-    "config-file-path",   (const gchar*) elem_cfg.config_file_path.c_str(),
+    "config-file-path",   (const gchar*) elem_cfg.config_file.c_str(),
     "process-mode",       (gint)  elem_cfg.process_mode,    // 1=primary, 2=secondary
     "batch-size",         (gint)  elem_cfg.batch_size,
     "interval",           (gint)  elem_cfg.interval,        // 0=every batch
@@ -597,7 +677,7 @@ void YamlConfigParser::parse_processing(
 
     if (node["elements"] && node["elements"].IsSequence()) {
         for (const auto& elem_node : node["elements"]) {
-            engine::core::config::ElementConfig elem;
+            engine::core::config::ProcessingElementConfig elem;
             elem.id   = elem_node["id"].as<std::string>("");
             elem.type = elem_node["type"].as<std::string>("");
             // ... parse properties with snake_case keys

@@ -1,7 +1,8 @@
 # Plan 04 — Domain Layer (Business Logic)
 
-> Migrate `lantanav2/domain/` → `vms-engine/domain/`.
-> **All 5 source files are empty (0 lines)** in lantanav2. This plan defines the interface contracts and basic implementations from scratch.
+> Create all files in `domain/` from scratch.
+> **Business rules and interfaces defined cleanly** — no framework (GStreamer, DeepStream SDK) in this layer.
+> The domain layer defines types and interfaces that pipeline and infrastructure implement.
 
 ---
 
@@ -11,17 +12,15 @@
 
 ## Context
 
-The domain layer in lantanav2 was scaffolded but never filled in:
+The domain layer contains pure business logic decoupled from all frameworks:
 
-| File | Lines |
-| --- | --- |
-| `event_processor.hpp` | 0 |
-| `metadata_parser.hpp` | 0 |
-| `runtime_param_rules.hpp` | 0 |
-| `event_processor.cpp` | 0 |
-| `metadata_parser.cpp` | 1 (empty) |
+- No GStreamer headers
+- No DeepStream SDK headers
+- No infrastructure dependencies
+- Only `engine::core::config::` types and standard library
 
-In the refactored vms-engine, these become real domain services that encapsulate business rules decoupled from any framework (GStreamer, DeepStream SDK, infrastructure).
+Actual DeepStream-specific metadata parsing lives in `pipeline/probes/` where
+the SDK is available. The domain layer only defines interfaces and domain types.
 
 ---
 
@@ -290,14 +289,18 @@ target_link_libraries(vms_engine_domain
 ## Verification
 
 ```bash
+# Inside container: docker compose exec app bash
+cd /opt/vms_engine
+
 # 1. Compile domain library
-cmake --build build --target vms_engine_domain -- -j$(nproc)
+cmake --build build --target vms_engine_domain -- -j5
 
 # 2. Check no infrastructure or pipeline dependencies
-grep -r "infrastructure\|pipeline\|deepstream\|gst\|nvds" domain/ && echo "FAIL" || echo "PASS"
+grep -r "infrastructure\|pipeline\|deepstream\|gst\|nvds" domain/ \
+    --include="*.hpp" --include="*.cpp" && echo "FAIL" || echo "PASS"
 
 # 3. Check namespace
-grep -rL "engine::domain" domain/include/ | head -10
+grep -rL "engine::domain" domain/include/ --include="*.hpp" | head -10
 ```
 
 ---
