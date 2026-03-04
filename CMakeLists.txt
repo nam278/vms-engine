@@ -94,6 +94,15 @@ FetchContent_Declare(librdkafka
 
 FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json librdkafka)
 
+# ── spdlog compile-time log level ───────────────────────────────────
+# SPDLOG_ACTIVE_LEVEL controls which LOG_* calls are compiled in.
+#   Debug build   → TRACE(0): LOG_T and LOG_D produce real code
+#   Release build → INFO(2):  LOG_T/LOG_D compile to empty no-ops (zero overhead)
+# Without this, SPDLOG_DEBUG/TRACE default to no-ops regardless of runtime config.
+add_compile_definitions(
+    $<IF:$<CONFIG:Debug>,SPDLOG_ACTIVE_LEVEL=0,SPDLOG_ACTIVE_LEVEL=2>
+)
+
 # ── Sub-modules ─────────────────────────────────────────────────────
 add_subdirectory(core)
 add_subdirectory(pipeline)

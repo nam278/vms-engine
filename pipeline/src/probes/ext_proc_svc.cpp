@@ -304,8 +304,8 @@ struct ExternalProcessorService::Impl {
         msg["event_ts"] = std::to_string(epoch_ms());
 
         try {
-            producer->publish(channel, msg.dump());
-            LOG_D(
+            producer->publish_json(channel, msg.dump());
+            LOG_I(
                 "ExternalProcessorService: published ext_proc "
                 "label='{}' result='{}' display='{}'",
                 label, result_val, display_val);
