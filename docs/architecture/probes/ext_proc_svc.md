@@ -62,8 +62,7 @@ event_handlers:
     save_dir: "/opt/vms_engine/dev/rec/objects"
     capture_interval_sec: 5
     image_quality: 85
-    broker:
-      channel: "crop_objects"
+    channel: "crop_objects" # Redis Stream / Kafka topic
 
     ext_processor:
       enable: true
@@ -369,8 +368,7 @@ event_handlers:
     capture_interval_sec: 3
     image_quality: 90
     save_full_frame: false
-    broker:
-      channel: "vms:detections"
+    channel: "vms:detections" # Redis Stream / Kafka topic
 
     ext_processor:
       enable: true

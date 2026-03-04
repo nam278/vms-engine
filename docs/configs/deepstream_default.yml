@@ -50,6 +50,18 @@ queue_defaults:
   leaky: 2 # 0=none  1=upstream  2=downstream (drop oldest when full → keep newest frames — realtime friendly)
   silent: true
 
+# -----------------------------------------------------------------------------
+# Messaging — top-level message broker (producer)
+# Events published by probe handlers (on_detect, crop_objects, etc.) are sent here.
+# Omit this block entirely to disable publishing (no-op mode).
+# type: "redis" | "kafka"   (kafka is a stub — not yet production-ready)
+# Handlers publish to a channel specified by the `channel` field (falls back to handler `id` if omitted).
+# -----------------------------------------------------------------------------
+messaging:
+  type: redis
+  host: "192.168.1.99"
+  port: 6319
+
 # =============================================================================
 # STAGE 1 — Sources Block  (→ sources_bin)
 # Element: nvmultiurisrcbin
@@ -253,7 +265,7 @@ event_handlers:
   # probe_element MUST be the nvtracker element id (same for both handlers).
   # ---------------------------------------------------------------------------
   - id: class_id_offset
-    enable: false
+    enable: true
     type: on_detect
     probe_element: tracker # nvtracker element id
     pad_name: sink # probe BEFORE tracker (offset class_id going IN)
@@ -266,7 +278,7 @@ event_handlers:
   # MUST be listed before smart_record and crop_objects (GStreamer FIFO order).
   # ---------------------------------------------------------------------------
   - id: class_id_restore
-    enable: false
+    enable: true
     type: on_detect
     probe_element: tracker # same element, different pad
     pad_name: src # probe AFTER tracker (restore class_id going OUT)
@@ -283,14 +295,11 @@ event_handlers:
     probe_element: tracker # attach pad probe to tracker's src pad
     source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
     trigger: smart_record
+    channel: worker_lsr # Redis Stream / Kafka topic to publish smart-record events
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2 # seconds from cache before detection
     post_event_sec: 20
     min_interval_sec: 2 # minimum gap between recordings per camera
-    broker:
-      host: 192.168.1.99
-      port: 6319
-      channel: worker_lsr
 
   # ---------------------------------------------------------------------------
   # Object crop + optional external processing (e.g. face recognition)
@@ -301,6 +310,7 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     trigger: crop_objects
+    channel: worker_lsr_snap # Redis Stream / Kafka topic to publish crop events
     label_filter: [bike, bus, car, person, truck]
     save_dir: "/opt/vms_engine/dev/rec/objects"
     capture_interval_sec: 5 # min seconds between crops for the same track_id
@@ -310,10 +320,6 @@ event_handlers:
       stale_object_timeout_min: 5 # drop track_id state after N inactive minutes
       check_interval_batches: 30 # run cleanup every N batches
       old_dirs_max_days: 7 # delete image dirs older than N days
-    broker:
-      host: 192.168.1.99
-      port: 6319
-      channel: worker_lsr_snap
     ext_processor:
       enable: true
       min_interval_sec: 1

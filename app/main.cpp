@@ -16,6 +16,7 @@
 // ─── Core headers ────────────────────────────────────────────────────────────
 #include "engine/core/config/config_types.hpp"
 #include "engine/core/config/iconfig_parser.hpp"
+#include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/pipeline/ipipeline_manager.hpp"
 #include "engine/core/pipeline/pipeline_state.hpp"
 #include "engine/core/utils/logger.hpp"
@@ -23,6 +24,8 @@
 
 // ─── Infrastructure ───────────────────────────────────────────────────────────
 #include "engine/infrastructure/config_parser/yaml_config_parser.hpp"
+#include "engine/infrastructure/messaging/redis_stream_producer.hpp"
+#include "engine/infrastructure/messaging/kafka_adapter.hpp"
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 #include "engine/pipeline/pipeline_manager.hpp"
@@ -155,6 +158,46 @@ const char* state_to_string(engine::core::pipeline::PipelineState s) {
     }
 }
 
+// ─── Messaging factory ────────────────────────────────────────────────────────
+
+/**
+ * @brief Create and connect a message producer from config.
+ *
+ * Returns nullptr if `config.messaging` is absent (publishing disabled).
+ * Type selection: "redis" (default) or "kafka".
+ *
+ * @param config Full pipeline config; reads `config.messaging`.
+ * @return Owning pointer to connected producer, or nullptr if disabled.
+ */
+std::unique_ptr<engine::core::messaging::IMessageProducer> create_message_producer(
+    const engine::core::config::PipelineConfig& config) {
+    if (!config.messaging) {
+        LOG_D("No messaging config — producer disabled");
+        return nullptr;
+    }
+
+    const auto& m = *config.messaging;
+
+    if (m.type == "kafka") {
+        LOG_I("Messaging: creating Kafka producer ({}:{})", m.host, m.port);
+        auto p = std::make_unique<engine::infrastructure::messaging::KafkaAdapter>();
+        if (!p->connect(m.host, m.port)) {
+            LOG_W("Messaging: Kafka connection failed ({}:{}) — continuing without producer",
+                  m.host, m.port);
+        }
+        return p;
+    }
+
+    // Default: Redis
+    LOG_I("Messaging: creating Redis producer ({}:{})", m.host, m.port);
+    auto p = std::make_unique<engine::infrastructure::messaging::RedisStreamProducer>();
+    if (!p->connect(m.host, m.port)) {
+        LOG_W("Messaging: Redis connection failed ({}:{}) — continuing without producer", m.host,
+              m.port);
+    }
+    return p;
+}
+
 // ─── Pipeline factory ─────────────────────────────────────────────────────────
 
 /**
@@ -176,6 +219,8 @@ int main(int argc, char* argv[]) {
 
     // Declare pipeline_manager here so it is visible in catch/cleanup blocks
     std::shared_ptr<engine::core::pipeline::IPipelineManager> pipeline_manager;
+    // Producer lifetime must cover the entire pipeline run
+    std::unique_ptr<engine::core::messaging::IMessageProducer> message_producer;
 
     try {
         // ── 1. Parse arguments ────────────────────────────────────────────────
@@ -222,11 +267,32 @@ int main(int argc, char* argv[]) {
         LOG_I("  Visuals    : {}", config.visuals.enable ? "enabled" : "disabled");
         LOG_I("  Outputs    : {}", config.outputs.size());
         LOG_I("  Handlers   : {}", config.event_handlers.size());
+        if (config.messaging) {
+            LOG_I("  Messaging  : {}://{}:{}", config.messaging->type, config.messaging->host,
+                  config.messaging->port);
+        } else {
+            LOG_I("  Messaging  : disabled");
+        }
         LOG_I("══════════════════════════════════════════════════");
 
         // ── 6. Create pipeline manager ────────────────────────────────────────
         pipeline_manager = create_pipeline_manager();
         g_pipeline_manager = pipeline_manager;
+
+        // ── 6a. Wire message producer (if configured) ─────────────────────────
+        message_producer = create_message_producer(config);
+        if (message_producer) {
+            auto* concrete =
+                dynamic_cast<engine::pipeline::PipelineManager*>(pipeline_manager.get());
+            if (concrete) {
+                concrete->set_message_producer(message_producer.get());
+                LOG_I("Messaging: producer wired (type={})", config.messaging->type);
+            } else {
+                LOG_W("Messaging: could not wire producer — PipelineManager cast failed");
+            }
+        } else {
+            LOG_I("Messaging: disabled (no 'messaging:' block in config)");
+        }
 
         // ── 7. Initialize pipeline ────────────────────────────────────────────
         LOG_I("Initializing pipeline...");

@@ -54,6 +54,9 @@ class YamlConfigParser : public engine::core::config::IConfigParser {
     /** @brief Parse `event_handlers:` section. */
     void parse_handlers(const void* node,
                         std::vector<engine::core::config::EventHandlerConfig>& out);
+
+    /** @brief Parse `messaging:` section (optional top-level producer config). */
+    void parse_messaging(const void* node, engine::core::config::MessagingConfig& out);
 };
 
 }  // namespace engine::infrastructure::config_parser

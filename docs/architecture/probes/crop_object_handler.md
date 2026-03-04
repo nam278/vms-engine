@@ -59,14 +59,11 @@ event_handlers:
     capture_interval_sec: 5 # Khoảng cách tối thiểu giữa 2 lần crop cùng object (PTS-based)
     image_quality: 85 # JPEG quality 1-100
     save_full_frame: true # Lưu full-frame cùng crop
+    channel: worker_lsr_snap # Redis Stream / Kafka topic; để trống = không publish
     cleanup:
       stale_object_timeout_min: 5 # Xóa object state sau N phút không thấy
       check_interval_batches: 30 # Kiểm tra cleanup mỗi N batches
       old_dirs_max_days: 7 # Xóa daily directories cũ hơn N ngày (0=tắt)
-    broker:
-      host: 192.168.1.99
-      port: 6319
-      channel: worker_lsr_snap
     ext_processor:
       enable: true
       min_interval_sec: 1
@@ -82,31 +79,29 @@ event_handlers:
 
 ### 2.2 Field Reference
 
-| Field                                | Type     | Default | Mô tả                                                             |
-| ------------------------------------ | -------- | ------- | ----------------------------------------------------------------- |
-| `id`                                 | string   | —       | Unique ID trong `event_handlers`                                  |
-| `enable`                             | bool     | `true`  | `false` = handler bị bỏ qua                                       |
-| `probe_element`                      | string   | —       | ID element để gắn probe (thường `tracker`)                        |
-| `trigger`                            | string   | —       | Phải là `"crop_objects"`                                          |
-| `pad_name`                           | string   | `"src"` | Pad để gắn probe                                                  |
-| `label_filter`                       | string[] | `[]`    | Label khớp; rỗng = tất cả                                         |
-| `save_dir`                           | string   | —       | Thư mục gốc lưu crop images                                       |
-| `capture_interval_sec`               | int      | `5`     | PTS-based throttle giữa 2 lần crop cùng 1 object                  |
-| `image_quality`                      | int      | `85`    | JPEG quality 1–100                                                |
-| `save_full_frame`                    | bool     | `true`  | Lưu full-frame cùng crop                                          |
-| `cleanup.stale_object_timeout_min`   | int      | `5`     | Xóa object state nếu không thấy sau N phút                        |
-| `cleanup.check_interval_batches`     | int      | `30`    | Chạy cleanup mỗi N batches                                        |
-| `cleanup.old_dirs_max_days`          | int      | `7`     | Xóa daily dirs cũ hơn N ngày; 0=tắt                               |
-| `broker.host`                        | string   | —       | Redis host                                                        |
-| `broker.port`                        | int      | `6379`  | Redis port                                                        |
-| `broker.channel`                     | string   | —       | Redis channel publish; rỗng = không publish                       |
-| `ext_processor.enable`               | bool     | `false` | Bật external processor (chưa implement runtime, chỉ parse config) |
-| `ext_processor.min_interval_sec`     | int      | `1`     | Khoảng cách tối thiểu giữa 2 lần gọi ext processor                |
-| `ext_processor.rules[].label`        | string   | —       | Label trigger external processing                                 |
-| `ext_processor.rules[].endpoint`     | string   | —       | HTTP endpoint cho external processor                              |
-| `ext_processor.rules[].result_path`  | string   | —       | JSON path lấy result                                              |
-| `ext_processor.rules[].display_path` | string   | —       | JSON path lấy display text                                        |
-| `ext_processor.rules[].params`       | map      | `{}`    | Key-value params gửi kèm request                                  |
+| Field                                | Type     | Default | Mô tả                                                              |
+| ------------------------------------ | -------- | ------- | ------------------------------------------------------------------ |
+| `id`                                 | string   | —       | Unique ID trong `event_handlers`                                   |
+| `enable`                             | bool     | `true`  | `false` = handler bị bỏ qua                                        |
+| `probe_element`                      | string   | —       | ID element để gắn probe (thường `tracker`)                         |
+| `trigger`                            | string   | —       | Phải là `"crop_objects"`                                           |
+| `pad_name`                           | string   | `"src"` | Pad để gắn probe                                                   |
+| `label_filter`                       | string[] | `[]`    | Label khớp; rỗng = tất cả                                          |
+| `save_dir`                           | string   | —       | Thư mục gốc lưu crop images                                        |
+| `capture_interval_sec`               | int      | `5`     | PTS-based throttle giữa 2 lần crop cùng 1 object                   |
+| `image_quality`                      | int      | `85`    | JPEG quality 1–100                                                 |
+| `save_full_frame`                    | bool     | `true`  | Lưu full-frame cùng crop                                           |
+| `cleanup.stale_object_timeout_min`   | int      | `5`     | Xóa object state nếu không thấy sau N phút                         |
+| `cleanup.check_interval_batches`     | int      | `30`    | Chạy cleanup mỗi N batches                                         |
+| `cleanup.old_dirs_max_days`          | int      | `7`     | Xóa daily dirs cũ hơn N ngày; 0=tắt                                |
+| `channel`                            | string   | `""`    | Redis Stream / Kafka topic để publish events; rỗng = không publish |
+| `ext_processor.enable`               | bool     | `false` | Bật external processor (chưa implement runtime, chỉ parse config)  |
+| `ext_processor.min_interval_sec`     | int      | `1`     | Khoảng cách tối thiểu giữa 2 lần gọi ext processor                 |
+| `ext_processor.rules[].label`        | string   | —       | Label trigger external processing                                  |
+| `ext_processor.rules[].endpoint`     | string   | —       | HTTP endpoint cho external processor                               |
+| `ext_processor.rules[].result_path`  | string   | —       | JSON path lấy result                                               |
+| `ext_processor.rules[].display_path` | string   | —       | JSON path lấy display text                                         |
+| `ext_processor.rules[].params`       | map      | `{}`    | Key-value params gửi kèm request                                   |
 
 ---
 

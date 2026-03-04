@@ -124,10 +124,7 @@ void SmartRecordProbeHandler::configure(const engine::core::config::PipelineConf
     max_concurrent_recordings_ = handler.max_concurrent_recordings;
     multiuribin_ = multiuribin;
     producer_ = producer;
-
-    if (handler.broker) {
-        broker_channel_ = handler.broker->channel;
-    }
+    broker_channel_ = handler.channel;  // empty = no publish
 
     // Build source_id → camera-name lookup from sources.cameras[]
     for (int i = 0; i < static_cast<int>(config.sources.cameras.size()); ++i) {

@@ -32,6 +32,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             handler.pad_name = "src";  // default
         handler.source_element = yaml_str(h, "source_element");
         handler.trigger = yaml_str(h, "trigger");
+        handler.channel = yaml_str(h, "channel");
         handler.label_filter = yaml_string_list(h, "label_filter");
 
         // Smart record specific
@@ -54,16 +55,6 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             cleanup.check_interval_batches = yaml_int(c, "check_interval_batches", 30);
             cleanup.old_dirs_max_days = yaml_int(c, "old_dirs_max_days", 7);
             handler.cleanup = cleanup;
-        }
-
-        // Broker sub-section
-        if (h["broker"] && h["broker"].IsMap()) {
-            engine::core::config::BrokerConfig broker;
-            const auto& b = h["broker"];
-            broker.host = yaml_str(b, "host");
-            broker.port = yaml_int(b, "port", 6379);
-            broker.channel = yaml_str(b, "channel");
-            handler.broker = broker;
         }
 
         // External processor sub-section

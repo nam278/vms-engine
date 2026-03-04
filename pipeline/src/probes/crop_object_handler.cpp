@@ -79,10 +79,8 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
         old_dirs_max_days_ = handler.cleanup->old_dirs_max_days;
     }
 
-    // Broker channel
-    if (handler.broker) {
-        broker_channel_ = handler.broker->channel;
-    }
+    // Channel name: empty = no publish
+    broker_channel_ = handler.channel;
 
     // Build source_id -> camera name lookup
     for (int i = 0; i < static_cast<int>(config.sources.cameras.size()); ++i) {

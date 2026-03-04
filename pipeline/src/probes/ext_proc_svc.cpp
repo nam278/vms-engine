@@ -261,7 +261,7 @@ struct ExternalProcessorService::Impl {
         // ── Publish enrichment event ──────────────────────────────────────
         // Field structure mirrors lantanav2 ExternalProcessingServiceV2 so
         // downstream consumers (FastAPI, analytics) require no changes.
-        if (!producer)
+        if (!producer || channel.empty())
             return;
 
         // "labels" = result|display  (same as lantanav2 Redis XADD format)

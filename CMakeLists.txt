@@ -80,7 +80,19 @@ FetchContent_Declare(nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG        v3.11.3)
 
-FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json)
+# librdkafka — Kafka C/C++ client (production Kafka producer)
+# Keep feature set minimal to avoid system-library dependencies.
+set(RDKAFKA_BUILD_EXAMPLES       OFF CACHE BOOL "" FORCE)
+set(RDKAFKA_BUILD_TESTS          OFF CACHE BOOL "" FORCE)
+set(WITH_ZSTD                    OFF CACHE BOOL "" FORCE)
+set(WITH_SASL                    OFF CACHE BOOL "" FORCE)
+set(RDKAFKA_BUILD_DYNAMIC        OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(librdkafka
+    GIT_REPOSITORY https://github.com/confluentinc/librdkafka.git
+    GIT_TAG        v2.3.0
+    GIT_SHALLOW    TRUE)
+
+FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json librdkafka)
 
 # ── Sub-modules ─────────────────────────────────────────────────────
 add_subdirectory(core)

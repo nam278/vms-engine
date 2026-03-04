@@ -194,10 +194,17 @@ struct OutputConfig {
 // Event Handlers (pad probe callbacks)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-struct BrokerConfig {
-    std::string host;
-    int port = 6379;
-    std::string channel;
+/**
+ * @brief Top-level messaging/producer configuration.
+ *
+ * Controls which message broker the engine publishes events to.
+ * Set `type` to "redis" (default) or "kafka".
+ * If omitted from YAML, producer is disabled (publish calls are no-ops).
+ */
+struct MessagingConfig {
+    std::string type = "redis";  ///< "redis" | "kafka"
+    std::string host;            ///< broker hostname / IP
+    int port = 6379;             ///< broker port (Redis default 6379)
 };
 
 struct CleanupConfig {
@@ -231,6 +238,7 @@ struct EventHandlerConfig {
     std::string source_element;    ///< for smart_record: nvmultiurisrcbin element name
     std::string
         trigger;  ///< "smart_record" | "crop_objects" | "class_id_offset" | "class_id_restore"
+    std::string channel;  ///< message broker channel/topic to publish to (e.g. "worker_lsr")
     std::vector<std::string> label_filter;
 
     // Smart record specific
@@ -248,9 +256,6 @@ struct EventHandlerConfig {
 
     // External processing (e.g., face recognition via HTTP)
     std::optional<ExtProcessorConfig> ext_processor;
-
-    // Broker (shared)
-    std::optional<BrokerConfig> broker;
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -267,6 +272,9 @@ struct PipelineConfig {
     VisualsConfig visuals;
     std::vector<OutputConfig> outputs;
     std::vector<EventHandlerConfig> event_handlers;
+
+    /** @brief Optional top-level message broker (producer). Absent = no publishing. */
+    std::optional<MessagingConfig> messaging;
 };
 
 }  // namespace engine::core::config

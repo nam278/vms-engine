@@ -227,6 +227,25 @@ outputs:
         queue: {}
 
 # =============================================================================
+# MESSAGING — Centralized broker config (Redis / Kafka)
+# =============================================================================
+messaging:
+  type: redis # "redis" | "kafka"
+  host: 192.168.1.99
+  port: 6379 # Redis default; use 9092 for Kafka
+### Reconnect Behavior
+
+**Redis** (hiredis):
+- Background thread with exponential backoff (5s → 10s → ... → 60s max)
+- Retries forever; messages are dropped + logged if broker is down
+- Reconnect starts immediately when a publish fails
+
+**Kafka** (librdkafka):
+- Built-in broker-level reconnect with exponential backoff (5s initial → 60s max)
+- Messages are queued indefinitely (`message.timeout.ms=0`); broker reconnect is automatic
+- Once enqueued, messages will eventually be delivered even if broker is down for hours
+- No application thread needed — librdkafka manages everything internally
+# =============================================================================
 # EVENT HANDLERS — GStreamer pad probe callbacks
 # =============================================================================
 event_handlers:
@@ -236,20 +255,18 @@ event_handlers:
     probe_element: tracker
     source_element: sources
     trigger: smart_record
+    channel: worker_lsr # Redis Stream / Kafka topic to publish events to
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2
     post_event_sec: 20
     min_interval_sec: 2
-    broker:
-      host: 192.168.1.99
-      port: 6339
-      channel: worker_lsr
 
   - id: crop_objects
     enable: true
     type: on_detect
     probe_element: tracker
     trigger: crop_object
+    channel: worker_lsr_snap # Redis Stream / Kafka topic to publish crop events
     label_filter: [bike, bus, car, person, truck]
     save_dir: "/opt/engine/data/rec/objects"
     capture_interval_sec: 5
@@ -259,10 +276,6 @@ event_handlers:
       stale_object_timeout_min: 5
       check_interval_batches: 30
       old_dirs_max_days: 7
-    broker:
-      host: 192.168.1.99
-      port: 6339
-      channel: worker_lsr_snap
 ```
 
 ## 4. nvinfer Config File (`.txt`)

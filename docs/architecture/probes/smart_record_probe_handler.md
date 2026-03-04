@@ -48,6 +48,7 @@ event_handlers:
     probe_element: tracker # Attach probe tới element có id này
     source_element: nvmultiurisrcbin0 # Tên nvmultiurisrcbin trong pipeline
     trigger: smart_record # pad_name mặc định là "src"
+    channel: worker_lsr # Redis Stream / Kafka topic; để trống = không publish
     label_filter:
       - car
       - person
@@ -56,30 +57,47 @@ event_handlers:
     post_event_sec: 20 # Giây sau event
     min_interval_sec: 60 # Khoảng cách tối thiểu giữa hai lần ghi cùng một source
     max_concurrent_recordings: 4 # 0 = không giới hạn
-    broker:
-      channel: "vms:events:recording"
 ```
 
 ### 2.3 Field Reference
 
-| Field                       | Type     | Default | Mô tả                                                      |
-| --------------------------- | -------- | ------- | ---------------------------------------------------------- |
-| `id`                        | string   | —       | Unique ID trong `event_handlers`                           |
-| `enable`                    | bool     | —       | `false` = bỏ qua handler này hoàn toàn                     |
-| `probe_element`             | string   | —       | ID của element để gắn probe (thường là `tracker`)          |
-| `source_element`            | string   | —       | Tên `nvmultiurisrcbin` trong pipeline (để tìm nvurisrcbin) |
-| `trigger`                   | string   | —       | Phải là `"smart_record"`                                   |
-| `pad_name`                  | string   | `"src"` | Pad để gắn probe (`"src"` hoặc `"sink"`)                   |
-| `label_filter`              | string[] | `[]`    | Danh sách label khớp; rỗng = khớp tất cả                   |
-| `pre_event_sec`             | int      | `2`     | Giây trước event (từ circular buffer của nvurisrcbin)      |
-| `post_event_sec`            | int      | `20`    | Giây sau event                                             |
-| `min_interval_sec`          | int      | `2`     | Khoảng cách tối thiểu giữa 2 lần ghi của cùng 1 source     |
-| `max_concurrent_recordings` | int      | `0`     | Số lượng recording song song tối đa; `0` = không giới hạn  |
-| `broker.channel`            | string   | `""`    | Redis/Kafka channel publish events; rỗng = không publish   |
+| Field                       | Type     | Default | Mô tả                                                              |
+| --------------------------- | -------- | ------- | ------------------------------------------------------------------ |
+| `id`                        | string   | —       | Unique ID trong `event_handlers`                                   |
+| `enable`                    | bool     | —       | `false` = bỏ qua handler này hoàn toàn                             |
+| `probe_element`             | string   | —       | ID của element để gắn probe (thường là `tracker`)                  |
+| `source_element`            | string   | —       | Tên `nvmultiurisrcbin` trong pipeline (để tìm nvurisrcbin)         |
+| `trigger`                   | string   | —       | Phải là `"smart_record"`                                           |
+| `pad_name`                  | string   | `"src"` | Pad để gắn probe (`"src"` hoặc `"sink"`)                           |
+| `label_filter`              | string[] | `[]`    | Danh sách label khớp; rỗng = khớp tất cả                           |
+| `pre_event_sec`             | int      | `2`     | Giây trước event (từ circular buffer của nvurisrcbin)              |
+| `post_event_sec`            | int      | `20`    | Giây sau event                                                     |
+| `min_interval_sec`          | int      | `2`     | Khoảng cách tối thiểu giữa 2 lần ghi của cùng 1 source             |
+| `max_concurrent_recordings` | int      | `0`     | Số lượng recording song song tối đa; `0` = không giới hạn          |
+| `channel`                   | string   | `""`    | Redis Stream / Kafka topic để publish events; rỗng = không publish |
 
----
+### 2.4 Event Publishing & Broker Reconnect
 
-## 3. Kiến Trúc Handler
+Khi `channel` được cấu hình, handler publish một JSON event cho mỗi lần ghi hình bắt đầu:
+
+```json
+{
+  "handler_id": "smart_record",
+  "source_id": 0,
+  "source_name": "camera-01",
+  "session_id": 123456,
+  "event": "on_recording_start",
+  "duration_sec": 50,
+  "timestamp": "2026-03-04T10:30:45Z"
+}
+```
+
+**Reconnect hành vi** (nhật xử theo loại broker):
+
+- **Redis** — Background thread retry với backoff exponential (5s initial → 60s max); nếu broker down, event bị drop + log
+- **Kafka** — librdkafka tự retry với backoff exponential (5s initial → 60s max); message được queue mãi mãi (`message.timeout.ms=0`) và sẽ deliver khi broker trở lại online, ngay cả nếu broker down hàng giờ
+
+Nếu `channel` rỗng, handler không publish gì.
 
 ### 3.1 Các struct chính
 

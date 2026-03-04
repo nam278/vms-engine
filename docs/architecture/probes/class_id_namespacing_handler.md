@@ -132,6 +132,7 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     trigger: smart_record
+    channel: worker_lsr # Redis Stream / Kafka topic
     label_filter: [car, person, truck]
 
   - id: crop_objects
@@ -139,6 +140,7 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     trigger: crop_objects
+    channel: worker_lsr_snap # Redis Stream / Kafka topic
     label_filter: [car, person]
     save_dir: "/opt/engine/data/rec/objects"
 ```

@@ -1,0 +1,33 @@
+services:
+  app-run:
+    image: vms-engine-dev:latest
+    container_name: vms-engine-run
+    working_dir: /opt/vms_engine
+    # CHẠY CÙNG MẠNG HOST → RTSP/UDP không bị chặn (Linux-only)
+    network_mode: host
+    # GPU (cách 1: đơn giản)
+    # gpus: all
+    # GPU (cách 2: theo docs Compose Deploy spec)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: -1
+              capabilities: [gpu]
+    # mount code + models + data để sửa là thấy ngay
+    volumes:
+      - .:/opt/vms_engine
+      # - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # chạy tiến trình dưới UID:GID của user host (lấy từ .env)
+    user: "${APP_UID}:${APP_GID}"
+    mem_limit: 5g
+    cpus: "5.0"
+    # ulimits:
+    #   core: -1
+    stdin_open: true
+    tty: true
+    command: ["./build/bin/vms_engine", "-c", "dev/configs/default.yml"]
+    # nếu cần biến môi trường runtime khác, thêm ở đây:
+    # environment:
+    #   SOME_VAR: ${SOME_VAR:-default}

@@ -7,39 +7,39 @@ namespace engine::pipeline::probes {
 
 // ── Configure ──────────────────────────────────────────────────────
 
-void ClassIdNamespaceHandler::configure(const engine::core::config::PipelineConfig& config,
-                                        Mode mode, int element_index) {
+void ClassIdNamespaceHandler::configure(const engine::core::config::PipelineConfig& /*config*/,
+                                        Mode mode, int base_no_offset, int offset_step) {
     mode_ = mode;
+    base_no_offset_ = base_no_offset;
+    offset_step_ = offset_step;
 
-    if (mode_ == Mode::Offset && element_index >= 0 &&
-        element_index < static_cast<int>(config.processing.elements.size())) {
-        const auto& elem = config.processing.elements[element_index];
-        gie_unique_id_ = elem.unique_id;
-        base_offset_ = compute_offset(gie_unique_id_);
-        LOG_I("ClassIdNamespaceHandler [Offset]: gie_unique_id={}, base_offset={}", gie_unique_id_,
-              base_offset_);
-    } else if (mode_ == Mode::Restore) {
+    if (mode_ == Mode::Offset) {
+        LOG_I(
+            "ClassIdNamespaceHandler [Offset]: base_no_offset={}, offset_step={} "
+            "(GIEs with uid>{} will be remapped)",
+            base_no_offset_, offset_step_, base_no_offset_);
+    } else {
         LOG_I("ClassIdNamespaceHandler [Restore]: will restore original class_ids");
-    } else if (mode_ == Mode::Offset) {
-        LOG_W("ClassIdNamespaceHandler [Offset]: no valid element_index={}, default offset={}",
-              element_index, base_offset_);
     }
 }
 
 void ClassIdNamespaceHandler::set_explicit_offsets(const std::unordered_map<int, int>& offsets) {
     explicit_offsets_ = offsets;
-    // Recompute base_offset in case our own GIE is in the explicit map
-    base_offset_ = compute_offset(gie_unique_id_);
 }
 
 // ── Offset Computation ─────────────────────────────────────────────
 
 int ClassIdNamespaceHandler::compute_offset(int gie_unique_id) const {
+    // Explicit overrides take priority
     auto it = explicit_offsets_.find(gie_unique_id);
     if (it != explicit_offsets_.end()) {
         return it->second;
     }
-    return gie_unique_id * offset_step_;
+    // GIEs with uid <= base_no_offset_ (e.g. PGIE=1) are not offset
+    if (gie_unique_id <= base_no_offset_) {
+        return 0;
+    }
+    return (gie_unique_id - base_no_offset_) * offset_step_;
 }
 
 // ── Static Probe Callback ──────────────────────────────────────────
@@ -70,23 +70,24 @@ GstPadProbeReturn ClassIdNamespaceHandler::process_offset(GstBuffer* buf) {
         for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next) {
             auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
 
-            // Only remap objects from this specific GIE
-            if (static_cast<int>(obj->unique_component_id) != gie_unique_id_) {
-                continue;
-            }
-
             // Idempotent: skip if already marked
             if (obj->misc_obj_info[0] == static_cast<gint64>(MAGIC_MARKER)) {
                 continue;
             }
 
-            // Store originals in misc_obj_info before modifying
+            // Compute offset for this object's GIE
+            const int uid = static_cast<int>(obj->unique_component_id);
+            const int offset = compute_offset(uid);
+
+            // Store originals in misc_obj_info before any modification
             obj->misc_obj_info[0] = static_cast<gint64>(MAGIC_MARKER);
             obj->misc_obj_info[1] = static_cast<gint64>(obj->class_id);
-            obj->misc_obj_info[2] = static_cast<gint64>(obj->unique_component_id);
+            obj->misc_obj_info[2] = static_cast<gint64>(uid);
 
-            // Apply namespace offset
-            obj->class_id = static_cast<gint>(base_offset_ + obj->class_id);
+            // Apply namespace offset (0 for PGIE: no-op but still marks for restore symmetry)
+            if (offset > 0) {
+                obj->class_id = static_cast<gint>(offset + obj->class_id);
+            }
         }
     }
 

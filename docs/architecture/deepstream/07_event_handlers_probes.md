@@ -288,10 +288,7 @@ event_handlers:
     post_event_sec: 20 # seconds to record after trigger
     min_interval_sec: 30 # minimum seconds between recordings per source
     max_concurrent_recordings: 2 # 0 = unlimited
-    broker:
-      host: localhost
-      port: 6379
-      channel: vms:events:smart_record
+    channel: vms:events:smart_record # Redis Stream / Kafka topic
 
   - id: crop_objects
     enable: true
@@ -303,14 +300,11 @@ event_handlers:
     capture_interval_sec: 5
     image_quality: 85
     save_full_frame: true
+    channel: worker_lsr_snap # Redis Stream / Kafka topic
     cleanup:
       stale_object_timeout_min: 5
       check_interval_batches: 30
       old_dirs_max_days: 7
-    broker:
-      host: 192.168.1.99
-      port: 6319
-      channel: worker_lsr_snap
     ext_processor:
       enable: false
       min_interval_sec: 1
@@ -346,9 +340,7 @@ event_handlers:
 | `cleanup.stale_object_timeout_min` | int      | optional | crop_objects | Remove object state after N minutes unseen (default: 5)                          |
 | `cleanup.check_interval_batches`   | int      | optional | crop_objects | Run cleanup every N batches (default: 30)                                        |
 | `cleanup.old_dirs_max_days`        | int      | optional | crop_objects | Delete daily dirs older than N days, 0=off (default: 7)                          |
-| `broker.host`                      | string   | optional | SR, crop     | Redis host for event publishing                                                  |
-| `broker.port`                      | int      | optional | SR, crop     | Redis port (default: 6379)                                                       |
-| `broker.channel`                   | string   | optional | SR, crop     | Redis channel/key to publish JSON events                                         |
+| `channel`                          | string   | optional | SR, crop     | Redis Stream / Kafka topic to publish JSON events; empty = no publish            |
 | `ext_processor.enable`             | bool     | optional | crop_objects | Enable external processor (default: false)                                       |
 | `ext_processor.min_interval_sec`   | int      | optional | crop_objects | Min seconds between ext processor calls (default: 1)                             |
 | `ext_processor.rules[]`            | object[] | optional | crop_objects | Rules: label, endpoint, result_path, display_path, params map                    |

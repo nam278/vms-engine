@@ -68,9 +68,8 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
 
             // ── class_id_offset ───────────────────────────────────────
         } else if (cfg.trigger == "class_id_offset") {
-            int idx = find_processing_element_index(config, cfg.probe_element);
             auto* handler = new ClassIdNamespaceHandler();
-            handler->configure(config, ClassIdNamespaceHandler::Mode::Offset, idx);
+            handler->configure(config, ClassIdNamespaceHandler::Mode::Offset);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, ClassIdNamespaceHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<ClassIdNamespaceHandler*>(ud); });
