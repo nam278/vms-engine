@@ -86,6 +86,7 @@ set(RDKAFKA_BUILD_EXAMPLES       OFF CACHE BOOL "" FORCE)
 set(RDKAFKA_BUILD_TESTS          OFF CACHE BOOL "" FORCE)
 set(WITH_ZSTD                    OFF CACHE BOOL "" FORCE)
 set(WITH_SASL                    OFF CACHE BOOL "" FORCE)
+set(RDKAFKA_BUILD_STATIC         ON  CACHE BOOL "" FORCE)
 set(RDKAFKA_BUILD_DYNAMIC        OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(librdkafka
     GIT_REPOSITORY https://github.com/confluentinc/librdkafka.git
