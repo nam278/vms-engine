@@ -142,7 +142,12 @@ retry:
     impl_->producer->poll(0);
     return true;
 }
+// --- publish_json -----------------------------------------------------------------
 
+bool KafkaAdapter::publish_json(const std::string& channel, const std::string& json_str) {
+    // For Kafka, just publish the JSON string as-is (no flattening needed).
+    return publish(channel, "", json_str);
+}
 // --- disconnect ---------------------------------------------------------------
 
 void KafkaAdapter::disconnect() {

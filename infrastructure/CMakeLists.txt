@@ -27,6 +27,7 @@ target_link_libraries(vms_engine_messaging
     PUBLIC  vms_engine_core
     PRIVATE hiredis
     PRIVATE rdkafka++       # librdkafka C++ API (FetchContent)
+    PRIVATE nlohmann_json::nlohmann_json
 )
 
 set_target_properties(vms_engine_messaging PROPERTIES

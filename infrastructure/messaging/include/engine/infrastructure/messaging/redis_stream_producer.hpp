@@ -59,6 +59,20 @@ class RedisStreamProducer : public engine::core::messaging::IMessageProducer {
     bool publish(const std::string& channel, const std::string& key,
                  const std::string& value) override;
 
+    /**
+     * @brief Publish a JSON object by flattening all fields directly into Redis Stream.
+     * Each key-value pair becomes a separate field in XADD (no wrapper).
+     * All values are converted to strings for Redis.
+     * Non-object JSON (primitives, arrays) are logged as error and skipped.
+     *
+     * Example:
+     *   {"class": "bike", "conf": 0.6, "left": 100}
+     *   → XADD channel * class bike conf "0.6" left "100"
+     *
+     * @return true if XADD succeeded; false if not connected or no flat fields.
+     */
+    bool publish_json(const std::string& channel, const std::string& json_str);
+
     /** @brief Stop reconnect thread and release hiredis context. */
     void disconnect() override;
 

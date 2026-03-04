@@ -115,7 +115,9 @@ Handler sử dụng `PubDecisionType` để phân loại lý do publish:
 enum class PubDecisionType {
     None,       // Không publish (throttled hoặc dedup suppressed)
     FirstSeen,  // Object lần đầu xuất hiện (tracker ID mới)
-    Heartbeat   // Periodic re-publish sau capture_interval_sec
+    Bypass,     // Burst capture within interval (token bucket)
+    Heartbeat,  // Periodic re-publish sau capture_interval_sec
+    Exit        // Object bị xóa do stale timeout (metadata-only, no image)
 };
 ```
 
@@ -127,21 +129,49 @@ object detected
     ▼
 last_capture_pts_ có key?
     │
-    ├── KHÔNG → PubDecisionType::FirstSeen (capture ngay)
+    ├── KHÔNG → PubDecisionType::FirstSeen
+    │           (capture ngay, init bypass_tokens=BURST_MAX,
+    │            last_sgie_labels=sgie_labels  ← baseline cho bypass sau)
     │
     └── CÓ → elapsed = current_pts - last_capture_pts
               │
-              ├── elapsed < capture_interval_ns → PubDecisionType::None (skip)
+              ├── elapsed >= capture_interval_ns
+              │     │
+              │     └── refill_tokens() → PubDecisionType::Heartbeat
+              │           │
+              │           ▼
+              │     compute_payload_hash(class_id, label, sgie_labels, bbox)
+              │           ├── hash == last_payload_hash → suppressed (dedup)
+              │           └── hash != last_payload_hash → publish Heartbeat
               │
-              └── elapsed >= capture_interval_ns → PubDecisionType::Heartbeat
+              └── elapsed < capture_interval_ns
                     │
-                    ▼
-              compute_payload_hash(class_id, label, bbox)
-                    │
-                    ├── hash == last_payload_hash → suppressed (dedup)
-                    │
-                    └── hash != last_payload_hash → publish Heartbeat
+                    └── refill_tokens()
+                          └── sgie_labels không rỗng
+                                AND sgie_labels != state.last_sgie_labels  ← LABEL CHANGED
+                                AND attempt_bypass() → tokens > 0?
+                                      ├── CÓ  → PubDecisionType::Bypass (label-change burst)
+                                      └── KHÔNG → PubDecisionType::None (skip)
 ```
+
+**Token Bucket (Bypass) — Chỉ bắn khi SGIE label THAY ĐỔI**:
+
+- `BURST_MAX = 3`: Maximum tokens per object
+- `TOKEN_REFILL_NS = 5s`: Refill 1 token after every 5 seconds (PTS-based)
+- FirstSeen: init `bypass_tokens = BURST_MAX`, set `last_sgie_labels = sgie_labels` làm baseline
+- Bypass fires **chỉ khi** `sgie_labels != state.last_sgie_labels` (label change) **VÀ** token > 0
+- Mỗi bypass consume 1 token; không increment `heartbeat_seq`
+- Nếu không có SGIE (sgie_labels rỗng): bypass không bao giờ fire
+- `last_sgie_labels` được cập nhật ở commit block → baseline cho frame tiếp theo
+
+Aligned với lantanav2 `LabelStateV2` pattern: burst capture khi object state thay đổi (không phải burst vô điều kiện).
+
+**Exit Messages**:
+
+- Generated during stale object cleanup
+- Metadata-only: no crop/full-frame images
+- `fname` and `fname_ff` are empty strings
+- `pub_type = "exit"`, `pub_reason = "Object removed (stale cleanup)"`
 
 ### 3.2 Per-Object State (`ObjectPubState`)
 
@@ -151,27 +181,39 @@ struct ObjectPubState {
     uint64_t heartbeat_seq = 0;           // Đếm heartbeat sequence
     std::size_t last_payload_hash = 0;    // Hash cho heartbeat dedup
     std::string last_message_id;          // Message ID cuối cùng (chain correlation)
+    int bypass_tokens = 0;                // Token bucket cho Bypass burst capture
+    GstClockTime last_refill_pts = GST_CLOCK_TIME_NONE; // PTS lần cuối refill tokens
+    std::string last_sgie_labels;         // SGIE label string lần cuối publish (bypass on change)
 };
 ```
 
 Mỗi object (keyed bằng `compose_key(source_id, tracker_id)`) có state riêng:
 
-- **`heartbeat_seq`**: Reset về 0 khi FirstSeen, tăng dần mỗi Heartbeat
+- **`heartbeat_seq`**: Reset về 0 khi FirstSeen, tăng dần mỗi Heartbeat (Bypass không tăng)
 - **`last_payload_hash`**: So sánh để suppress heartbeat trùng lặp
 - **`last_message_id`**: Tạo chain `mid` → `prev_mid` cho correlation
+- **`bypass_tokens`**: Init = `BURST_MAX` (3) khi FirstSeen, giảm dần mỗi Bypass, refill mỗi `TOKEN_REFILL_NS` (5s)
+- **`last_refill_pts`**: PTS lần cuối refill — dùng để tính số tokens được thêm
+- **`last_sgie_labels`**: SGIE label string lần cuối được commit, set = `sgie_labels` tại FirstSeen làm baseline; bypass fires khi string này thay đổi
 
 ### 3.3 Payload Hash Dedup
 
-Heartbeat suppression dựa trên hash kết hợp: `class_id + label + quantized_bbox`
+Heartbeat suppression dựa trên hash kết hợp: `class_id + label + sgie_labels + quantized_bbox`
 
 ```cpp
 // Quantize bbox to integer pixels để tránh floating-point jitter
 int q_left = static_cast<int>(left);
-int q_top = static_cast<int>(top);
-// ... Boost hash combine pattern
+int q_top  = static_cast<int>(top);
+// Boost hash combine pattern — tất cả 7 thành phần:
+seed ^= hash(class_id)
+seed ^= hash(label)       // PGIE class name
+seed ^= hash(sgie_labels) // SGIE classifier output — nếu label đổi, hash đổi → dedup flush
+seed ^= hash(q_left) ^ hash(q_top) ^ hash(q_width) ^ hash(q_height)
 ```
 
-Khi object đứng yên (bbox không thay đổi đáng kể + cùng label/class), heartbeat bị suppress → giảm lượng message publish.
+Việc include `sgie_labels` vào hash đảm bảo: khi SGIE re-classify object (label thay đổi), hash cũ bị invalidate → heartbeat dedup không suppress publish đó.
+
+Khi object đứng yên (bbox không đổi + cùng label + cùng SGIE labels), heartbeat bị suppress → giảm lượng message publish.
 
 ### 3.4 Batch-Accumulate-Then-Publish Pattern
 
@@ -261,73 +303,116 @@ if (ff_it != full_frame_paths_this_batch_.end()) {
 
 ### 5.1 Published JSON Structure
 
+Field structure aligned with lantanav2 `CropObjectHandlerV2` Redis XADD format. vms-engine publishes via `IMessageProducer::publish_json()` — **Redis: flat fields** (no `data` wrapper), Kafka: JSON string.
+
 ```json
 {
-  "event": "object_detected",
-  "pipeline_id": "pipeline_01",
-  "source_id": 0,
-  "source_name": "camera-01",
-  "object_key": "019785f2-...",
+  "event": "crop_bb",
+  "pid": "pipeline_01",
+  "sid": 0,
+  "sname": "camera-01",
   "instance_key": "019785f3-...",
-  "class_id": 2,
-  "label": "car",
-  "confidence": 0.92,
-  "tracker_id": 42,
-  "bbox": {
-    "left": 120.5,
-    "top": 200.3,
-    "width": 80.0,
-    "height": 60.0
-  },
-  "crop_path": "/opt/vms_engine/dev/rec/objects/20250711/src_0/crop_car_42_019785f3.jpg",
-  "full_frame_path": "/opt/vms_engine/dev/rec/objects/20250711/src_0/ff_0_f1234.jpg",
-  "timestamp_ms": 1720700000000,
-  "frame_num": 1234,
-  "mid": "src_0_f1234_1720700000000",
+  "oid": 42,
+  "object_key": "019785f2-...",
+  "parent_object_key": "",
+  "parent": "",
+  "parent_instance_key": "",
+  "class": "car",
+  "conf": 0.92,
+  "labels": "sport_car:0:0.87|sedan:1:0.11",
+  "top": 200.3,
+  "left": 120.5,
+  "w": 80.0,
+  "h": 60.0,
+  "s_w_ff": 1920,
+  "s_h_ff": 1080,
+  "w_ff": 1920,
+  "h_ff": 1080,
+  "fname": "20250711/s0_RT20250711_143022_456_car_id42.jpg",
+  "fname_ff": "20250711/s0_RT20250711_143022_456_frame_ff.jpg",
+  "event_ts": "1720700000000",
+  "mid": "019785f3-...",
+  "prev_mid": "",
   "pub_type": "first_seen",
-  "heartbeat_seq": 0,
-  "prev_mid": ""
+  "pub_reason": "New object detected",
+  "hb_seq": 0,
+  "class_id": 2,
+  "frame_num": 1234,
+  "tracker_id": 42
 }
 ```
 
 ### 5.2 Field Description
 
-| Field             | Type   | Mô tả                                                           |
-| ----------------- | ------ | --------------------------------------------------------------- |
-| `event`           | string | Luôn là `"object_detected"`                                     |
-| `pipeline_id`     | string | Pipeline ID từ config                                           |
-| `source_id`       | int    | Camera source index                                             |
-| `source_name`     | string | Camera ID từ `sources.cameras[source_id].id`                    |
-| `object_key`      | string | Persistent UUIDv7 cho tracker object (stable across heartbeats) |
-| `instance_key`    | string | UUIDv7 unique cho mỗi capture instance                          |
-| `class_id`        | int    | Detection class ID                                              |
-| `label`           | string | Detection label                                                 |
-| `confidence`      | float  | Detection confidence                                            |
-| `tracker_id`      | uint64 | Tracker-assigned object ID                                      |
-| `bbox`            | object | Bounding box coordinates                                        |
-| `crop_path`       | string | Đường dẫn file crop JPEG                                        |
-| `full_frame_path` | string | Đường dẫn file full-frame (rỗng nếu tắt)                        |
-| `timestamp_ms`    | int64  | Wall-clock epoch milliseconds                                   |
-| `frame_num`       | uint64 | GStreamer frame number                                          |
-| `mid`             | string | Message ID — unique cho mỗi message                             |
-| `pub_type`        | string | `"first_seen"` hoặc `"heartbeat"`                               |
-| `heartbeat_seq`   | uint64 | Heartbeat sequence (0 cho first_seen, tăng dần)                 |
-| `prev_mid`        | string | Message ID trước đó của cùng object (chain correlation)         |
+| Field                 | Type   | Mô tả                                                                                  |
+| --------------------- | ------ | -------------------------------------------------------------------------------------- |
+| `event`               | string | Luôn là `"crop_bb"` (aligned với lantanav2)                                            |
+| `pid`                 | string | Pipeline ID từ config                                                                  |
+| `sid`                 | int    | Camera source index                                                                    |
+| `sname`               | string | Camera ID từ `sources.cameras[source_id].id`                                           |
+| `instance_key`        | string | UUIDv7 unique cho mỗi capture instance                                                 |
+| `oid`                 | uint64 | Tracker-assigned object ID                                                             |
+| `object_key`          | string | Persistent UUIDv7 cho tracker object (stable across heartbeats)                        |
+| `parent_object_key`   | string | Parent object key (rỗng — placeholder cho future SGIE)                                 |
+| `parent`              | string | Parent label (rỗng — placeholder)                                                      |
+| `parent_instance_key` | string | Parent instance key (rỗng — placeholder)                                               |
+| `class`               | string | PGIE detection label (`obj_label`, e.g. `"car"`)                                       |
+| `conf`                | float  | PGIE detection confidence                                                              |
+| `labels`              | string | SGIE classifier output: `"label:id:prob\|label:id:prob\|..."` — rỗng nếu không có SGIE |
+| `top`                 | float  | Bounding box top coordinate                                                            |
+| `left`                | float  | Bounding box left coordinate                                                           |
+| `w`                   | float  | Bounding box width                                                                     |
+| `h`                   | float  | Bounding box height                                                                    |
+| `s_w_ff`              | int    | Source frame width (từ NvBufSurface)                                                   |
+| `s_h_ff`              | int    | Source frame height (từ NvBufSurface)                                                  |
+| `w_ff`                | int    | Pipeline output width (từ config)                                                      |
+| `h_ff`                | int    | Pipeline output height (từ config)                                                     |
+| `fname`               | string | Relative path to crop JPEG (từ save_dir)                                               |
+| `fname_ff`            | string | Relative path to full-frame JPEG (rỗng nếu tắt hoặc Exit)                              |
+| `event_ts`            | string | Wall-clock epoch milliseconds dạng string                                              |
+| `mid`                 | string | Message ID — UUIDv7 unique per message                                                 |
+| `prev_mid`            | string | Message ID trước đó của cùng object (chain correlation)                                |
+| `pub_type`            | string | `"first_seen"`, `"bypass"`, `"heartbeat"`, `"exit"`                                    |
+| `pub_reason`          | string | Human-readable reason cho publish decision                                             |
+| `hb_seq`              | int    | Heartbeat sequence (0 cho first_seen, tăng dần cho heartbeat)                          |
+| `class_id`            | int    | DeepStream class ID (extra — không có trong lantanav2)                                 |
+| `frame_num`           | uint64 | GStreamer frame number (extra)                                                         |
+| `tracker_id`          | uint64 | Tracker ID (extra — giống `oid` nhưng tên khác cho rõ)                                 |
 
-### 5.3 Message ID Chain
+### 5.3 pub_type Values
+
+| pub_type     | Khi nào                                                                   | Image | hb_seq            |
+| ------------ | ------------------------------------------------------------------------- | ----- | ----------------- |
+| `first_seen` | Object xuất hiện lần đầu (tracker ID mới)                                 | Có    | 0                 |
+| `bypass`     | SGIE label thay đổi trong interval + token available (label-change burst) | Có    | Giữ nguyên seq cũ |
+| `heartbeat`  | Periodic re-publish sau capture_interval_sec                              | Có    | Tăng +1           |
+| `exit`       | Object bị xóa do stale timeout                                            | Không | Giữ nguyên seq cũ |
+
+### 5.4 Message ID Chain
 
 ```
-Object xuất hiện lần đầu:
-  mid="src_0_f100_17207...", pub_type="first_seen", heartbeat_seq=0, prev_mid=""
+Object xuất hiện lần đầu (SGIE chưa có kết quả):
+  mid="019785f3-...", pub_type="first_seen", hb_seq=0, prev_mid=""
+  class="car", labels=""
+
+SGIE classify xong → labels thay đổi "" → "sport_car:0:0.87|sedan:1:0.11" (bypass fires):
+  mid="019785f4-...", pub_type="bypass", hb_seq=0, prev_mid="019785f3-..."
+  class="car", labels="sport_car:0:0.87|sedan:1:0.11"
+
+SGIE classify lại → labels thay đổi → bypass lần 2 (nếu còn token):
+  mid="019785f5-...", pub_type="bypass", hb_seq=0, prev_mid="019785f4-..."
+  class="car", labels="sedan:1:0.95"
 
 5 giây sau (heartbeat):
-  mid="src_0_f250_17207...", pub_type="heartbeat", heartbeat_seq=1, prev_mid="src_0_f100_17207..."
+  mid="019785f6-...", pub_type="heartbeat", hb_seq=1, prev_mid="019785f5-..."
+  class="car", labels="sedan:1:0.95"
 
-10 giây sau (heartbeat):
-  mid="src_0_f400_17207...", pub_type="heartbeat", heartbeat_seq=2, prev_mid="src_0_f250_17207..."
+Object biến mất (stale cleanup):
+  mid="019785f7-...", pub_type="exit", hb_seq=1, prev_mid="019785f6-..."
+  fname="", fname_ff="", labels=""
 ```
 
-Consumer có thể dùng `object_key` + `prev_mid` để xây dựng event timeline cho mỗi object.
+Consumer có thể dùng `object_key` + `prev_mid` để xây dựng event timeline cho mỗi object. `labels` cho phép track quá trình SGIE re-classify qua thời gian.
 
 ---
 
@@ -338,22 +423,30 @@ Consumer có thể dùng `object_key` + `prev_mid` để xây dựng event timel
 ```
 save_dir/
   └── 20250711/          ← YYYYMMDD format, tự tạo mỗi ngày
-       ├── src_0/        ← per-source subdirectory
-       │    ├── crop_car_42_019785f3.jpg
-       │    ├── crop_person_7_019785f4.jpg
-       │    └── ff_0_f1234.jpg
-       └── src_1/
-            └── ...
+       ├── s0_RT20250711_143022_456_car_id42.jpg        ← crop
+       ├── s0_RT20250711_143022_456_person_id7.jpg      ← crop
+       ├── s0_RT20250711_143022_456_frame_ff.jpg        ← full-frame
+       ├── s1_RT20250711_143025_789_truck_id15.jpg      ← crop from source 1
+       └── ...
 ```
 
-### 6.2 File Naming
+> **Flat directory** — không có `src_N/` subdirectory (aligned với lantanav2). Tất cả file trong cùng daily dir, phân biệt bằng `s{sid}` prefix.
 
-| File Type  | Format                                            | Ví dụ                      |
-| ---------- | ------------------------------------------------- | -------------------------- |
-| Crop       | `crop_{sanitized_label}_{tracker_id}_{uuid8}.jpg` | `crop_car_42_019785f3.jpg` |
-| Full-frame | `ff_{source_id}_f{frame_num}.jpg`                 | `ff_0_f1234.jpg`           |
+### 6.2 File Naming (aligned với lantanav2)
+
+| File Type  | Format                                               | Ví dụ                                   |
+| ---------- | ---------------------------------------------------- | --------------------------------------- |
+| Crop       | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_{label}_id{oid}.jpg` | `s0_RT20250711_143022_456_car_id42.jpg` |
+| Full-frame | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_frame_ff.jpg`        | `s0_RT20250711_143022_456_frame_ff.jpg` |
+
+**Realtime string format**: `YYYYMMDD_HHMMSS_mmm` — generated từ `std::chrono::system_clock::now()`.
 
 **Label sanitization**: Non-alphanumeric chars (trừ `-` và `_`) → `_`, truncate 30 chars.
+
+**fname / fname_ff** trong JSON message là **relative paths** từ `save_dir`:
+
+- `fname`: `"20250711/s0_RT20250711_143022_456_car_id42.jpg"`
+- `fname_ff`: `"20250711/s0_RT20250711_143022_456_frame_ff.jpg"`
 
 ### 6.3 Old Directory Cleanup
 
@@ -371,8 +464,12 @@ save_dir/
 Mỗi `check_interval_batches` batch:
 
 1. Iterate `object_last_seen_` — tìm entries có `(current_pts - last_seen) > timeout_ns`
-2. Xóa đồng bộ từ TẤT CẢ 4 maps: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`
-3. Log số lượng removed
+2. Tạo `PendingMessage` với `pub_type = "exit"` cho mỗi stale object (metadata-only, no image paths)
+3. Xóa đồng bộ từ TẤT CẢ 4 maps: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`
+4. Publish tất cả Exit messages
+5. Log số lượng removed
+
+**Exit messages** cho phép downstream consumers biết khi object biến mất — dùng để close event timeline.
 
 ### 7.2 Emergency Hard Limit
 
@@ -426,34 +523,199 @@ if (self->shutting_down_.load(std::memory_order_acquire)) {
 
 ---
 
-## 9. Cải Tiến So Với V1
+## 9. So Sánh vms-engine vs lantanav2 CropObjectHandlerV2
 
-| Feature                  | V1 (cũ)                 | V2 (hiện tại)                                       |
-| ------------------------ | ----------------------- | --------------------------------------------------- |
-| **Publish decision**     | Capture = publish       | `PubDecisionType` (FirstSeen/Heartbeat/None)        |
-| **Heartbeat dedup**      | Không có                | Payload hash so sánh → suppress duplicate heartbeat |
-| **Publish timing**       | Publish ngay khi encode | Batch-accumulate → finish → publish                 |
-| **Message ID chain**     | Không có                | `mid` + `prev_mid` cho event correlation            |
-| **Stale cleanup scope**  | 3 maps                  | 4 maps (thêm `pub_state_`)                          |
-| **Memory stats**         | Không có                | `log_memory_stats()` mỗi cleanup cycle              |
-| **Emergency limit**      | 10000                   | 5000 (stricter)                                     |
-| **File naming**          | `crop_{tid}_{uuid8}`    | `crop_{label}_{tid}_{uuid8}` (sanitized label)      |
-| **ext_processor config** | Không parse             | Parsed vào `ExtProcessorConfig` struct              |
-| **JSON new fields**      | —                       | `mid`, `pub_type`, `heartbeat_seq`, `prev_mid`      |
+### 9.1 Tóm Tắt
 
-### Từ lantanav2 — Những gì KHÔNG port
-
-- **Parent-child grouping / hysteresis**: Yêu cầu SGIE metadata → quá phức tạp cho pipeline hiện tại
-- **Token bucket bypass**: Coupled với parent-child → bỏ
-- **GstClockRef RAII wrapper**: vms-engine dùng PTS, không cần GstSystemClock reference
-- **WSL detection**: Không cần trong container environment
-- **ExternalProcessingService implementation**: Config parsed nhưng runtime ext_processor chưa implement (future extension)
+| Khía cạnh                    | lantanav2 `CropObjectHandlerV2`                                  | vms-engine `CropObjectHandler`                              |
+| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
+| **Interface**                | `IProbeHandler` plugin, `REGISTER_HANDLER()` macro               | Native GStreamer static probe callback                      |
+| **Config**                   | Semicolon-delimited string (parse lúc runtime)                   | Typed C++ structs từ YAML (`PipelineConfig`)                |
+| **Transport**                | `RedisStreamProducer` direct (Redis XADD)                        | `IMessageProducer` abstraction (Redis / Kafka)              |
+| **Message format**           | Redis XADD string pairs — bbox/dims dưới dạng `std::to_string()` | JSON native types — `float` bbox, `int` dims                |
+| **Decision trigger**         | Hysteresis trên child presence (SGIE-driven)                     | Tracker ID mới + PTS interval (PGIE + optional SGIE)        |
+| **Parent-child**             | Đầy đủ — group parent+children, quyết định theo child presence   | Không có — mỗi object độc lập, parent fields = `""`         |
+| **Label state**              | `LabelStateV2` — Bypass khi SGIE label thay đổi                  | ✅ Có — `last_sgie_labels` tracking, bypass on label change |
+| **WSL support**              | `is_running_on_wsl()` — skip GPU encode khi WSL                  | Không cần — container-native                                |
+| **Payload hash dedup**       | Tracked nhưng không suppress heartbeat trong V2                  | Có — suppress duplicate heartbeat khi object đứng yên       |
+| **hb_seq publish**           | Chỉ khi Heartbeat (conditional field push)                       | Luôn có trong mọi pub_type                                  |
+| **Memory stats**             | Không log                                                        | `log_memory_stats()` mỗi cleanup cycle                      |
+| **Emergency hard limit**     | Không có explicit limit                                          | 5000 objects — full map clear khi vượt                      |
+| **Source dims**              | `frame_meta->source_frame_width/Height`                          | Đọc từ `NvBufSurface` (actual GPU buffer)                   |
+| **Redis reconnect tracking** | `is_connected()` check trước/sau mỗi send                        | Log warning khi send fail, không re-check mỗi msg           |
 
 ---
 
-## 10. ext_processor — Future Extension
+### 9.2 Giống Nhau — Những gì được giữ nguyên
 
-Config struct đã được parse vào `ExtProcessorConfig`:
+Vms-engine giữ nguyên tất cả design decisions quan trọng của lantanav2 V2:
+
+| Feature                       | Cả hai đều có                                                                                                                                                                                                                             |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Event name                    | `"crop_bb"`                                                                                                                                                                                                                               |
+| File naming                   | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_{label}_id{oid}.jpg`                                                                                                                                                                                      |
+| Directory                     | Flat `YYYYMMDD/` (không có `src_N/` subdir)                                                                                                                                                                                               |
+| Message fields                | `event`, `pid`, `sid`, `sname`, `instance_key`, `oid`, `object_key`, `parent*`, `class`, `conf`, `labels`, `top/left/w/h`, `s_w_ff/s_h_ff/w_ff/h_ff`, `fname/fname_ff`, `event_ts`, `mid`, `prev_mid`, `pub_type`, `pub_reason`, `hb_seq` |
+| `fname/fname_ff`              | Relative path từ `save_dir`                                                                                                                                                                                                               |
+| `event_ts`                    | Unix epoch ms dưới dạng **string**                                                                                                                                                                                                        |
+| Token bucket bypass           | `BURST_MAX=3`, `TOKEN_REFILL_NS=5s`                                                                                                                                                                                                       |
+| Batch-accumulate-then-publish | Accumulate → `nvds_obj_enc_finish()` → publish                                                                                                                                                                                            |
+| Full-frame dedup per batch    | Chỉ encode 1 lần mỗi `frame_num` mỗi batch                                                                                                                                                                                                |
+| 4 state maps + stale cleanup  | `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`                                                                                                                                                                    |
+| Exit messages                 | Publish metadata-only khi stale cleanup xóa object                                                                                                                                                                                        |
+| `mid` / `prev_mid` chain      | UUIDv7 message ID + prev_mid cho event correlation                                                                                                                                                                                        |
+| cudaDeviceSynchronize         | Sync trước encode để tránh partial GPU buffer                                                                                                                                                                                             |
+
+---
+
+### 9.3 vms-engine Cải Thiện So Với lantanav2 V2
+
+#### A. Redis Flat Publish — Không có `data` wrapper
+
+```
+// lantanav2 — XADD channel * data <json_string>
+// Consumer nhận: {id: "...", data: "{\"event\":\"crop_bb\", ...}"}
+// Phải parse lại JSON string lần nữa
+
+// vms-engine — publish_json() flattens fields
+// XADD channel * event crop_bb pid pipeline_01 sid 0 class car conf 0.92 ...
+// Consumer nhận Redis hash trực tiếp: {id: "...", event: "crop_bb", class: "car", ...}
+// Không cần parse thêm
+```
+
+Implemented qua `IMessageProducer::publish_json(channel, json_str)`: Redis implementation parse JSON → build `XADD argv[]` với tất cả fields phẳng. Kafka implementation delegate sang regular publish (JSON string is the payload).
+
+---
+
+#### B. Config System — YAML structs thay vì semicolon string
+
+```cpp
+// lantanav2 — parse lúc runtime, dễ lỗi, không có IDE support
+init_context("save_dir=/path;labels=car,person;interval=5;quality=85;...");
+
+// vms-engine — typed, validated, IDE completion
+void configure(const PipelineConfig& config,
+               const EventHandlerConfig& handler,
+               IMessageProducer* producer);
+// Truy cập: handler.save_dir, handler.image_quality, config.sources.width, ...
+```
+
+Lợi ích: compile-time type checking, no string parsing bugs, YAML validation tập trung.
+
+#### C. Transport Abstraction — IMessageProducer
+
+```cpp
+// lantanav2 — coupled với Redis
+std::unique_ptr<RedisStreamProducer> redis_producer_;
+redis_producer_->send_message(fields);  // Chỉ dùng được Redis
+
+// vms-engine — abstracted
+IMessageProducer* producer_;
+producer_->publish(channel_, json_str);  // Redis, Kafka, hoặc bất kỳ backend
+```
+
+Lợi ích: pipeline có thể switch sang Kafka mà không cần thay đổi handler.
+
+#### D. JSON Native Types — Chính xác hơn cho consumer
+
+```cpp
+// lantanav2 — tất cả bbox/dims dưới dạng string
+{"top", std::to_string(msg.rect_top)},   // "123.456789" — floating point noise
+{"s_w_ff", std::to_string(msg.source_frame_width)},
+
+// vms-engine — native JSON types
+j["top"]    = static_cast<float>(left);   // 123.456  — proper float
+j["s_w_ff"] = src_frame_w;               // 1920     — proper int
+```
+
+Consumer Python/JS nhận `float` và `int` thực sự thay vì phải parse string.
+
+#### E. Payload Hash Dedup — Suppress duplicate heartbeat
+
+```cpp
+// lantanav2 V2 — track hash nhưng không suppress heartbeat dựa vào hash
+
+// vms-engine — suppress heartbeat khi bbox/class không thay đổi
+std::size_t new_hash = compute_payload_hash(class_id, label, left, top, w, h);
+if (new_hash == state.last_payload_hash) {
+    return;  // Suppress — object đứng yên, không publish redundant heartbeat
+}
+```
+
+Lợi ích: giảm lượng message Redis đáng kể cho static scenes (camera nhìn bãi đỗ xe chẳng hạn).
+
+#### F. Memory Stats + Emergency Hard Limit
+
+```cpp
+// vms-engine — log stats mỗi cycle + hard stop
+void log_memory_stats() const;  // "object_keys=42, ~7KB"
+
+static constexpr size_t MAX_TRACKED_OBJECTS = 5000;
+if (max_map > MAX_TRACKED_OBJECTS) {
+    object_keys_.clear(); object_last_seen_.clear(); // Emergency clear ALL maps
+    last_capture_pts_.clear(); pub_state_.clear();
+}
+```
+
+Lantanav2 không có safety net này → unbounded memory growth khi tracker churn cao.
+
+#### G. Source Dims từ NvBufSurface
+
+```cpp
+// lantanav2 — lấy từ frame_meta (muxer processed dims)
+source_frame_width = frame_meta->source_frame_width;
+
+// vms-engine — lấy từ NvBufSurface (actual GPU buffer dims)
+src_frame_w = static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].width);
+src_frame_h = static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].height);
+```
+
+NvBufSurface phản ánh chính xác kích thước buffer GPU mà encoder thực sự đọc từ.
+
+---
+
+### 9.4 lantanav2 V2 có nhưng vms-engine KHÔNG port
+
+#### A. Parent-Child Object Grouping
+
+lantanav2 nhóm parent (PGIE) + children (SGIE classifier kết quả) vào một `GroupData`. FirstSeen/Exit được trigger dựa trên child presence (khi object có children SGIE active hay không). Publish là **cặp parent + child**, không phải riêng lẻ.
+
+vms-engine chỉ có PGIE — mỗi object xử lý độc lập. Parent fields (`parent_object_key`, `parent`, `parent_instance_key`) giữ `""` làm placeholder cho khi SGIE được thêm vào sau.
+
+#### B. ChildPresenceStateV2 Hysteresis
+
+```
+lantanav2:
+  FirstSeen ← khi children xuất hiện và đủ stable (hysteresis threshold)
+  Exit      ← khi children biến mất và đủ stable
+  ↕ Không fire khi child presence chưa stable (chống noise)
+
+vms-engine:
+  FirstSeen ← khi tracker ID chưa có trong object_keys_ (ngay lập tức)
+  Exit      ← khi PTS không cập nhật quá stale_object_timeout_min
+```
+
+Hysteresis của lantanav2 phù hợp với use case SGIE-driven (ví dụ: "vehicle has license plate"). vms-engine dùng PTS-based approach phù hợp với PGIE-only pipeline.
+
+#### C. ChildPresenceStateV2 Hysteresis — Bypass Khi Child Presence Thay Đổi
+
+lantanav2 track child presence (có/không có SGIE-detected child objects) qua các frame và áp dụng hysteresis threshold trước khi fire FirstSeen/Exit. vms-engine không có child-presence concept — FirstSeen/Exit dựa thuần trên tracker ID và PTS staleness.
+
+> **Lưu ý**: vms-engine đã implement **label-change bypass** tương đương `LabelStateV2` của lantanav2 thông qua `last_sgie_labels` tracking trong `ObjectPubState`. Bypass fires khi SGIE label string thay đổi giữa 2 lần check (cùng nguyên lý, không cần ChildPresence layer).
+
+#### E. hb_seq — Conditional Field
+
+lantanav2 chỉ push `hb_seq` vào Redis XADD khi `pub_type == Heartbeat`. vms-engine luôn include `hb_seq` trong JSON cho mọi pub_type — đơn giản hơn cho consumer (không cần check key existence).
+
+#### F. Redis Connection Tracking Per-Message
+
+lantanav2 kiểm tra `is_connected()` trước **và** sau mỗi lần send để track partial failure. vms-engine coi publish là fire-and-forget với LOG_W khi thất bại — simpler nhưng ít granular hơn.
+
+---
+
+## 10. ext_processor — Đã Implement
+
+`ExternalProcessorService` được wired vào pipeline qua `CropObjectHandler::configure()`. Config struct:
 
 ```cpp
 struct ExtProcessorRule {
@@ -471,12 +733,17 @@ struct ExtProcessorConfig {
 };
 ```
 
-**Planned behavior** (khi implement):
+**Runtime behavior** (đã implement — xem `ext_proc_svc.cpp`):
 
-1. Sau khi crop JPEG ghi xong, nếu object label match rule → gửi HTTP POST đến endpoint
-2. Parse response theo `result_path` / `display_path` → thêm vào JSON message
-3. Rate-limit theo `min_interval_sec` per label per object
-4. Fail gracefully — timeout/error không ảnh hưởng pipeline
+1. Sau khi crop JPEG encode xong, nếu object label match rule → encode in-memory JPEG (independent NvDsObjEnc context)
+2. Launch detached thread → HTTP multipart POST đến endpoint
+3. Parse JSON response theo `result_path` / `display_path`
+4. Publish enrichment event (event=ext_proc) lên message broker
+5. Rate-limit theo `min_interval_sec` per label per object (monotonic throttle)
+6. Fail gracefully — timeout/error không ảnh hưởng pipeline
+7. Shared_ptr giữ Impl alive qua thread lifetime (pipeline teardown safe)
+
+> **Chi tiết architecture** → [`ext_proc_svc.md`](ext_proc_svc.md)
 
 ---
 

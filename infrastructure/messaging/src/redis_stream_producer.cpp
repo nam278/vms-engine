@@ -13,6 +13,7 @@
 #include "engine/core/utils/logger.hpp"
 
 #include <hiredis/hiredis.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 
@@ -182,6 +183,98 @@ bool RedisStreamProducer::publish(const std::string& channel, const std::string&
     // XADD <stream> * <key> <value>
     redisReply* reply = static_cast<redisReply*>(
         redisCommand(ctx_, "XADD %s * %s %s", channel.c_str(), key.c_str(), value.c_str()));
+
+    if (!reply) {
+        LOG_W("RedisStreamProducer: XADD '{}' null reply — connection lost, scheduling reconnect",
+              channel);
+        redisFree(ctx_);
+        ctx_ = nullptr;
+        connected_.store(false);
+        schedule_reconnect();
+        return false;
+    }
+
+    if (reply->type == REDIS_REPLY_ERROR) {
+        LOG_W("RedisStreamProducer: XADD '{}' error: {} — scheduling reconnect", channel,
+              reply->str);
+        freeReplyObject(reply);
+        connected_.store(false);
+        schedule_reconnect();
+        return false;
+    }
+
+    freeReplyObject(reply);
+    return true;
+}
+
+// ─── publish_json (flatten JSON fields) ──────────────────────────────────────
+
+bool RedisStreamProducer::publish_json(const std::string& channel, const std::string& json_str) {
+    // Fast path — no lock needed for this check
+    if (!connected_.load()) {
+        LOG_D("RedisStreamProducer: not connected — dropping '{}', scheduling reconnect", channel);
+        schedule_reconnect();
+        return false;
+    }
+
+    // Parse JSON
+    nlohmann::json obj;
+    try {
+        obj = nlohmann::json::parse(json_str);
+    } catch (const std::exception& e) {
+        LOG_E("RedisStreamProducer: JSON parse error in publish_json: {}", e.what());
+        return false;
+    }
+
+    if (!obj.is_object()) {
+        LOG_E("RedisStreamProducer: publish_json expects object, got {}", obj.type_name());
+        return false;
+    }
+
+    // Build XADD command: XADD channel * key1 val1 key2 val2 ...
+    // Start with 5 args: "XADD", channel, "*"
+    std::vector<const char*> argv;
+    std::vector<std::string> argv_storage;  // keep strings alive
+
+    argv_storage.push_back("XADD");
+    argv_storage.push_back(channel);
+    argv_storage.push_back("*");
+
+    // Flatten JSON fields
+    for (auto& [key, val] : obj.items()) {
+        argv_storage.push_back(key);
+        if (val.is_string()) {
+            argv_storage.push_back(val.get<std::string>());
+        } else if (val.is_number()) {
+            argv_storage.push_back(val.dump());  // e.g. "0.6"
+        } else if (val.is_boolean()) {
+            argv_storage.push_back(val.get<bool>() ? "true" : "false");
+        } else {
+            // null, array, object — dump as JSON string
+            argv_storage.push_back(val.dump());
+        }
+    }
+
+    // Convert storage strings to C pointers for redisCommandArgv
+    for (const auto& s : argv_storage) {
+        argv.push_back(s.c_str());
+    }
+
+    if (argv.size() < 3) {
+        LOG_D("RedisStreamProducer: no fields to publish to '{}'", channel);
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lk(ctx_mtx_);
+    if (!ctx_) {
+        connected_.store(false);
+        schedule_reconnect();
+        return false;
+    }
+
+    // Send XADD command
+    redisReply* reply =
+        static_cast<redisReply*>(redisCommandArgv(ctx_, argv.size(), argv.data(), nullptr));
 
     if (!reply) {
         LOG_W("RedisStreamProducer: XADD '{}' null reply — connection lost, scheduling reconnect",

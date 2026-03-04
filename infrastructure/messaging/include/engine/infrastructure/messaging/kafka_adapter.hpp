@@ -63,6 +63,14 @@ class KafkaAdapter : public engine::core::messaging::IMessageProducer {
                  const std::string& value) override;
 
     /**
+     * @brief Publish JSON string as-is (no flattening for Kafka).
+     * @param channel Kafka topic name.
+     * @param json_str JSON string to publish.
+     * @return true if enqueued; false on errors.
+     */
+    bool publish_json(const std::string& channel, const std::string& json_str) override;
+
+    /**
      * @brief Flush in-flight messages (10 s timeout) and destroy the producer handle.
      * Safe to call multiple times.
      */

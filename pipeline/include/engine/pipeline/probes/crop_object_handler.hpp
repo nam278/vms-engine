@@ -6,24 +6,24 @@
  *
  * Key features:
  *   - CUDA-accelerated JPEG encoding (NvDsObjEncCtxHandle)
- *   - Structured publish decision: FirstSeen / Heartbeat with payload hash dedup
+ *   - Structured publish decision: FirstSeen / Bypass / Heartbeat / Exit
+ *   - Token bucket bypass for burst captures of newly-detected objects
  *   - Batched message publishing (accumulate -> encode -> finish -> publish)
- *   - Daily directory rotation (YYYYMMDD/src_N/)
- *   - Robust cleanup: stale objects, old dirs, emergency hard limit
+ *   - Daily directory rotation (YYYYMMDD/) with lantanav2-aligned file naming
+ *   - Robust cleanup: stale objects (with Exit publish), old dirs, emergency limit
  *   - PTS-based capture throttling, sanitized file names
  *   - Message ID chain (mid / prev_mid) for event correlation
  *   - ExternalProcessorService integration: HTTP API enrichment per-object rule
  *   - Safe teardown via shutting_down_ atomic flag
  *
- * Improvements over V1 (ported from lantanav2 CropObjectHandlerV2):
- *   - PubDecisionType enum for publish classification
- *   - Payload hash dedup suppresses duplicate heartbeat messages
- *   - Batch-accumulate-then-publish pattern reduces mutex hold time
- *   - Comprehensive stale cleanup across ALL state maps
- *   - Detailed memory stats logging at cleanup intervals
- *   - Message ID tracking for event chain correlation
- *   - Sanitized labels in file names (invalid chars replaced)
- *   - ext_processor config struct (implementation is a future extension)
+ * Publish format aligned with lantanav2 CropObjectHandlerV2:
+ *   - Event "crop_bb" with field names: pid, sid, sname, oid, class, conf, etc.
+ *   - Flat bbox fields (top, left, w, h) instead of nested object
+ *   - Relative file paths (fname, fname_ff) relative to save_dir_base
+ *   - Parent fields as empty-string placeholders (for future SGIE support)
+ *   - Source frame & pipeline dimensions (s_w_ff, s_h_ff, w_ff, h_ff)
+ *   - Timestamp as Unix ms string (event_ts)
+ *   - Extra fields retained: class_id, frame_num, tracker_id
  */
 
 #include "engine/core/config/config_types.hpp"
@@ -55,25 +55,33 @@ namespace engine::pipeline::probes {
  *
  * - `None`      -- no publish this cycle (throttled or dedup suppressed).
  * - `FirstSeen` -- object first detected (new tracker ID).
+ * - `Bypass`    -- token bucket burst capture (rapid initial captures).
  * - `Heartbeat` -- periodic re-publish after capture_interval_sec elapsed.
+ * - `Exit`      -- object expired from tracking (stale cleanup).
  */
 enum class PubDecisionType {
     None,       ///< No publish (throttled, dedup, or filtered)
     FirstSeen,  ///< Object first detected -- immediate publish
-    Heartbeat   ///< Periodic heartbeat -- capture_interval_sec elapsed
+    Bypass,     ///< Token bucket burst -- rapid capture of new objects
+    Heartbeat,  ///< Periodic heartbeat -- capture_interval_sec elapsed
+    Exit        ///< Object exited -- stale cleanup notification
 };
 
 /**
  * @brief Per-object publishing state.
  *
  * Tracks last publish timestamp, heartbeat sequence number, last payload
- * hash for dedup, and message ID for chain correlation.
+ * hash for dedup, message ID for chain correlation, token bucket state
+ * for bypass burst captures, and last SGIE labels for label-change bypass.
  */
 struct ObjectPubState {
     GstClockTime last_publish_pts = GST_CLOCK_TIME_NONE;  ///< PTS of last publish
     uint64_t heartbeat_seq = 0;                           ///< Heartbeat sequence counter
     std::size_t last_payload_hash = 0;                    ///< Hash for heartbeat dedup
     std::string last_message_id;                          ///< Last published message ID
+    int bypass_tokens = 0;                                ///< Token bucket for burst captures
+    GstClockTime last_refill_pts = GST_CLOCK_TIME_NONE;   ///< PTS of last token refill
+    std::string last_sgie_labels;  ///< Last published SGIE label string (bypass on change)
 };
 
 // ============================================================================
@@ -143,6 +151,10 @@ class CropObjectHandler {
     int image_quality_ = 85;            ///< JPEG quality 1-100
     bool save_full_frame_ = true;       ///< Capture full-frame alongside crops
 
+    // Pipeline frame dimensions (for s_w_ff/s_h_ff/w_ff/h_ff in publish)
+    int pipeline_width_ = 0;   ///< Streammux output width from config
+    int pipeline_height_ = 0;  ///< Streammux output height from config
+
     // Cleanup config
     int stale_object_timeout_min_ = 5;  ///< Remove stale object keys after N minutes
     int check_interval_batches_ = 30;   ///< Cleanup check every N batches
@@ -193,25 +205,36 @@ class CropObjectHandler {
 
     // -- Pending Message (batch accumulation) --------------------------------
 
-    /** @brief Data for one pending detection message. */
+    /**
+     * @brief Data for one pending detection message.
+     *
+     * Field names aligned with lantanav2 CropObjectHandlerV2 publish format.
+     * fname/fname_ff are paths relative to save_dir_base (not absolute).
+     */
     struct PendingMessage {
         int source_id;
         std::string source_name;
         std::string object_key;
         std::string instance_key;
         int class_id;
-        std::string label;
+        std::string label;   ///< PGIE class name (obj_label)
+        std::string labels;  ///< SGIE classifier results: "label:id:prob|..." (empty if no SGIE)
         float confidence;
         uint64_t tracker_id;
-        float left, top, width, height;
-        std::string crop_path;
-        std::string full_frame_path;
+        float left, top, width, height;  ///< Bounding box (published as flat top/left/w/h)
+        std::string fname;               ///< Relative crop JPEG path (from save_dir_base)
+        std::string fname_ff;            ///< Relative full-frame JPEG path
         int64_t timestamp_ms;
         uint64_t frame_num;
         std::string message_id;       ///< Unique ID for this message
         std::string prev_message_id;  ///< Previous message ID for this object (chain)
         PubDecisionType pub_type;     ///< Why this message is being published
+        std::string pub_reason;       ///< Human-readable reason string
         uint64_t heartbeat_seq;       ///< Heartbeat sequence (0 for FirstSeen)
+        int source_frame_width = 0;   ///< NvBufSurface frame width
+        int source_frame_height = 0;  ///< NvBufSurface frame height
+        int pipeline_width = 0;       ///< Streammux output width
+        int pipeline_height = 0;      ///< Streammux output height
     };
 
     // -- Internal Methods ----------------------------------------------------
@@ -222,29 +245,52 @@ class CropObjectHandler {
     /** @brief Ensure daily directory exists (rotates on date change). */
     bool ensure_daily_dir();
 
-    /** @brief Build source sub-directory path (creates if needed). */
-    std::string source_dir(int source_id) const;
-
     /** @brief Delete daily directories older than old_dirs_max_days_. Rate-limited to 1/hour. */
     void cleanup_old_directories();
 
     /**
      * @brief Determine whether this object should be captured and what publish type.
      *
-     * @param key        compose_key(source_id, tracker_id)
-     * @param current_pts Current buffer PTS.
-     * @return PubDecisionType::FirstSeen, Heartbeat, or None.
+     * Decision logic (in order):
+     *   1. FirstSeen — new object never captured before.
+     *   2. Heartbeat — capture interval elapsed.
+     *   3. Bypass — within capture interval, SGIE labels changed, and token available.
+     *   4. None — throttled and no label change (or no tokens).
+     *
+     * Bypass is modelled after lantanav2 LabelStateV2: fires only when SGIE labels
+     * change between publishes, consuming one burst token. This avoids spamming
+     * burst frames and instead captures meaningful state transitions.
+     *
+     * @param key          compose_key(source_id, tracker_id)
+     * @param current_pts  Current buffer PTS.
+     * @param sgie_labels  Current SGIE label string (empty if no SGIE running).
+     * @return PubDecisionType::FirstSeen, Heartbeat, Bypass, or None.
      */
-    PubDecisionType decide_capture(uint64_t key, GstClockTime current_pts) const;
+    PubDecisionType decide_capture(uint64_t key, GstClockTime current_pts,
+                                   const std::string& sgie_labels);
 
     /**
-     * @brief Compute a payload hash for dedup (class_id + bbox + label).
+     * @brief Compute a payload hash for dedup (class_id + bbox + label + sgie_labels).
      *
      * If hash matches the last published heartbeat for this object, the
      * heartbeat is suppressed to avoid redundant messages.
+     * Including sgie_labels ensures a label change flushes the dedup cache.
      */
-    static std::size_t compute_payload_hash(int class_id, const std::string& label, float left,
-                                            float top, float width, float height);
+    static std::size_t compute_payload_hash(int class_id, const std::string& label,
+                                            const std::string& sgie_labels, float left, float top,
+                                            float width, float height);
+
+    /**
+     * @brief Extract SGIE classifier labels from NvDsClassifierMeta.
+     *
+     * Format: "result_label:label_id:result_prob|..." (pipe-separated per label).
+     * Matches lantanav2 build_labels_string_verbose() output.
+     * Returns empty string if no classifier metadata present.
+     *
+     * @param obj NvDsObjectMeta from which to extract classifier results.
+     * @return Formatted SGIE labels string.
+     */
+    static std::string build_sgie_labels(NvDsObjectMeta* obj);
 
     /** @brief Get or create persistent object_key for a tracker ID. */
     std::string get_or_create_object_key(int source_id, uint64_t tracker_id);
@@ -252,8 +298,14 @@ class CropObjectHandler {
     /** @brief Mark tracker object as seen at given PTS. */
     void update_object_last_seen(int source_id, uint64_t tracker_id, GstClockTime pts);
 
-    /** @brief Remove stale object entries not seen within timeout. */
-    void cleanup_stale_objects(GstClockTime current_pts);
+    /**
+     * @brief Remove stale object entries not seen within timeout.
+     * @param current_pts Current PTS for staleness comparison.
+     * @param timestamp_ms Current epoch ms for Exit message timestamps.
+     * @return Vector of Exit PendingMessages for removed objects.
+     */
+    std::vector<PendingMessage> cleanup_stale_objects(GstClockTime current_pts,
+                                                      int64_t timestamp_ms);
 
     /** @brief Log comprehensive memory stats for all state maps. */
     void log_memory_stats() const;
@@ -291,6 +343,46 @@ class CropObjectHandler {
 
     /** @brief Convert PubDecisionType to string for logging/JSON. */
     static const char* pub_type_name(PubDecisionType type);
+
+    /** @brief Convert PubDecisionType to a human-readable reason string. */
+    static const char* pub_reason_for_type(PubDecisionType type);
+
+    /**
+     * @brief Generate wall-clock real-time string for file naming.
+     *
+     * Format: YYYYMMDD_HHMMSS_mmm (e.g. "20250703_143052_123").
+     * Matches lantanav2 get_formatted_real_time() format.
+     */
+    static std::string generate_realtime_str();
+
+    /**
+     * @brief Compute relative path from save_dir_base.
+     * @param absolute_path Full absolute file path.
+     * @return Path relative to save_dir_base_ (e.g. "20250703/filename.jpg").
+     */
+    std::string relative_path(const std::string& absolute_path) const;
+
+    // -- Token Bucket (Bypass) -----------------------------------------------
+
+    /** @brief Maximum bypass tokens per object (burst capacity). */
+    static constexpr int BURST_MAX = 3;
+
+    /** @brief Token refill interval in nanoseconds (5 seconds). */
+    static constexpr uint64_t TOKEN_REFILL_NS = 5'000'000'000ULL;
+
+    /**
+     * @brief Refill bypass tokens based on elapsed PTS time.
+     * @param state  Per-object publish state (modified in place).
+     * @param now_pts Current PTS timestamp.
+     */
+    static void refill_tokens(ObjectPubState& state, GstClockTime now_pts);
+
+    /**
+     * @brief Attempt to consume one bypass token.
+     * @param state  Per-object publish state (modified in place).
+     * @return true if a token was consumed (bypass allowed).
+     */
+    static bool attempt_bypass(ObjectPubState& state);
 };
 
 }  // namespace engine::pipeline::probes

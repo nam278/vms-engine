@@ -462,7 +462,7 @@ void SmartRecordProbeHandler::publish_record_started(uint32_t source_id,
         msg["trigger_obj"] = trigger_object_id;
         msg["event_ts"] = now_epoch_ms();
 
-        producer_->publish(broker_channel_, msg.dump());
+        producer_->publish_json(broker_channel_, msg.dump());
     } catch (const std::exception& e) {
         LOG_W("SmartRecord: publish record_started failed: {}", e.what());
     }
@@ -501,7 +501,7 @@ void SmartRecordProbeHandler::publish_record_done(uint32_t source_id,
         msg["duration"] = info ? info->duration : 0;  // nanoseconds from NvDsSRRecordingInfo
         msg["event_ts"] = now_epoch_ms();
 
-        producer_->publish(broker_channel_, msg.dump());
+        producer_->publish_json(broker_channel_, msg.dump());
     } catch (const std::exception& e) {
         LOG_W("SmartRecord: publish record_done failed: {}", e.what());
     }
