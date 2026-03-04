@@ -180,9 +180,10 @@ bool RedisStreamProducer::publish(const std::string& channel, const std::string&
         return false;
     }
 
-    // XADD <stream> * <key> <value>
-    redisReply* reply = static_cast<redisReply*>(
-        redisCommand(ctx_, "XADD %s * %s %s", channel.c_str(), key.c_str(), value.c_str()));
+    // XADD <stream> MAXLEN ~ 100000 * <key> <value>
+    redisReply* reply =
+        static_cast<redisReply*>(redisCommand(ctx_, "XADD %s MAXLEN ~ %d * %s %s", channel.c_str(),
+                                              STREAM_MAXLEN, key.c_str(), value.c_str()));
 
     if (!reply) {
         LOG_W("RedisStreamProducer: XADD '{}' null reply — connection lost, scheduling reconnect",
@@ -231,13 +232,15 @@ bool RedisStreamProducer::publish_json(const std::string& channel, const std::st
         return false;
     }
 
-    // Build XADD command: XADD channel * key1 val1 key2 val2 ...
-    // Start with 5 args: "XADD", channel, "*"
+    // Build XADD command: XADD channel MAXLEN ~ 100000 * key1 val1 key2 val2 ...
     std::vector<const char*> argv;
     std::vector<std::string> argv_storage;  // keep strings alive
 
     argv_storage.push_back("XADD");
     argv_storage.push_back(channel);
+    argv_storage.push_back("MAXLEN");
+    argv_storage.push_back("~");
+    argv_storage.push_back(std::to_string(STREAM_MAXLEN));
     argv_storage.push_back("*");
 
     // Flatten JSON fields
@@ -260,7 +263,7 @@ bool RedisStreamProducer::publish_json(const std::string& channel, const std::st
         argv.push_back(s.c_str());
     }
 
-    if (argv.size() < 3) {
+    if (argv.size() < 6) {
         LOG_D("RedisStreamProducer: no fields to publish to '{}'", channel);
         return false;
     }

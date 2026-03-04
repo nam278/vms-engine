@@ -105,6 +105,7 @@ class RedisStreamProducer : public engine::core::messaging::IMessageProducer {
     static constexpr int CONNECT_TIMEOUT_SEC = 2;
     static constexpr int RECONNECT_BASE_SEC = 5;
     static constexpr int RECONNECT_MAX_SEC = 60;
+    static constexpr int STREAM_MAXLEN = 100000;
 };
 
 }  // namespace engine::infrastructure::messaging

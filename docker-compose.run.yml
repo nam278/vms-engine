@@ -27,7 +27,8 @@ services:
     #   core: -1
     stdin_open: true
     tty: true
-    command: ["./build/bin/vms_engine", "-c", "dev/configs/default.yml"]
-    # nếu cần biến môi trường runtime khác, thêm ở đây:
-    # environment:
-    #   SOME_VAR: ${SOME_VAR:-default}
+    # Load command from environment variables
+    environment:
+      VMS_ENGINE_BIN: ${VMS_ENGINE_BIN:-./build/bin/vms_engine}
+      VMS_ENGINE_CONFIG: ${VMS_ENGINE_CONFIG:-dev/configs/deepstream_default.yml}
+    command: ${VMS_ENGINE_BIN:-./build/bin/vms_engine} -c ${VMS_ENGINE_CONFIG:-dev/configs/deepstream_default.yml}
