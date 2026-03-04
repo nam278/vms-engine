@@ -22,8 +22,6 @@ RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh
 # hoặc:
 # RUN apt-get update && apt-get install -y gstreamer1.0-plugins-{good,bad,ugly} gstreamer1.0-libav && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 9000
-
 # User không root (giúp file không bị root-owned trên host)
 # ARG UID=1000
 # ARG GID=1000

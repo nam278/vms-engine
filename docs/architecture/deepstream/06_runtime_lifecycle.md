@@ -261,50 +261,68 @@ static void setup_signal_handlers(PipelineManager* mgr, GMainLoop* loop) {
 
 ```yaml
 sources:
-  rtsp_reconnect_interval: 10   # Retry sau 10 giây nếu mất kết nối
+  rtsp_reconnect_interval: 10 # Retry sau 10 giây nếu mất kết nối
 ```
 
 Khi một camera mất kết nối:
+
 1. `nvmultiurisrcbin` phát `GstMessage` lên bus
 2. `PipelineManager.handle_bus_message()` log warning
 3. `nvmultiurisrcbin` tự reconnect sau interval
 
 Không cần manual reconnect logic trong application code.
 
-## 6. Dynamic Stream Add/Remove (REST API)
+## 6. Dynamic Stream Add/Remove (CivetWeb REST API)
 
-Khi REST API nhận request thêm/bỏ camera:
+`nvmultiurisrcbin` tích hợp sẵn HTTP server (**CivetWeb** / `nvds_rest_server`) cho phép thêm/bỏ camera **lúc pipeline đang chạy** mà không cần restart.
 
-```cpp
-// infrastructure/rest_api/pistache_server.cpp
-void handle_add_camera(const Rest::Request& req, ...) {
-    auto body = nlohmann::json::parse(req.body());
-    std::string uri = body["uri"].get<std::string>();
+> 📖 **Hướng dẫn đầy đủ**: xem [`10_rest_api.md`](10_rest_api.md)
 
-    // Gọi IRuntimeStreamManager (implemented by PipelineManager)
-    auto result = runtime_stream_mgr_->add_stream(uri);
-    if (result.ok()) {
-        // nvmultiurisrcbin dynamically accepts new URI
-        // pad-added signal sẽ trigger linking cho stream mới
-    }
-}
+### Cấu hình
 
-// PipelineManager::add_stream()
-bool PipelineManager::add_stream(const std::string& uri) {
-    GstElement* src = get_element_by_id("src_muxer");
-    if (!src) return false;
-
-    // Lấy current uri-list và append
-    gchar* current_uris = nullptr;
-    g_object_get(src, "uri-list", &current_uris, nullptr);
-
-    std::string new_uris = std::string(current_uris) + ";" + uri;
-    g_free(current_uris);
-
-    g_object_set(src, "uri-list", new_uris.c_str(), nullptr);
-    return true;
-}
+```yaml
+sources:
+  rest_api_port: 9000 # 0=disable, >0=enable CivetWeb trên port đó
+  drop_pipeline_eos: true # BẮt buộc khi dùng dynamic add/remove
+  max_batch_size: 8 # Phải ≥ tổng số camera tối đa
 ```
+
+### Add stream
+
+```bash
+curl -XPOST 'http://localhost:9000/api/v1/stream/add' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "key": "sensor",
+    "value": {
+      "camera_id": "camera-03",
+      "camera_url": "rtsp://192.168.1.103:554/stream",
+      "change": "camera_add"
+    }
+  }'
+```
+
+### Remove stream
+
+```bash
+curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "key": "sensor",
+    "value": {
+      "camera_id": "camera-03",
+      "camera_url": "rtsp://192.168.1.103:554/stream",
+      "change": "camera_remove"
+    }
+  }'
+```
+
+### Notes
+
+- `value.camera_id`, `value.camera_url`, `value.change` là **mandatory**
+- `change` phải chứa substring `"add"` hoặc `"remove"`
+- `ip-address` property gây **SIGSEGV** trong DS8 — server luôn bind `0.0.0.0`
+- Khi port mậu thuẫn: đổi `rest_api_port` hoặc dùng `rest_api_port: 0` để disable
 
 ## 7. Restart Logic
 
@@ -364,10 +382,10 @@ GST_DEBUG="nvinfer:5,nvtracker:4,nvmultiurisrcbin:3" ./build/bin/vms_engine ...
 
 ### Common Runtime Error Messages
 
-| GStreamer Message | Nguyên nhân | Fix |
-|------------------|------------|-----|
-| `Could not decode stream` | Codec không được support | Check CUDA/codec support, GPU driver |
-| `Internal data stream error` | Buffer overflow hoặc decode fail | Giảm `batch_size`, tăng queue buffers |
-| `Failed to connect to RTSP` | Camera offline | Kiểm tra `rtsp_reconnect_interval` |
-| `nvdsinfer: Failed to init model` | TensorRT engine fail | Check TensorRT version, `.engine` file |
-| `nvtracker: Failed to init` | Tracker `.so` không tương thích | Check `DEEPSTREAM_DIR` và tracker path |
+| GStreamer Message                 | Nguyên nhân                      | Fix                                    |
+| --------------------------------- | -------------------------------- | -------------------------------------- |
+| `Could not decode stream`         | Codec không được support         | Check CUDA/codec support, GPU driver   |
+| `Internal data stream error`      | Buffer overflow hoặc decode fail | Giảm `batch_size`, tăng queue buffers  |
+| `Failed to connect to RTSP`       | Camera offline                   | Kiểm tra `rtsp_reconnect_interval`     |
+| `nvdsinfer: Failed to init model` | TensorRT engine fail             | Check TensorRT version, `.engine` file |
+| `nvtracker: Failed to init`       | Tracker `.so` không tương thích  | Check `DEEPSTREAM_DIR` và tracker path |

@@ -96,8 +96,11 @@ sources:
   type: nvmultiurisrcbin
 
   # Group 1 — nvmultiurisrcbin direct
-  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
-  # REST API is disabled by default; element uses 0.0.0.0 internally.
+  # NOTE: ip_address is NOT configurable — DS8 ip-address setter causes SIGSEGV (fatal).
+  # rest_api_port: 0 = disable CivetWeb REST API entirely
+  #               >0 = enable on that port (DS default is 9000)
+  # See: docs/architecture/deepstream/10_rest_api.md for usage guide
+  rest_api_port: 9000  # 0=disable REST API, >0=bind CivetWeb on that port
   max_batch_size: 4
   mode: 0 # 0=video  1=audio
 

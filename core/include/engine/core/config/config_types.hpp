@@ -44,7 +44,9 @@ struct SourcesConfig {
     std::string type = "nvmultiurisrcbin";
 
     // Group 1 — nvmultiurisrcbin direct
-    // NOTE: ip_address and port are not applied — DS8 ip-address property causes SIGSEGV.
+    // NOTE: ip_address is never set — DS8 ip-address property causes SIGSEGV.
+    // rest_api_port controls the built-in CivetWeb REST API port (0 = disable).
+    int rest_api_port = 0;  ///< 0=disable REST API, >0 = bind on that port (default DS9000)
     int max_batch_size = 4;
     int mode = 0;  ///< 0=video, 1=audio
 

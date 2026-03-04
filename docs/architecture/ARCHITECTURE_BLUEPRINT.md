@@ -1896,6 +1896,7 @@ For deep-dive technical documentation on the DeepStream-specific implementation,
 | [`07_event_handlers_probes.md`](deepstream/07_event_handlers_probes.md)            | GStreamer pad probes, ProbeHandlerManager, SmartRecord/CropObjects/ClassIdNamespace |
 | [`08_analytics.md`](deepstream/08_analytics.md)                                    | nvdsanalytics ROI/line crossing/overcrowding                                        |
 | [`09_outputs_smart_record.md`](deepstream/09_outputs_smart_record.md)              | Sinks, encoders, smart record API                                                   |
+| [`10_rest_api.md`](deepstream/10_rest_api.md)                                      | CivetWeb REST API — dynamic add/remove stream, `rest_api_port` config               |
 | [`probes/class_id_namespacing_handler.md`](probes/class_id_namespacing_handler.md) | Multi-GIE class_id namespacing (offset + restore)                                   |
 
 ---

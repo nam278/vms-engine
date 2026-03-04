@@ -21,8 +21,6 @@ RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh
 ARG APP_ROOT_DIR=/opt/vms_engine
 RUN mkdir -p ${APP_ROOT_DIR}
 
-EXPOSE 9000
-
 # Sao chép toàn bộ nội dung của thư mục build context (thư mục 'lantana')
 # vào thư mục APP_ROOT_DIR bên trong container.
 # Dockerfile này phải nằm trong thư mục gốc của dự án 'lantana'.

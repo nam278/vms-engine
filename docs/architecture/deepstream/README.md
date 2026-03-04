@@ -18,6 +18,7 @@ Tài liệu kỹ thuật cho kiến trúc **DeepStream pipeline** của VMS Engi
 | 07  | [07_event_handlers_probes.md](07_event_handlers_probes.md) | GStreamer pad probes, ProbeHandlerManager, SmartRecord/CropObjects/ClassIdNamespace |
 | 08  | [08_analytics.md](08_analytics.md)                         | Analytics: ROI, line crossing, nvdsanalytics                                        |
 | 09  | [09_outputs_smart_record.md](09_outputs_smart_record.md)   | Outputs sinks & Smart Record                                                        |
+| 10  | [10_rest_api.md](10_rest_api.md)                           | DeepStream REST API — quản lý stream động (add/remove camera lúc runtime)           |
 
 ---
 
@@ -37,5 +38,7 @@ Tài liệu kỹ thuật cho kiến trúc **DeepStream pipeline** của VMS Engi
 **Mới bắt đầu?** → Đọc `00` → `01` → `02` → `03`
 
 **Cần triển khai feature?** → `03` (phases) + `04` (linking) + `05` (config)
+
+**Quản lý camera động (add/remove lúc runtime)?** → `10` (REST API)
 
 **Debug runtime issues?** → `06` (lifecycle) + `07` (probes)

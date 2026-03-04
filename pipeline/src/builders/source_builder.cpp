@@ -20,10 +20,19 @@ GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& con
     }
 
     // Group 1 — nvmultiurisrcbin direct
-    // NOTE: ip-address and port are intentionally NOT set — DS8's ip-address setter
-    // triggers SIGSEGV regardless of timing. REST API stays disabled by default.
-    g_object_set(G_OBJECT(elem.get()), "max-batch-size", static_cast<gint>(src.max_batch_size),
-                 "mode", static_cast<gint>(src.mode), nullptr);
+    // NOTE: ip-address is intentionally NOT set — DS8's ip-address setter triggers SIGSEGV.
+    //        The REST API server binds to 0.0.0.0 by default, which is acceptable.
+    // "port" is a STRING property (per DS docs). 0 = disable CivetWeb REST API server.
+    // rest_api_port=0 → disable; >0 → enable on that port (use e.g. 9000).
+    const std::string rest_port_str = std::to_string(src.rest_api_port);
+    g_object_set(G_OBJECT(elem.get()), "port", rest_port_str.c_str(), "max-batch-size",
+                 static_cast<gint>(src.max_batch_size), "mode", static_cast<gint>(src.mode),
+                 nullptr);
+    if (src.rest_api_port > 0) {
+        LOG_I("nvmultiurisrcbin REST API enabled on port {}", src.rest_api_port);
+    } else {
+        LOG_D("nvmultiurisrcbin REST API disabled (port=0)");
+    }
 
     // Group 2 — nvurisrcbin per-source passthrough
     g_object_set(G_OBJECT(elem.get()), "gpu-id", static_cast<gint>(src.gpu_id),

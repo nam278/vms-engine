@@ -71,8 +71,12 @@ sources:
   type: nvmultiurisrcbin
 
   # --- Section 1: nvmultiurisrcbin direct properties ---
-  # NOTE: ip_address and port are NOT configured — DS8 ip-address property causes SIGSEGV.
-  # REST API is disabled by default; element uses 0.0.0.0:9000 internally.
+  # NOTE: ip_address is NOT configurable here — DS8 ip-address setter causes SIGSEGV.
+  #       The REST API always binds to 0.0.0.0 (all interfaces).
+  # rest_api_port: 0 = disable CivetWeb REST API entirely (avoids port conflicts)
+  #                >0 = enable on that port (DS default is 9000)
+  # Use the REST API to add/remove streams at runtime via HTTP POST.
+  rest_api_port: 9876 # enable DeepStream REST API on this port
   max_batch_size: 4 # max number of sources to mux (NOT batch_size)
   mode: 0 # 0=video-only  1=audio-only
 

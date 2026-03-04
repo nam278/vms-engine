@@ -24,7 +24,7 @@ GstElement* InferBuilder::build(const engine::core::config::PipelineConfig& conf
                      nullptr);
     }
     if (elem_cfg.unique_id > 0) {
-        g_object_set(G_OBJECT(elem.get()), "gie-unique-id", static_cast<gint>(elem_cfg.unique_id),
+        g_object_set(G_OBJECT(elem.get()), "unique-id", static_cast<gint>(elem_cfg.unique_id),
                      nullptr);
     }
 

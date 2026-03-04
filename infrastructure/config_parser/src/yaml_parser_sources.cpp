@@ -20,6 +20,7 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
 
     // ── Section 1: nvmultiurisrcbin direct ──
     out.type = yaml_str(node, "type", "nvmultiurisrcbin");
+    out.rest_api_port = yaml_int(node, "rest_api_port", 0);  // 0 = disable REST API
     out.max_batch_size = yaml_int(node, "max_batch_size", 4);
     out.mode = yaml_int(node, "mode", 0);
 

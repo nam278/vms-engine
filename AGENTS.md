@@ -210,7 +210,10 @@ queue_defaults:
 
 sources:
   type: nvmultiurisrcbin
-  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
+  # NOTE: ip_address is NOT configurable — DS8 ip-address setter causes SIGSEGV.
+  # rest_api_port: 0 = disable CivetWeb REST API (thiết lập mặc định an toàn)
+  #              >0 = enable REST API trên port đó (DS default 9000)
+  rest_api_port: 0 # 0=disable. Dùng 9000 nếu cần add/remove camera lúc runtime
   max_batch_size: 4
   mode: 0 # 0=video-only  1=audio-only
   gpu_id: 0
@@ -257,12 +260,15 @@ Properties in 3 groups:
 
 **Group 1 — nvmultiurisrcbin direct:**
 
-> ⚠️ **DS8 Note**: `ip-address` and `port` are **NOT applied** — setting `ip-address` via `g_object_set` causes SIGSEGV in DeepStream 8.0. REST API is disabled by default; the element binds to `0.0.0.0` internally. Do not add these properties back.
+> ⚠️ **DS8 SIGSEGV**: `ip-address` tuyệt đối **KHÔNG được set** qua `g_object_set` — gây crash ngay lập tức trong DeepStream 8.0. Server luôn bind `0.0.0.0`.
+>
+> `port` được set dưới dạng **string** (không phải int) qua `rest_api_port` config. `"0"` = disable hoàn toàn. Xem [`10_rest_api.md`](docs/architecture/deepstream/10_rest_api.md).
 
-| YAML key         | GStreamer        | Type | Notes                                         |
-| ---------------- | ---------------- | ---- | --------------------------------------------- |
-| `max_batch_size` | `max-batch-size` | int  | max number of streams to mux (NOT batch_size) |
-| `mode`           | `mode`           | int  | **0**=video-only, **1**=audio-only            |
+| YAML key         | GStreamer        | Type   | Notes                                                 |
+| ---------------- | ---------------- | ------ | ----------------------------------------------------- |
+| `rest_api_port`  | `port`           | string | `0`=disable REST API, `9000`=enable (DS default port) |
+| `max_batch_size` | `max-batch-size` | int    | max number of streams to mux (NOT batch_size)         |
+| `mode`           | `mode`           | int    | **0**=video-only, **1**=audio-only                    |
 
 **Group 2 — per-source nvurisrcbin pass-through:**
 

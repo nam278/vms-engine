@@ -17,24 +17,25 @@ When generating code for this repository:
 
 Before implementing anything DeepStream-related, consult the deep-dive docs in `docs/architecture/`:
 
-| Document                                                                                                   | Topic                                                                     |
-| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md)                   | Index & reading order                                                     |
-| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md)                      | Tech stack, pipeline diagram, conventions                                 |
-| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md)                        | All `I*` interfaces with `engine::` namespace                             |
-| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md)                    | 5-phase build, `tails_` map pattern                                       |
-| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)                          | Static/dynamic linking, `queue: {}` pattern                               |
-| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                            | Full YAML schema, parser architecture                                     |
-| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)                    | GstBus, state machine, RTSP reconnect                                     |
-| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)            | Pad probes, ProbeHandlerManager, SmartRecord/CropObjects/ClassIdNamespace |
-| [`probes/class_id_namespacing_handler.md`](../../docs/architecture/probes/class_id_namespacing_handler.md) | Multi-GIE class_id collision resolution (offset + restore)                |
-| [`probes/smart_record_probe_handler.md`](../../docs/architecture/probes/smart_record_probe_handler.md)     | SmartRecord probe — GstClockTime timing, stale cache, max_concurrent, cleanup |
-| [`probes/crop_object_handler.md`](../../docs/architecture/probes/crop_object_handler.md)                   | CropObject probe — batch-accumulate, PubDecisionType, payload hash dedup, message chain |
+| Document                                                                                                   | Topic                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| [`docs/architecture/deepstream/README.md`](../../docs/architecture/deepstream/README.md)                   | Index & reading order                                                                                                    |
+| [`00_project_overview.md`](../../docs/architecture/deepstream/00_project_overview.md)                      | Tech stack, pipeline diagram, conventions                                                                                |
+| [`02_core_interfaces.md`](../../docs/architecture/deepstream/02_core_interfaces.md)                        | All `I*` interfaces with `engine::` namespace                                                                            |
+| [`03_pipeline_building.md`](../../docs/architecture/deepstream/03_pipeline_building.md)                    | 5-phase build, `tails_` map pattern                                                                                      |
+| [`04_linking_system.md`](../../docs/architecture/deepstream/04_linking_system.md)                          | Static/dynamic linking, `queue: {}` pattern                                                                              |
+| [`05_configuration.md`](../../docs/architecture/deepstream/05_configuration.md)                            | Full YAML schema, parser architecture                                                                                    |
+| [`06_runtime_lifecycle.md`](../../docs/architecture/deepstream/06_runtime_lifecycle.md)                    | GstBus, state machine, RTSP reconnect                                                                                    |
+| [`07_event_handlers_probes.md`](../../docs/architecture/deepstream/07_event_handlers_probes.md)            | Pad probes, ProbeHandlerManager, SmartRecord/CropObjects/ClassIdNamespace                                                |
+| [`probes/class_id_namespacing_handler.md`](../../docs/architecture/probes/class_id_namespacing_handler.md) | Multi-GIE class_id collision resolution (offset + restore)                                                               |
+| [`probes/smart_record_probe_handler.md`](../../docs/architecture/probes/smart_record_probe_handler.md)     | SmartRecord probe — GstClockTime timing, stale cache, max_concurrent, cleanup                                            |
+| [`probes/crop_object_handler.md`](../../docs/architecture/probes/crop_object_handler.md)                   | CropObject probe — batch-accumulate, PubDecisionType, payload hash dedup, message chain                                  |
 | [`probes/ext_proc_svc.md`](../../docs/architecture/probes/ext_proc_svc.md)                                 | ExternalProcessorService — HTTP API enrichment (face-rec …), in-memory JPEG, detached thread, throttle, ext_proc publish |
-| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                                    | nvdsanalytics ROI / line crossing                                         |
-| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)              | Sinks, encoders, NvDsSR API                                               |
-| [`RAII.md`](../../docs/architecture/RAII.md)                                                               | GStreamer / CUDA resource management                                      |
-| [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                             | Build system reference                                                    |
+| [`08_analytics.md`](../../docs/architecture/deepstream/08_analytics.md)                                    | nvdsanalytics ROI / line crossing                                                                                        |
+| [`09_outputs_smart_record.md`](../../docs/architecture/deepstream/09_outputs_smart_record.md)              | Sinks, encoders, NvDsSR API                                                                                              |
+| [`10_rest_api.md`](../../docs/architecture/deepstream/10_rest_api.md)                                      | DeepStream CivetWeb REST API — dynamic stream add/remove, `rest_api_port` config                                         |
+| [`RAII.md`](../../docs/architecture/RAII.md)                                                               | GStreamer / CUDA resource management                                                                                     |
+| [`CMAKE.md`](../../docs/architecture/CMAKE.md)                                                             | Build system reference                                                                                                   |
 
 ---
 
@@ -289,8 +290,10 @@ queue_defaults:
 
 sources:
   type: nvmultiurisrcbin
-  # NOTE: ip_address and port are NOT configured — DS8 ip-address setter causes SIGSEGV.
-  # REST API stays disabled; element defaults to 0.0.0.0 internally.
+  # NOTE: ip_address is NOT configurable — DS8 ip-address setter causes SIGSEGV.
+  # rest_api_port: 0 = disable CivetWeb REST API (safe default)
+  #              >0 = enable on that port (use 9000 for dynamic camera add/remove)
+  rest_api_port: 0 # 0=disable
   max_batch_size: 4
   mode: 0 # 0=video-only  1=audio-only
   gpu_id: 0
@@ -367,13 +370,19 @@ When calling `g_object_set`, use the GStreamer **kebab-case** property name as a
 
 ### nvmultiurisrcbin
 
-> ⚠️ **DS8 SIGSEGV**: `ip-address` and `port` are **NOT set** — setting `ip-address` via `g_object_set` crashes DeepStream 8.0. Omit them entirely; the element defaults to `0.0.0.0` with REST API disabled.
+> ⚠️ **DS8 SIGSEGV**: `ip-address` is **NEVER set** — setting it via `g_object_set` crashes DeepStream 8.0. Server always binds `0.0.0.0`.
+>
+> `port` **IS** set as a **string** via `rest_api_port` config field. `"0"` = disable REST API entirely. See `docs/architecture/deepstream/10_rest_api.md`.
 
 ```cpp
-// Group 1 — nvmultiurisrcbin direct (ip-address/port intentionally omitted — DS8 SIGSEGV)
+// Group 1 — nvmultiurisrcbin direct
+// ip-address intentionally OMITTED — DS8 SIGSEGV
+// port set as string: "0"=disable, "9000"=enable CivetWeb REST API
+const std::string rest_port_str = std::to_string(cfg.rest_api_port);
 g_object_set(G_OBJECT(src_bin),
-    "max-batch-size",           (gint)  cfg.max_batch_size,
-    "mode",                     (gint)  cfg.mode,                 // 0=video, 1=audio
+    "port",           rest_port_str.c_str(),  // string! not int
+    "max-batch-size", (gint)  cfg.max_batch_size,
+    "mode",           (gint)  cfg.mode,                 // 0=video, 1=audio
     nullptr);
 
 // Group 2 — nvurisrcbin per-source passthrough

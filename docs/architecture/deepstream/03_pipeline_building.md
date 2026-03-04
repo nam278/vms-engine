@@ -97,8 +97,12 @@ GstElement* SourceBuilder::build(const PipelineConfig& config, int /*index*/) {
 
     auto elem = make_gst_element("nvmultiurisrcbin", "nvmultiurisrcbin0");
 
-    // Group 1 — direct (ip-address/port intentionally OMITTED — DS8 SIGSEGV)
+    // Group 1 — nvmultiurisrcbin direct
+    // NOTE: ip-address intentionally OMITTED — DS8 SIGSEGV bug (fatal crash).
+    // port IS set as string: "0" = disable REST API, "9000" = enable CivetWeb.
+    const std::string rest_port_str = std::to_string(src.rest_api_port);
     g_object_set(G_OBJECT(elem.get()),
+        "port",           rest_port_str.c_str(),  // string property! "0"=disable
         "max-batch-size", (gint) src.max_batch_size,
         "mode",           (gint) src.mode,  // 0=video, 1=audio
         nullptr);
@@ -126,7 +130,9 @@ GstElement* SourceBuilder::build(const PipelineConfig& config, int /*index*/) {
 }
 ```
 
-> ⚠️ **DS8 Bug**: `ip-address` và `port` KHÔNG được set — `g_object_set("ip-address", ...)` gây SIGSEGV trong DeepStream 8.0 bất kể timing. Element sử dụng giá trị mặc định: `0.0.0.0`, REST API disabled.
+> ⚠️ **DS8 Bug**: `ip-address` KHÔNG set — `g_object_set("ip-address", ...)` gây **SIGSEGV** trong DeepStream 8.0 bất kể timing. Server luôn bind `0.0.0.0`.
+>
+> `port` **được set** qua `rest_api_port` config field (string type). Giá trị `"0"` = disable hoàn toàn. Xem [10_rest_api.md](10_rest_api.md) để biết cách dùng REST API đầy đủ.
 
 ## 4. Phase 2 — Processing
 
