@@ -231,6 +231,10 @@ class CropObjectHandler {
     // -- Old Directory Cleanup Rate Limiter ----------------------------------
     int64_t last_old_dir_cleanup_epoch_ = 0;  ///< Epoch seconds of last old-dir cleanup
 
+    // -- Memory Stats Log Rate Limiter ---------------------------------------
+    int64_t last_memory_stats_log_epoch_ms_ = 0;     ///< Epoch ms of last memory-stats log
+    int64_t memory_stats_log_interval_ms_ = 60'000;  ///< Minimum gap between memory-stats logs
+
     // -- Pending Message (batch accumulation) --------------------------------
 
     /**
@@ -398,6 +402,9 @@ class CropObjectHandler {
 
     /** @brief Log comprehensive memory stats for all state maps. */
     void log_memory_stats() const;
+
+    /** @brief Return true when memory stats log is allowed by time-based rate limit. */
+    bool should_log_memory_stats(int64_t now_epoch_ms);
 
     /** @brief Compose key for (source_id, tracker_id) maps. */
     static uint64_t compose_key(int source_id, uint64_t tracker_id);

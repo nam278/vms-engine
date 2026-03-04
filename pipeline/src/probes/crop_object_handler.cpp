@@ -247,7 +247,9 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
         // Exit messages are intentionally NOT published to the broker.
         cleanup_stale_objects(cleanup_ref, timestamp_ms);
         cleanup_old_directories();
-        log_memory_stats();
+        if (should_log_memory_stats(timestamp_ms)) {
+            log_memory_stats();
+        }
     }
 
     return GST_PAD_PROBE_OK;
@@ -1021,6 +1023,20 @@ void CropObjectHandler::log_memory_stats() const {
         n_keys, n_seen, n_pts, n_pub, n_cache, approx_kb);
 }
 
+bool CropObjectHandler::should_log_memory_stats(int64_t now_epoch_ms) {
+    if (memory_stats_log_interval_ms_ <= 0) {
+        return true;
+    }
+
+    if (last_memory_stats_log_epoch_ms_ > 0 &&
+        (now_epoch_ms - last_memory_stats_log_epoch_ms_) < memory_stats_log_interval_ms_) {
+        return false;
+    }
+
+    last_memory_stats_log_epoch_ms_ = now_epoch_ms;
+    return true;
+}
+
 // ============================================================================
 // Message ID Generation
 // ============================================================================
@@ -1097,6 +1113,12 @@ void CropObjectHandler::publish_pending_messages(const std::vector<PendingMessag
             msg["tracker_id"] = m.tracker_id;
 
             producer_->publish_json(broker_channel_, msg.dump());
+            LOG_D(
+                "CropObjectHandler: published crop_bb mid={} src={} tid={} oid={} object_key={} "
+                "type={} "
+                "class='{}' labels='{}' fname='{}'",
+                m.message_id, m.source_id, m.tracker_id, m.tracker_id, m.object_key,
+                pub_type_name(m.pub_type), m.label, m.labels, m.fname);
         } catch (const std::exception& e) {
             LOG_W("CropObjectHandler: publish failed for tid={}: {}", m.tracker_id, e.what());
         }
