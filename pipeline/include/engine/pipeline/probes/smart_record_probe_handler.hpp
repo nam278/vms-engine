@@ -4,6 +4,7 @@
 #include "engine/core/messaging/imessage_producer.hpp"
 
 #include <gst/gst.h>
+#include <gst-nvdssr.h>
 
 #include <atomic>
 #include <cstdint>
@@ -131,9 +132,19 @@ class SmartRecordProbeHandler {
     /** @brief Count currently active (in-progress) recording sessions. */
     int count_active_recordings() const;
 
-    /** @brief Publish JSON event via IMessageProducer. */
-    void publish_event(const std::string& event, uint32_t source_id, const std::string& source_name,
-                       uint32_t session_id, uint32_t duration_sec);
+    /**
+     * @brief Publish `record_started` JSON via IMessageProducer.
+     * @param trigger_object_id Tracker object_id that triggered the recording.
+     */
+    void publish_record_started(uint32_t source_id, const std::string& source_name,
+                                uint32_t session_id, uint64_t trigger_object_id);
+
+    /**
+     * @brief Publish `record_done` JSON via IMessageProducer.
+     * @param info NvDsSRRecordingInfo from the sr-done signal (may be nullptr).
+     */
+    void publish_record_done(uint32_t source_id, const std::string& source_name,
+                             uint32_t session_id, NvDsSRRecordingInfo* info);
 
     /** @brief Static callback for sr-done signal from nvurisrcbin. */
     static void on_recording_done(GstElement* nvurisrcbin, gpointer recording_info,

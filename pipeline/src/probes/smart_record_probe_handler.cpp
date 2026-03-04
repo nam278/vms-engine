@@ -327,8 +327,7 @@ void SmartRecordProbeHandler::start_recording(uint32_t source_id, uint64_t trigg
           session.session_id, source_id, session.source_name, start_time_sec, total_duration,
           trigger_object_id);
 
-    publish_event("record_started", source_id, session.source_name, session.session_id,
-                  total_duration);
+    publish_record_started(source_id, session.source_name, session.session_id, trigger_object_id);
 }
 
 // ── Session Cleanup ────────────────────────────────────────────────
@@ -419,40 +418,92 @@ void SmartRecordProbeHandler::on_recording_done(GstElement* nvurisrcbin, gpointe
         }
     }
 
-    // Extract filename from NvDsSRRecordingInfo (sessionId, filename, dirpath, duration, …)
-    std::string filename = "unknown";
-    if (recording_info) {
-        auto* info = static_cast<NvDsSRRecordingInfo*>(recording_info);
-        if (info->filename)
-            filename = info->filename;
-    }
+    // Extract info from NvDsSRRecordingInfo (sessionId, filename, dirpath, duration, width, height)
+    auto* info = recording_info ? static_cast<NvDsSRRecordingInfo*>(recording_info) : nullptr;
+    const std::string filename = (info && info->filename) ? info->filename : "unknown";
 
     LOG_I("SmartRecord: done — session={}, source={}, file='{}'", session_id, source_id, filename);
 
-    self->publish_event("record_done", source_id, self->get_source_name(source_id), session_id, 0);
+    self->publish_record_done(source_id, self->get_source_name(source_id), session_id, info);
 }
 
 // ── Message Publishing ─────────────────────────────────────────────
 
-void SmartRecordProbeHandler::publish_event(const std::string& event, uint32_t source_id,
-                                            const std::string& source_name, uint32_t session_id,
-                                            uint32_t duration_sec) {
+/**
+ * @brief publish_record_started — JSON payload matching lantanav2 field names.
+ *
+ * Field mapping (compatible với consumer side):
+ *   pid        : pipeline id
+ *   sid        : source id (int)
+ *   sname      : source name (camera id string)
+ *   session_id : session id từ nvurisrcbin start-sr
+ *   start_time : pre_event_sec — số giây back-fill từ circular buffer
+ *   duration   : total (pre+post) duration tính bằng milliseconds
+ *   trigger_obj: tracker object_id đã kích hoạt recording
+ *   event_ts   : Unix epoch milliseconds
+ */
+void SmartRecordProbeHandler::publish_record_started(uint32_t source_id,
+                                                     const std::string& source_name,
+                                                     uint32_t session_id,
+                                                     uint64_t trigger_object_id) {
+    if (!producer_ || broker_channel_.empty())
+        return;
+
+    const uint32_t total_duration = static_cast<uint32_t>(pre_event_sec_ + post_event_sec_);
+    try {
+        json msg;
+        msg["event"] = "record_started";
+        msg["pid"] = pipeline_id_;
+        msg["sid"] = source_id;
+        msg["sname"] = source_name;
+        msg["session_id"] = session_id;
+        msg["start_time"] = pre_event_sec_;       // seconds: circular buffer back-fill depth
+        msg["duration"] = total_duration * 1000;  // total duration in milliseconds
+        msg["trigger_obj"] = trigger_object_id;
+        msg["event_ts"] = now_epoch_ms();
+
+        producer_->publish(broker_channel_, msg.dump());
+    } catch (const std::exception& e) {
+        LOG_W("SmartRecord: publish record_started failed: {}", e.what());
+    }
+}
+
+/**
+ * @brief publish_record_done — JSON payload matching lantanav2 field names.
+ *
+ * Field mapping:
+ *   pid        : pipeline id
+ *   sid        : source id (int)
+ *   sname      : source name
+ *   session_id : session id
+ *   width      : video width from NvDsSRRecordingInfo
+ *   height     : video height from NvDsSRRecordingInfo
+ *   filename   : full file path from NvDsSRRecordingInfo (e.g.
+ * "/opt/engine/data/rec/vms_rec_cam0_1234.mp4") duration   : raw NvDsSRRecordingInfo::duration
+ * (nanoseconds from GStreamer / DeepStream) event_ts   : Unix epoch milliseconds
+ */
+void SmartRecordProbeHandler::publish_record_done(uint32_t source_id,
+                                                  const std::string& source_name,
+                                                  uint32_t session_id, NvDsSRRecordingInfo* info) {
     if (!producer_ || broker_channel_.empty())
         return;
 
     try {
         json msg;
-        msg["event"] = event;
-        msg["pipeline_id"] = pipeline_id_;
-        msg["source_id"] = source_id;
-        msg["source_name"] = source_name;
+        msg["event"] = "record_done";
+        msg["pid"] = pipeline_id_;
+        msg["sid"] = source_id;
+        msg["sname"] = source_name;
         msg["session_id"] = session_id;
-        msg["duration_sec"] = duration_sec;
-        msg["timestamp_ms"] = now_epoch_ms();
+        msg["width"] = info ? static_cast<uint32_t>(info->width) : 0u;
+        msg["height"] = info ? static_cast<uint32_t>(info->height) : 0u;
+        msg["filename"] = (info && info->filename) ? info->filename : "";
+        msg["duration"] = info ? info->duration : 0;  // nanoseconds from NvDsSRRecordingInfo
+        msg["event_ts"] = now_epoch_ms();
 
         producer_->publish(broker_channel_, msg.dump());
     } catch (const std::exception& e) {
-        LOG_W("SmartRecord: publish failed: {}", e.what());
+        LOG_W("SmartRecord: publish record_done failed: {}", e.what());
     }
 }
 

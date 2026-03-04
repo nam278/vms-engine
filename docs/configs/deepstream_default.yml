@@ -148,7 +148,7 @@ processing:
     - id: tracker
       type: nvtracker
       ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
-      ll_config_file: "/opt/vms_engine/build/bin/config/config_tracker_NvDCF_perf.yml"
+      ll_config_file: "/opt/vms_engine/build/bin/configs/config_tracker_NvDCF_perf.yml"
       tracker_width: 640 # frame is scaled to this width before tracking
       tracker_height: 640
       gpu_id: 0
@@ -298,7 +298,7 @@ event_handlers:
     channel: worker_lsr # Redis Stream / Kafka topic to publish smart-record events
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2 # seconds from cache before detection
-    post_event_sec: 20
+    post_event_sec: 13
     min_interval_sec: 2 # minimum gap between recordings per camera
 
   # ---------------------------------------------------------------------------

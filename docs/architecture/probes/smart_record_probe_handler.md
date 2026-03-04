@@ -78,19 +78,65 @@ event_handlers:
 
 ### 2.4 Event Publishing & Broker Reconnect
 
-Khi `channel` được cấu hình, handler publish một JSON event cho mỗi lần ghi hình bắt đầu:
+Khi `channel` được cấu hình, handler publish **hai loại event** qua `IMessageProducer::publish(channel, json)`. Field names tương thích với format của lantanav2.
+
+**`record_started`** — phát ngay khi ghi hình bắt đầu:
 
 ```json
 {
-  "handler_id": "smart_record",
-  "source_id": 0,
-  "source_name": "camera-01",
-  "session_id": 123456,
-  "event": "on_recording_start",
-  "duration_sec": 50,
-  "timestamp": "2026-03-04T10:30:45Z"
+  "event": "record_started",
+  "pid": "pipeline-01",
+  "sid": 0,
+  "sname": "camera-01",
+  "session_id": 42,
+  "start_time": 5,
+  "duration": 25000,
+  "trigger_obj": 12345,
+  "event_ts": 1741000000000
 }
 ```
+
+| Field         | Kiểu   | Mô tả                                                                    |
+| ------------- | ------ | ------------------------------------------------------------------------ |
+| `event`       | string | Luôn `"record_started"`                                                  |
+| `pid`         | string | Pipeline ID (`config.pipeline.id`)                                       |
+| `sid`         | int    | Source index (0-based)                                                   |
+| `sname`       | string | Tên camera từ `sources.cameras[sid].id`                                  |
+| `session_id`  | int    | Session ID trả về từ `start-sr` GSignal                                  |
+| `start_time`  | int    | `pre_event_sec` — số giây back-fill từ circular buffer                   |
+| `duration`    | int    | `(pre_event_sec + post_event_sec) * 1000` — tổng duration (milliseconds) |
+| `trigger_obj` | int    | Tracker `object_id` đã kích hoạt recording                               |
+| `event_ts`    | int    | Unix epoch milliseconds (`std::chrono::system_clock`)                    |
+
+**`record_done`** — phát khi `sr-done` signal từ nvurisrcbin:
+
+```json
+{
+  "event": "record_done",
+  "pid": "pipeline-01",
+  "sid": 0,
+  "sname": "camera-01",
+  "session_id": 42,
+  "width": 1920,
+  "height": 1080,
+  "filename": "/opt/engine/data/rec/vms_rec_cam0_1741000000.mp4",
+  "duration": 25000000000,
+  "event_ts": 1741000025000
+}
+```
+
+| Field        | Kiểu   | Mô tả                                                           |
+| ------------ | ------ | --------------------------------------------------------------- |
+| `event`      | string | Luôn `"record_done"`                                            |
+| `pid`        | string | Pipeline ID                                                     |
+| `sid`        | int    | Source index                                                    |
+| `sname`      | string | Tên camera                                                      |
+| `session_id` | int    | Session ID khớp với `record_started`                            |
+| `width`      | int    | Video width từ `NvDsSRRecordingInfo::width`                     |
+| `height`     | int    | Video height từ `NvDsSRRecordingInfo::height`                   |
+| `filename`   | string | Full path tới file video từ `NvDsSRRecordingInfo::filename`     |
+| `duration`   | int    | Raw `NvDsSRRecordingInfo::duration` (nanoseconds từ DeepStream) |
+| `event_ts`   | int    | Unix epoch milliseconds tại thời điểm sr-done callback          |
 
 **Reconnect hành vi** (nhật xử theo loại broker):
 
@@ -138,9 +184,10 @@ private:
     void              start_recording(uint32_t source_id, uint64_t trigger_object_id, GstClockTime now);
     void              cleanup_expired_sessions(GstClockTime now);
     int               count_active_recordings() const;
-    void              publish_event(const std::string& event, uint32_t source_id,
-                                    const std::string& source_name, uint32_t session_id,
-                                    uint32_t duration_sec);
+    void              publish_record_started(uint32_t source_id, const std::string& source_name,
+                                             uint32_t session_id, uint64_t trigger_object_id);
+    void              publish_record_done(uint32_t source_id, const std::string& source_name,
+                                          uint32_t session_id, NvDsSRRecordingInfo* info);
     static void       on_recording_done(GstElement*, gpointer, gpointer, gpointer user_data);
     void              disconnect_all_signals();
 
@@ -193,14 +240,14 @@ private:
                                   ├─ find_nvurisrcbin(source_id)   // with stale-cache check
                                   ├─ g_signal_emit_by_name("start-sr", ...)
                                   ├─ update SourceRecordingState
-                                  └─ publish_event("record_started", ...)
+                                  └─ publish_record_started(source_id, source_name, session_id, trigger_object_id)
 
 [When recording finishes — on nvurisrcbin thread]
     on_recording_done(nvurisrcbin, recording_info, ...)
     ├─ early return if shutting_down_
     ├─ source_id from qdata (kSourceIdDataKey) hoặc linear search
     ├─ clear active_session
-    └─ publish_event("record_done", ...)
+    └─ publish_record_done(source_id, source_name, session_id, NvDsSRRecordingInfo*)
 
 [Destructor]
     shutting_down_.store(true)   // TRƯỚC KHI disconnect signals
@@ -249,6 +296,38 @@ state.last_record_time = actual_start;  // Interval reference = đầu recording
 ```
 
 **Ý nghĩa**: `min_interval_sec` được tính từ đầu recording buffer, không phải từ thời điểm detection. Điều này đảm bảo recordings không bị overlap về nội dung.
+
+**Trace ví dụ** (`pre=2, post=20, min_interval=2`):
+
+```
+T=10s  → Detect car
+           actual_start = 10 - 2 = 8s
+           last_record_time = 8s
+           active_session  = { session_id=5, duration_sec=22 }
+           g_signal_emit_by_name("start-sr", start=2, total=22)
+           → video bắt đầu từ T=8s, kết thúc tại T=30s
+
+T=12s  → Detect car lại
+           can_start_recording? → active_session != nullopt → FALSE (đang ghi)
+
+T=30s  → sr-done callback
+           active_session = nullopt
+
+T=32s  → Detect car lại
+           can_start_recording?
+             active_session  = nullopt     → OK
+             32 - 8 = 24s >= 2s (min_interval) → OK
+           → ALLOW: bắt đầu recording mới
+```
+
+**Trường hợp sr-done bị mất** (stream ngắt tại T=15s):
+
+```
+deadline = session.start_time + duration_sec * GST_SECOND + kSessionGracePeriodNs
+         = T=10s + 22s + 5s = T=37s
+T=37s  → cleanup_expired_sessions() → session expire → active_session = nullopt
+T=38s  → source có thể ghi lại bình thường
+```
 
 ### 5.3 Stale Cache Detection cho nvurisrcbin
 
@@ -426,7 +505,7 @@ Lý do: qdata vẫn tồn tại ngay cả khi cache `source_bins_` đã bị evi
 
 ## 6. Sự Kiện Publish (JSON)
 
-Khi `broker.channel` được cấu hình, handler publish 2 loại event qua `IMessageProducer::publish()`:
+Khi `broker.channel` được cấu hình, handler publish 2 loại event qua `IMessageProducer::publish()`. Format field names tương thích với lantanav2 để consumer side có thể xử lý cả hai:
 
 ### 6.1 record_started
 
@@ -435,42 +514,62 @@ Khi `broker.channel` được cấu hình, handler publish 2 loại event qua `I
 ```json
 {
   "event": "record_started",
-  "pipeline_id": "pipeline_main",
-  "source_id": 0,
-  "source_name": "camera-01",
+  "pid": "pipeline-01",
+  "sid": 0,
+  "sname": "camera-01",
   "session_id": 42,
-  "duration_sec": 25,
-  "timestamp_ms": 1720000000000
+  "start_time": 5,
+  "duration": 25000,
+  "trigger_obj": 12345,
+  "event_ts": 1741000000000
 }
 ```
 
-| Field          | Mô tả                                     |
-| -------------- | ----------------------------------------- |
-| `event`        | `"record_started"`                        |
-| `pipeline_id`  | Từ `config.pipeline.id`                   |
-| `source_id`    | `frame_meta->source_id`                   |
-| `source_name`  | `config.sources.cameras[source_id].id`    |
-| `session_id`   | `sr_session_id` từ `start-sr` emit return |
-| `duration_sec` | `pre_event_sec + post_event_sec`          |
-| `timestamp_ms` | `std::chrono::system_clock` epoch ms      |
+| Field         | Type   | Mô tả                                                        |
+| ------------- | ------ | ------------------------------------------------------------ |
+| `event`       | string | `"record_started"`                                           |
+| `pid`         | string | `config.pipeline.id`                                         |
+| `sid`         | uint32 | `frame_meta->source_id`                                      |
+| `sname`       | string | `config.sources.cameras[source_id].id`                       |
+| `session_id`  | uint32 | `sr_session_id` từ `start-sr` emit return                    |
+| `start_time`  | uint32 | `pre_event_sec_` — độ sâu circular buffer back-fill (giây)   |
+| `duration`    | uint32 | `(pre_event_sec + post_event_sec) * 1000` — tổng duration ms |
+| `trigger_obj` | uint64 | `obj->object_id` — tracker ID của object trigger recording   |
+| `event_ts`    | int64  | Unix epoch milliseconds (`now_epoch_ms()`)                   |
 
 ### 6.2 record_done
 
-Được publish trong `on_recording_done` callback (chạy trên GStreamer thread):
+Được publish trong `on_recording_done` callback (chạy trên GStreamer thread), nhận `NvDsSRRecordingInfo*` từ DeepStream signal:
 
 ```json
 {
   "event": "record_done",
-  "pipeline_id": "pipeline_main",
-  "source_id": 0,
-  "source_name": "camera-01",
+  "pid": "pipeline-01",
+  "sid": 0,
+  "sname": "camera-01",
   "session_id": 42,
-  "duration_sec": 0,
-  "timestamp_ms": 1720000025000
+  "width": 1920,
+  "height": 1080,
+  "filename": "/opt/engine/data/rec/vms_rec_cam0_1741000000.mp4",
+  "duration": 25000000000,
+  "event_ts": 1741000025000
 }
 ```
 
-> **Lưu ý**: `duration_sec = 0` trong `record_done` vì duration thực tế nằm trong `NvDsSRRecordingInfo` (file path, actual duration). Handler chỉ publish session_id để consumer có thể match với `record_started`.
+| Field        | Type   | Mô tả                                                                        |
+| ------------ | ------ | ---------------------------------------------------------------------------- |
+| `event`      | string | `"record_done"`                                                              |
+| `pid`        | string | `config.pipeline.id`                                                         |
+| `sid`        | uint32 | `source_id` tra từ qdata hoặc linear search                                  |
+| `sname`      | string | `config.sources.cameras[source_id].id`                                       |
+| `session_id` | uint32 | ID của session đã kết thúc — consumer match với `record_started`             |
+| `width`      | uint32 | `NvDsSRRecordingInfo::width` — độ rộng video được ghi                        |
+| `height`     | uint32 | `NvDsSRRecordingInfo::height` — chiều cao video được ghi                     |
+| `filename`   | string | `NvDsSRRecordingInfo::filename` — đường dẫn file đầy đủ (hoặc `""` nếu null) |
+| `duration`   | uint64 | `NvDsSRRecordingInfo::duration` — **nanoseconds** (GStreamer clock domain)   |
+| `event_ts`   | int64  | Unix epoch milliseconds (`now_epoch_ms()`)                                   |
+
+> **Duration units**: `record_started.duration` tính bằng **milliseconds**; `record_done.duration` tính bằng **nanoseconds** (trực tiếp từ `NvDsSRRecordingInfo::duration`). Để convert sang giây: `duration / 1_000_000_000.0`.
 
 ---
 
@@ -618,3 +717,131 @@ event_handlers:
 | `infrastructure/config_parser/src/yaml_parser_handlers.cpp`              | YAML → `EventHandlerConfig` parsing                   |
 | `docs/architecture/deepstream/07_event_handlers_probes.md`               | Overview của tất cả probe handlers                    |
 | `docs/configs/deepstream_default.yml`                                    | Full YAML config ví dụ                                |
+
+---
+
+## 13. Logic Các Config Field (pre / post / min_interval)
+
+### 13.1 Giá trị truyền vào DeepStream
+
+Khi `start_recording()` được gọi, handler truyền 2 tham số vào GSignal `start-sr`:
+
+```
+start_time_sec = pre_event_sec          → DeepStream back-fill từ circular buffer
+total_duration = pre_event_sec + post_event_sec  → tổng độ dài video
+```
+
+Với `pre=2, post=20`:
+
+```
+start-sr(start=2, total=22)
+→ video = 2s trước detection + 20s sau detection = 22s
+```
+
+### 13.2 Trace đầy đủ với `pre=2, post=20, min_interval=2`
+
+```
+T=10s  ─ Detect car
+           actual_start = 10 - 2 = 8s          (đầu circular buffer)
+           last_record_time = 8s
+           active_session  = { session_id=5, duration_sec=22 }
+           g_signal_emit_by_name("start-sr", start=2, total=22)
+           publish record_started { duration=22000ms, start_time=2, trigger_obj=... }
+           → file ghi từ T=8s → T=30s
+
+T=12s  ─ Detect car lại
+           can_start_recording?
+           active_session != nullopt → FALSE (đang ghi, chặn ngay)
+
+T=30s  ─ sr-done callback fire
+           active_session = nullopt
+           publish record_done { filename="...", duration=22000000000ns, width=1920, ... }
+
+T=32s  ─ Detect car lại
+           can_start_recording?
+             active_session  = nullopt          ✓
+             32 - 8 = 24s  ≥ 2s (min_interval) ✓
+           → ALLOW: bắt đầu recording mới
+```
+
+### 13.3 Trường hợp sr-done bị mất (stream ngắt)
+
+```
+T=10s  ─ Detect → active_session bắt đầu, duration_sec=22
+T=15s  ─ Stream bị ngắt, sr-done không bao giờ đến
+
+deadline = session.start_time + 22*GST_SECOND + kSessionGracePeriodNs (5s)
+         = T=10s + 22s + 5s = T=37s
+
+T=37s  ─ cleanup_expired_sessions() chạy trong buffer tiếp theo
+           → session expire → active_session = nullopt
+T=38s  ─ source có thể ghi lại bình thường
+```
+
+### 13.4 Tóm tắt ý nghĩa từng field
+
+| Field              | Ảnh hưởng đến                               | Ghi chú                                                                 |
+| ------------------ | ------------------------------------------- | ----------------------------------------------------------------------- |
+| `pre_event_sec`    | Nội dung trước detection trong video output | Phụ thuộc vào `smart_rec_cache` ≥ `pre_event_sec` trên nvmultiurisrcbin |
+| `post_event_sec`   | Nội dung sau detection trong video output   | Video dài = `pre + post` giây                                           |
+| `min_interval_sec` | Khoảng cách tối thiểu giữa 2 buffer bắt đầu | Tính từ `actual_start` (đầu buffer), không phải thời điểm detect        |
+
+> ⚠️ `smart_rec_cache` trên `nvmultiurisrcbin` phải ≥ `pre_event_sec`. Nếu cache nhỏ hơn, DeepStream chỉ back-fill được phần cache có sẵn.
+
+---
+
+## 14. So Sánh với lantanav2
+
+### 14.1 Bảng so sánh
+
+| Khía cạnh               | lantanav2                                                        | vms-engine                                                                  |
+| ----------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Messaging**           | `RedisStreamProducer` hardcode                                   | `IMessageProducer*` interface — pluggable                                   |
+| **Config API**          | `init_context(string, std::any)` — parse thủ công                | `configure(PipelineConfig&, ...)` — type-safe                               |
+| **Callback typing**     | `on_recording_done(GstElement*, NvDsSRRecordingInfo* info, ...)` | `on_recording_done(GstElement*, gpointer, ...)` + cast nội bộ               |
+| **Mutex**               | 2 mutex: `elements_mutex_` + `state_mutex_`                      | 1 mutex duy nhất — ít risk deadlock hơn                                     |
+| **Element cache**       | `GstElementRef` RAII class (~50 dòng)                            | Raw `GstElement*` + stale check bằng `gst_bin_get_by_name`                  |
+| **Per-object debounce** | `object_last_seen` map per source_id                             | Bỏ — session-level guard đủ, ít memory hơn                                  |
+| **Clock**               | Kết hợp `std::chrono` + `GstClockTime`                           | Thuần `GstClockTime` — nhất quán 1 clock domain                             |
+| **Publish methods**     | Inline trong `start_recording` / `on_recording_done`             | Tách `publish_record_started` + `publish_record_done` — có Doxygen, dễ test |
+| **Publish format**      | Redis XADD flat key-value                                        | JSON qua `IMessageProducer::publish(channel, json)`                         |
+
+### 14.2 Publish field names — tương thích 2 chiều
+
+Field names được giữ giống lantanav2 để consumer side xử lý được cả hai:
+
+| Field           | lantanav2 key    | vms-engine key   | Ghi chú                                                                  |
+| --------------- | ---------------- | ---------------- | ------------------------------------------------------------------------ |
+| pipeline id     | `pid`            | `pid`            | ✅ giống nhau                                                            |
+| source id       | `sid`            | `sid`            | ✅ giống nhau                                                            |
+| source name     | `sname`          | `sname`          | ✅ giống nhau                                                            |
+| session id      | `session_id`     | `session_id`     | ✅ giống nhau                                                            |
+| event time      | `event_ts`       | `event_ts`       | ✅ giống nhau — Unix epoch ms                                            |
+| pre-event sec   | `start_time`     | `start_time`     | ✅ giống nhau — giây                                                     |
+| total ms        | `duration` (ms)  | `duration` (ms)  | ✅ giống nhau trong `record_started`                                     |
+| trigger obj     | `trigger_obj`    | `trigger_obj`    | ✅ giống nhau                                                            |
+| file path       | `filename`       | `filename`       | ✅ giống nhau                                                            |
+| video dims      | `width`/`height` | `width`/`height` | ✅ giống nhau                                                            |
+| actual duration | `duration` (ns)  | `duration` (ns)  | ✅ giống nhau trong `record_done` — nanoseconds từ `NvDsSRRecordingInfo` |
+
+### 14.3 Cải thiện chính của vms-engine
+
+**1. `IMessageProducer` thay vì hardcode Redis**
+
+lantanav2 chỉ dùng được Redis. vms-engine inject interface — cùng handler chạy được với Redis, Kafka, hoặc bất kỳ broker nào mà không sửa code.
+
+**2. Config type-safe**
+
+lantanav2 parse chuỗi `"pre=5;post=20;redis_host=..."` bằng `istringstream` — lỗi config chỉ phát hiện lúc runtime. vms-engine nhận `EventHandlerConfig` struct đã parse từ YAML — lỗi phát hiện lúc parse.
+
+**3. Một clock domain**
+
+lantanav2 lưu `wall_clock_start = std::chrono::system_clock::now()` bên cạnh `GstClockTime start_time` trong session — 2 clock song song có thể drift. vms-engine chỉ dùng `GstClockTime` cho timing, `now_epoch_ms()` chỉ khi publish JSON.
+
+**4. Bỏ `object_last_seen` per-object map**
+
+lantanav2 track từng `object_id` riêng với `GstClockTime last_seen`. vms-engine bỏ map này — `active_session` + `min_interval` ở session level đã đủ ngăn overlap, ít memory hơn với nhiều object.
+
+**5. Publish methods tách biệt**
+
+lantanav2 publish inline. vms-engine tách thành `publish_record_started()` + `publish_record_done()` — mỗi method độc lập, có Doxygen, có thể unit test riêng.
