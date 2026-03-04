@@ -31,8 +31,8 @@ nvmultiurisrcbin → nvinfer(PGIE) → nvtracker ─── src pad ───▶ 
 Handler gắn vào `src` pad của element được chỉ định trong `probe_element` (thường là `tracker`). Mỗi batch buffer đi qua, handler sẽ:
 
 1. Map `NvBufSurface`, `cudaDeviceSynchronize()`
-2. Iterate frame → object metadata → áp dụng `label_filter`
-3. Với mỗi object đủ điều kiện: quyết định capture, encode crop JPEG, accumulate pending message
+2. Iterate frame → build parent/child groups từ metadata (`ObjectGroup`)
+3. Với mỗi group: xử lý parent trước, children sau theo **strict co-publish default** (parent phải publish thì child mới được publish cùng lượt)
 4. Gọi `nvds_obj_enc_finish()` — đảm bảo tất cả file JPEG đã ghi xong
 5. Publish tất cả pending messages đến broker
 
@@ -121,17 +121,17 @@ enum class PubDecisionType {
 };
 ```
 
-**Decision flow cho mỗi object:**
+**Decision flow theo parent-group (strict default):**
 
 ```
-object detected
+parent-group detected
     │
     ▼
-last_capture_pts_ có key?
+last_capture_pts_ của parent có key?
     │
     ├── KHÔNG → PubDecisionType::FirstSeen
     │           (capture ngay, init bypass_tokens=BURST_MAX,
-    │            last_sgie_labels=sgie_labels  ← baseline cho bypass sau)
+    │            last_sgie_labels=group_sgie_signature  ← baseline cho bypass sau)
     │
     └── CÓ → elapsed = current_pts - last_capture_pts
               │
@@ -140,26 +140,38 @@ last_capture_pts_ có key?
               │     └── refill_tokens() → PubDecisionType::Heartbeat
               │           │
               │           ▼
-              │     compute_payload_hash(class_id, label, sgie_labels, bbox)
+              │     compute_payload_hash(class_id, parent_label, group_sgie_signature, bbox)
               │           ├── hash == last_payload_hash → suppressed (dedup)
               │           └── hash != last_payload_hash → publish Heartbeat
               │
               └── elapsed < capture_interval_ns
                     │
                     └── refill_tokens()
-                          └── sgie_labels không rỗng
-                                AND sgie_labels != state.last_sgie_labels  ← LABEL CHANGED
+                            └── group_sgie_signature không rỗng
+                              AND group_sgie_signature != state.last_sgie_labels  ← LABEL CHANGED
                                 AND attempt_bypass() → tokens > 0?
                                       ├── CÓ  → PubDecisionType::Bypass (label-change burst)
                                       └── KHÔNG → PubDecisionType::None (skip)
 ```
 
+                  Trong đó `group_sgie_signature = parent_sgie_labels || aggregated_child_sgie_labels` chỉ dùng để quyết định `first_seen/bypass/heartbeat` cho parent-group.
+                  Khi publish message của parent, field `labels` vẫn chỉ chứa classifier labels của chính parent (nếu parent classify rỗng thì `labels=""`), không merge labels của child.
+
+                  `ObjectPubState.last_sgie_labels` lưu baseline theo **decision signature** (`group_sgie_signature`) chứ không phải theo payload `labels` của parent. Vì vậy, khi signature không đổi thì bypass không bị bắn lặp mỗi frame.
+
 **Token Bucket (Bypass) — Chỉ bắn khi SGIE label THAY ĐỔI**:
 
+- `K_ON_FRAMES = 5`: object/group phải đạt 5 lần quan sát ổn định trước khi publish (kết hợp với `K_OFF_FRAMES`)
+- `K_OFF_FRAMES = 2`: cho phép khoảng cách tối đa 2 frame giữa 2 lần quan sát khi tính ON hysteresis (chịu jitter scheduler)
+- `K_LABEL_FRAMES = 5`: signature label thay đổi phải giữ ổn định 5 frame liên tiếp mới cho bypass
 - `BURST_MAX = 3`: Maximum tokens per object
 - `TOKEN_REFILL_NS = 5s`: Refill 1 token after every 5 seconds (PTS-based)
+- `BYPASS_MIN_GAP_NS = 1s`: Debounce tối thiểu giữa 2 bypass liên tiếp của cùng object
+- Các ngưỡng trên hiện có thể cấu hình trực tiếp trong YAML `event_handlers[].crop_objects`:
+  `burst_max`, `k_on_frames`, `k_off_frames`, `k_label_frames`, `token_refill_sec`, `bypass_min_gap_sec`
 - FirstSeen: init `bypass_tokens = BURST_MAX`, set `last_sgie_labels = sgie_labels` làm baseline
 - Bypass fires **chỉ khi** `sgie_labels != state.last_sgie_labels` (label change) **VÀ** token > 0
+- Nếu khoảng cách từ lần publish trước `< BYPASS_MIN_GAP_NS` thì bypass bị chặn (trả `None`)
 - Mỗi bypass consume 1 token; không increment `heartbeat_seq`
 - Nếu không có SGIE (sgie_labels rỗng): bypass không bao giờ fire
 - `last_sgie_labels` được cập nhật ở commit block → baseline cho frame tiếp theo
@@ -181,6 +193,7 @@ struct ObjectPubState {
     uint64_t heartbeat_seq = 0;           // Đếm heartbeat sequence
     std::size_t last_payload_hash = 0;    // Hash cho heartbeat dedup
     std::string last_message_id;          // Message ID cuối cùng (chain correlation)
+  std::string last_instance_key;        // instance_key lần publish gần nhất
     int bypass_tokens = 0;                // Token bucket cho Bypass burst capture
     GstClockTime last_refill_pts = GST_CLOCK_TIME_NONE; // PTS lần cuối refill tokens
     std::string last_sgie_labels;         // SGIE label string lần cuối publish (bypass on change)
@@ -192,6 +205,7 @@ Mỗi object (keyed bằng `compose_key(source_id, tracker_id)`) có state riên
 - **`heartbeat_seq`**: Reset về 0 khi FirstSeen, tăng dần mỗi Heartbeat (Bypass không tăng)
 - **`last_payload_hash`**: So sánh để suppress heartbeat trùng lặp
 - **`last_message_id`**: Tạo chain `mid` → `prev_mid` cho correlation
+- **`last_instance_key`**: Lưu `instance_key` gần nhất để child có thể reuse làm `parent_instance_key` khi parent bị heartbeat-dedup
 - **`bypass_tokens`**: Init = `BURST_MAX` (3) khi FirstSeen, giảm dần mỗi Bypass, refill mỗi `TOKEN_REFILL_NS` (5s)
 - **`last_refill_pts`**: PTS lần cuối refill — dùng để tính số tokens được thêm
 - **`last_sgie_labels`**: SGIE label string lần cuối được commit, set = `sgie_labels` tại FirstSeen làm baseline; bypass fires khi string này thay đổi
@@ -241,16 +255,17 @@ Khi object đứng yên (bbox không đổi + cùng label + cùng SGIE labels), 
 
 ### 3.5 State Maps
 
-Handler duy trì 4 state maps song song, keyed bằng `compose_key(source_id, tracker_id)`:
+Handler duy trì 5 state maps chính. Trong đó 4 map keyed bằng `compose_key(source_id, tracker_id)`, và 1 map parent-cache keyed bằng child `compose_key`:
 
-| Map                 | Type                                      | Mô tả                                |
-| ------------------- | ----------------------------------------- | ------------------------------------ |
-| `object_keys_`      | `unordered_map<uint64_t, string>`         | Persistent UUIDv7 cho mỗi tracker ID |
-| `object_last_seen_` | `unordered_map<uint64_t, GstClockTime>`   | PTS lần cuối thấy object             |
-| `last_capture_pts_` | `unordered_map<uint64_t, GstClockTime>`   | PTS lần cuối capture                 |
-| `pub_state_`        | `unordered_map<uint64_t, ObjectPubState>` | Publish state (hash, seq, mid)       |
+| Map                       | Type                                      | Mô tả                                                                                           |
+| ------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `object_keys_`            | `unordered_map<uint64_t, string>`         | Persistent UUIDv7 cho mỗi tracker ID                                                            |
+| `object_last_seen_`       | `unordered_map<uint64_t, GstClockTime>`   | PTS lần cuối thấy object                                                                        |
+| `last_capture_pts_`       | `unordered_map<uint64_t, GstClockTime>`   | PTS lần cuối capture                                                                            |
+| `pub_state_`              | `unordered_map<uint64_t, ObjectPubState>` | Publish state (hash, seq, mid)                                                                  |
+| `child_parent_oid_cache_` | `unordered_map<uint64_t, uint64_t>`       | Cache quan hệ `compose_key(src, child_tid) -> parent_tid` khi `obj->parent` bị null sau tracker |
 
-**Cleanup đồng bộ**: Khi xóa stale object, TẤT CẢ 4 maps đều được dọn dẹp (không để orphan entries).
+**Cleanup đồng bộ**: Khi xóa stale object, state object được dọn từ `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`, đồng thời xóa entry tương ứng trong `child_parent_oid_cache_`.
 
 ---
 
@@ -314,9 +329,9 @@ Field structure aligned with lantanav2 `CropObjectHandlerV2` Redis XADD format. 
   "instance_key": "019785f3-...",
   "oid": 42,
   "object_key": "019785f2-...",
-  "parent_object_key": "",
-  "parent": "",
-  "parent_instance_key": "",
+  "parent_object_key": "019785f2-parent...",
+  "parent": "41",
+  "parent_instance_key": "019785f3-parent-inst...",
   "class": "car",
   "conf": 0.92,
   "labels": "sport_car:0:0.87|sedan:1:0.11",
@@ -344,40 +359,40 @@ Field structure aligned with lantanav2 `CropObjectHandlerV2` Redis XADD format. 
 
 ### 5.2 Field Description
 
-| Field                 | Type   | Mô tả                                                                                  |
-| --------------------- | ------ | -------------------------------------------------------------------------------------- |
-| `event`               | string | Luôn là `"crop_bb"` (aligned với lantanav2)                                            |
-| `pid`                 | string | Pipeline ID từ config                                                                  |
-| `sid`                 | int    | Camera source index                                                                    |
-| `sname`               | string | Camera ID từ `sources.cameras[source_id].id`                                           |
-| `instance_key`        | string | UUIDv7 unique cho mỗi capture instance                                                 |
-| `oid`                 | uint64 | Tracker-assigned object ID                                                             |
-| `object_key`          | string | Persistent UUIDv7 cho tracker object (stable across heartbeats)                        |
-| `parent_object_key`   | string | Parent object key (rỗng — placeholder cho future SGIE)                                 |
-| `parent`              | string | Parent label (rỗng — placeholder)                                                      |
-| `parent_instance_key` | string | Parent instance key (rỗng — placeholder)                                               |
-| `class`               | string | PGIE detection label (`obj_label`, e.g. `"car"`)                                       |
-| `conf`                | float  | PGIE detection confidence                                                              |
-| `labels`              | string | SGIE classifier output: `"label:id:prob\|label:id:prob\|..."` — rỗng nếu không có SGIE |
-| `top`                 | float  | Bounding box top coordinate                                                            |
-| `left`                | float  | Bounding box left coordinate                                                           |
-| `w`                   | float  | Bounding box width                                                                     |
-| `h`                   | float  | Bounding box height                                                                    |
-| `s_w_ff`              | int    | Source frame width (từ NvBufSurface)                                                   |
-| `s_h_ff`              | int    | Source frame height (từ NvBufSurface)                                                  |
-| `w_ff`                | int    | Pipeline output width (từ config)                                                      |
-| `h_ff`                | int    | Pipeline output height (từ config)                                                     |
-| `fname`               | string | Relative path to crop JPEG (từ save_dir)                                               |
-| `fname_ff`            | string | Relative path to full-frame JPEG (rỗng nếu tắt hoặc Exit)                              |
-| `event_ts`            | string | Wall-clock epoch milliseconds dạng string                                              |
-| `mid`                 | string | Message ID — UUIDv7 unique per message                                                 |
-| `prev_mid`            | string | Message ID trước đó của cùng object (chain correlation)                                |
-| `pub_type`            | string | `"first_seen"`, `"bypass"`, `"heartbeat"`, `"exit"`                                    |
-| `pub_reason`          | string | Human-readable reason cho publish decision                                             |
-| `hb_seq`              | int    | Heartbeat sequence (0 cho first_seen, tăng dần cho heartbeat)                          |
-| `class_id`            | int    | DeepStream class ID (extra — không có trong lantanav2)                                 |
-| `frame_num`           | uint64 | GStreamer frame number (extra)                                                         |
-| `tracker_id`          | uint64 | Tracker ID (extra — giống `oid` nhưng tên khác cho rõ)                                 |
+| Field                 | Type   | Mô tả                                                                                                                  |
+| --------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `event`               | string | Luôn là `"crop_bb"` (aligned với lantanav2)                                                                            |
+| `pid`                 | string | Pipeline ID từ config                                                                                                  |
+| `sid`                 | int    | Camera source index                                                                                                    |
+| `sname`               | string | Camera ID từ `sources.cameras[source_id].id`                                                                           |
+| `instance_key`        | string | UUIDv7 unique cho mỗi capture instance                                                                                 |
+| `oid`                 | uint64 | Tracker-assigned object ID                                                                                             |
+| `object_key`          | string | Persistent UUIDv7 cho tracker object (stable across heartbeats)                                                        |
+| `parent_object_key`   | string | Parent object key (có giá trị cho SGIE child; rỗng cho top-level parent object)                                        |
+| `parent`              | string | Parent tracker id dạng string (có giá trị cho SGIE child; rỗng cho top-level object)                                   |
+| `parent_instance_key` | string | Parent instance key (reuse từ parent hiện tại hoặc gần nhất khi parent dedup)                                          |
+| `class`               | string | PGIE detection label (`obj_label`, e.g. `"car"`)                                                                       |
+| `conf`                | float  | PGIE detection confidence                                                                                              |
+| `labels`              | string | SGIE classifier output của chính object hiện tại (parent không gộp labels của child; child giữ labels riêng của child) |
+| `top`                 | float  | Bounding box top coordinate                                                                                            |
+| `left`                | float  | Bounding box left coordinate                                                                                           |
+| `w`                   | float  | Bounding box width                                                                                                     |
+| `h`                   | float  | Bounding box height                                                                                                    |
+| `s_w_ff`              | int    | Source frame width (từ NvBufSurface)                                                                                   |
+| `s_h_ff`              | int    | Source frame height (từ NvBufSurface)                                                                                  |
+| `w_ff`                | int    | Pipeline output width (từ config)                                                                                      |
+| `h_ff`                | int    | Pipeline output height (từ config)                                                                                     |
+| `fname`               | string | Relative path to crop JPEG (từ save_dir)                                                                               |
+| `fname_ff`            | string | Relative path to full-frame JPEG (rỗng nếu tắt hoặc Exit)                                                              |
+| `event_ts`            | string | Wall-clock epoch milliseconds dạng string                                                                              |
+| `mid`                 | string | Message ID — UUIDv7 unique per message                                                                                 |
+| `prev_mid`            | string | Message ID trước đó của cùng object (chain correlation)                                                                |
+| `pub_type`            | string | `"first_seen"`, `"bypass"`, `"heartbeat"`, `"exit"`                                                                    |
+| `pub_reason`          | string | Human-readable reason cho publish decision                                                                             |
+| `hb_seq`              | int    | Heartbeat sequence (0 cho first_seen, tăng dần cho heartbeat)                                                          |
+| `class_id`            | int    | DeepStream class ID (extra — không có trong lantanav2)                                                                 |
+| `frame_num`           | uint64 | GStreamer frame number (extra)                                                                                         |
+| `tracker_id`          | uint64 | Tracker ID (extra — giống `oid` nhưng tên khác cho rõ)                                                                 |
 
 ### 5.3 pub_type Values
 
@@ -465,7 +480,7 @@ Mỗi `check_interval_batches` batch:
 
 1. Iterate `object_last_seen_` — tìm entries có `(current_pts - last_seen) > timeout_ns`
 2. Tạo `PendingMessage` với `pub_type = "exit"` cho mỗi stale object (metadata-only, no image paths)
-3. Xóa đồng bộ từ TẤT CẢ 4 maps: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`
+3. Xóa đồng bộ state object: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`, và entry `child_parent_oid_cache_` cùng key compose
 4. Publish tất cả Exit messages
 5. Log số lượng removed
 
@@ -479,7 +494,7 @@ static constexpr size_t MAX_TRACKED_OBJECTS = 5000;
 size_t max_map = std::max({object_keys_.size(), object_last_seen_.size(),
                            last_capture_pts_.size(), pub_state_.size()});
 if (max_map > MAX_TRACKED_OBJECTS) {
-    // EMERGENCY: clear ALL maps
+  // EMERGENCY: clear ALL maps (bao gồm child_parent_oid_cache_)
 }
 ```
 
@@ -490,7 +505,7 @@ Prevent unbounded memory growth từ tracker ID churn (ví dụ: crowded scene v
 Mỗi cleanup cycle, log approximate memory usage:
 
 ```
-CropObjectHandler: memory stats — object_keys=42, last_seen=42, capture_pts=38, pub_state=42, ~7KB
+CropObjectHandler: memory stats — tracked=42 last_seen=42 capture_pts=38 pub_state=42 parent_cache=17 ~9KB
 ```
 
 Approximate size per entry:
@@ -498,7 +513,8 @@ Approximate size per entry:
 - `object_keys_`: ~64 bytes (key + string)
 - `object_last_seen_`: ~16 bytes
 - `last_capture_pts_`: ~16 bytes
-- `pub_state_`: ~88 bytes (ObjectPubState)
+- `pub_state_`: ~104 bytes (ObjectPubState hiện tại)
+- `child_parent_oid_cache_`: ~16 bytes
 
 ---
 
@@ -527,22 +543,22 @@ if (self->shutting_down_.load(std::memory_order_acquire)) {
 
 ### 9.1 Tóm Tắt
 
-| Khía cạnh                    | lantanav2 `CropObjectHandlerV2`                                  | vms-engine `CropObjectHandler`                              |
-| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Interface**                | `IProbeHandler` plugin, `REGISTER_HANDLER()` macro               | Native GStreamer static probe callback                      |
-| **Config**                   | Semicolon-delimited string (parse lúc runtime)                   | Typed C++ structs từ YAML (`PipelineConfig`)                |
-| **Transport**                | `RedisStreamProducer` direct (Redis XADD)                        | `IMessageProducer` abstraction (Redis / Kafka)              |
-| **Message format**           | Redis XADD string pairs — bbox/dims dưới dạng `std::to_string()` | JSON native types — `float` bbox, `int` dims                |
-| **Decision trigger**         | Hysteresis trên child presence (SGIE-driven)                     | Tracker ID mới + PTS interval (PGIE + optional SGIE)        |
-| **Parent-child**             | Đầy đủ — group parent+children, quyết định theo child presence   | Không có — mỗi object độc lập, parent fields = `""`         |
-| **Label state**              | `LabelStateV2` — Bypass khi SGIE label thay đổi                  | ✅ Có — `last_sgie_labels` tracking, bypass on label change |
-| **WSL support**              | `is_running_on_wsl()` — skip GPU encode khi WSL                  | Không cần — container-native                                |
-| **Payload hash dedup**       | Tracked nhưng không suppress heartbeat trong V2                  | Có — suppress duplicate heartbeat khi object đứng yên       |
-| **hb_seq publish**           | Chỉ khi Heartbeat (conditional field push)                       | Luôn có trong mọi pub_type                                  |
-| **Memory stats**             | Không log                                                        | `log_memory_stats()` mỗi cleanup cycle                      |
-| **Emergency hard limit**     | Không có explicit limit                                          | 5000 objects — full map clear khi vượt                      |
-| **Source dims**              | `frame_meta->source_frame_width/Height`                          | Đọc từ `NvBufSurface` (actual GPU buffer)                   |
-| **Redis reconnect tracking** | `is_connected()` check trước/sau mỗi send                        | Log warning khi send fail, không re-check mỗi msg           |
+| Khía cạnh                    | lantanav2 `CropObjectHandlerV2`                                  | vms-engine `CropObjectHandler`                                  |
+| ---------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Interface**                | `IProbeHandler` plugin, `REGISTER_HANDLER()` macro               | Native GStreamer static probe callback                          |
+| **Config**                   | Semicolon-delimited string (parse lúc runtime)                   | Typed C++ structs từ YAML (`PipelineConfig`)                    |
+| **Transport**                | `RedisStreamProducer` direct (Redis XADD)                        | `IMessageProducer` abstraction (Redis / Kafka)                  |
+| **Message format**           | Redis XADD string pairs — bbox/dims dưới dạng `std::to_string()` | JSON native types — `float` bbox, `int` dims                    |
+| **Decision trigger**         | Hysteresis trên child presence (SGIE-driven)                     | Tracker ID mới + PTS interval (PGIE + optional SGIE)            |
+| **Parent-child**             | Đầy đủ — group parent+children, quyết định theo child presence   | ✅ Có — group-based 2-pass + `child_parent_oid_cache_` fallback |
+| **Label state**              | `LabelStateV2` — Bypass khi SGIE label thay đổi                  | ✅ Có — `last_sgie_labels` tracking, bypass on label change     |
+| **WSL support**              | `is_running_on_wsl()` — skip GPU encode khi WSL                  | Không cần — container-native                                    |
+| **Payload hash dedup**       | Tracked nhưng không suppress heartbeat trong V2                  | Có — suppress duplicate heartbeat khi object đứng yên           |
+| **hb_seq publish**           | Chỉ khi Heartbeat (conditional field push)                       | Luôn có trong mọi pub_type                                      |
+| **Memory stats**             | Không log                                                        | `log_memory_stats()` mỗi cleanup cycle                          |
+| **Emergency hard limit**     | Không có explicit limit                                          | 5000 objects — full map clear khi vượt                          |
+| **Source dims**              | `frame_meta->source_frame_width/Height`                          | Đọc từ `NvBufSurface` (actual GPU buffer)                       |
+| **Redis reconnect tracking** | `is_connected()` check trước/sau mỗi send                        | Log warning khi send fail, không re-check mỗi msg               |
 
 ---
 
@@ -561,7 +577,7 @@ Vms-engine giữ nguyên tất cả design decisions quan trọng của lantanav
 | Token bucket bypass           | `BURST_MAX=3`, `TOKEN_REFILL_NS=5s`                                                                                                                                                                                                       |
 | Batch-accumulate-then-publish | Accumulate → `nvds_obj_enc_finish()` → publish                                                                                                                                                                                            |
 | Full-frame dedup per batch    | Chỉ encode 1 lần mỗi `frame_num` mỗi batch                                                                                                                                                                                                |
-| 4 state maps + stale cleanup  | `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`                                                                                                                                                                    |
+| 5 state maps + stale cleanup  | `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`, `child_parent_oid_cache_`                                                                                                                                         |
 | Exit messages                 | Publish metadata-only khi stale cleanup xóa object                                                                                                                                                                                        |
 | `mid` / `prev_mid` chain      | UUIDv7 message ID + prev_mid cho event correlation                                                                                                                                                                                        |
 | cudaDeviceSynchronize         | Sync trước encode để tránh partial GPU buffer                                                                                                                                                                                             |
@@ -678,9 +694,15 @@ NvBufSurface phản ánh chính xác kích thước buffer GPU mà encoder thự
 
 #### A. Parent-Child Object Grouping
 
-lantanav2 nhóm parent (PGIE) + children (SGIE classifier kết quả) vào một `GroupData`. FirstSeen/Exit được trigger dựa trên child presence (khi object có children SGIE active hay không). Publish là **cặp parent + child**, không phải riêng lẻ.
+lantanav2 nhóm parent (PGIE) + children (SGIE) theo `GroupData` và xử lý theo thứ tự parent trước child.
 
-vms-engine chỉ có PGIE — mỗi object xử lý độc lập. Parent fields (`parent_object_key`, `parent`, `parent_instance_key`) giữ `""` làm placeholder cho khi SGIE được thêm vào sau.
+vms-engine hiện tại cũng đã áp dụng group-based 2-pass tương tự (`ObjectGroup`):
+
+- Pass 1: build groups theo `parent_tid`
+- Pass 2: `process_object(parent)` rồi mới `process_object(children)`
+- **Strict default**: nếu parent không publish trong frame đó (filter/throttle/dedup), toàn bộ children của group bị skip publish
+- Có fallback cache `child_parent_oid_cache_` để giữ linkage khi `obj->parent` bị null sau tracker
+- Child publish dùng `parent_tid_hint` từ group context, không phụ thuộc hoàn toàn vào con trỏ `obj->parent`
 
 #### B. ChildPresenceStateV2 Hysteresis
 
@@ -691,15 +713,16 @@ lantanav2:
   ↕ Không fire khi child presence chưa stable (chống noise)
 
 vms-engine:
-  FirstSeen ← khi tracker ID chưa có trong object_keys_ (ngay lập tức)
+  FirstSeen ← khi tracker ID chưa có trong object state (ngay lập tức)
   Exit      ← khi PTS không cập nhật quá stale_object_timeout_min
+  Parent linkage SGIE vẫn được duy trì qua `child_parent_oid_cache_` + `parent_tid_hint`
 ```
 
 Hysteresis của lantanav2 phù hợp với use case SGIE-driven (ví dụ: "vehicle has license plate"). vms-engine dùng PTS-based approach phù hợp với PGIE-only pipeline.
 
 #### C. ChildPresenceStateV2 Hysteresis — Bypass Khi Child Presence Thay Đổi
 
-lantanav2 track child presence (có/không có SGIE-detected child objects) qua các frame và áp dụng hysteresis threshold trước khi fire FirstSeen/Exit. vms-engine không có child-presence concept — FirstSeen/Exit dựa thuần trên tracker ID và PTS staleness.
+lantanav2 track child presence (có/không có SGIE-detected child objects) qua các frame và áp dụng hysteresis threshold trước khi fire FirstSeen/Exit. vms-engine không có child-presence layer riêng — FirstSeen/Exit dựa trên tracker ID + PTS staleness, nhưng đã bổ sung parent-link fallback để ổn định SGIE child publish.
 
 > **Lưu ý**: vms-engine đã implement **label-change bypass** tương đương `LabelStateV2` của lantanav2 thông qua `last_sgie_labels` tracking trong `ObjectPubState`. Bypass fires khi SGIE label string thay đổi giữa 2 lần check (cùng nguyên lý, không cần ChildPresence layer).
 

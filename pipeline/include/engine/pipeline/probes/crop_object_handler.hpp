@@ -79,9 +79,14 @@ struct ObjectPubState {
     uint64_t heartbeat_seq = 0;                           ///< Heartbeat sequence counter
     std::size_t last_payload_hash = 0;                    ///< Hash for heartbeat dedup
     std::string last_message_id;                          ///< Last published message ID
-    int bypass_tokens = 0;                                ///< Token bucket for burst captures
-    GstClockTime last_refill_pts = GST_CLOCK_TIME_NONE;   ///< PTS of last token refill
-    std::string last_sgie_labels;  ///< Last published SGIE label string (bypass on change)
+    std::string last_instance_key;     ///< Last published instance_key (UUIDv7 per capture)
+    uint64_t last_seen_frame_num = 0;  ///< Last observed frame_num for ON-frame hysteresis
+    int on_stable_count = 0;           ///< Consecutive observed frames for ON stability
+    int bypass_tokens = 0;             ///< Token bucket for burst captures
+    GstClockTime last_refill_pts = GST_CLOCK_TIME_NONE;  ///< PTS of last token refill
+    std::string last_sgie_labels;     ///< Last published SGIE label string (bypass on change)
+    std::string pending_sgie_labels;  ///< Candidate changed signature awaiting stability
+    int pending_label_count = 0;      ///< Consecutive frames for pending_sgie_labels
 };
 
 // ============================================================================
@@ -160,6 +165,14 @@ class CropObjectHandler {
     int check_interval_batches_ = 30;   ///< Cleanup check every N batches
     int old_dirs_max_days_ = 7;         ///< Delete daily dirs older than N days (0=disabled)
 
+    // Publish decision tuning (configurable from event handler YAML)
+    int burst_max_ = 3;
+    int k_on_frames_ = 5;
+    int k_off_frames_ = 2;
+    int k_label_frames_ = 5;
+    uint64_t token_refill_ns_ = 5'000'000'000ULL;
+    uint64_t bypass_min_gap_ns_ = 1'000'000'000ULL;
+
     // Camera name lookup: source_id -> camera name
     std::unordered_map<int, std::string> source_id_to_name_;
 
@@ -186,6 +199,21 @@ class CropObjectHandler {
     std::unordered_map<uint64_t, GstClockTime> object_last_seen_;  ///< Last PTS per tracker ID
     std::unordered_map<uint64_t, GstClockTime> last_capture_pts_;  ///< Last capture PTS per object
     std::unordered_map<uint64_t, ObjectPubState> pub_state_;       ///< Publish state per object
+
+    /**
+     * @brief Persistent SGIE child → PGIE parent object_id mapping (keyed by tracker_id).
+     *
+     * After nvtracker processes the batch, DeepStream does NOT guarantee that
+     * obj->parent remains non-null for SGIE child objects (e.g. LP).  This map
+     * is populated whenever we observe an explicit obj->parent pointer, and is
+     * consulted in subsequent frames when that pointer is null so the child is
+     * still grouped with — and references — its correct parent.
+     *
+     * Entries are erased when the child object becomes stale (same lifecycle as
+     * object_last_seen_).
+     */
+    std::unordered_map<uint64_t, uint64_t>
+        child_parent_oid_cache_;  ///< compose_key(src, child_tid) → parent_tid
 
     // -- Batch State (reset per batch) ---------------------------------------
     /** @brief Full-frame paths already captured this batch (keyed by frame_num). */
@@ -216,6 +244,10 @@ class CropObjectHandler {
         std::string source_name;
         std::string object_key;
         std::string instance_key;
+        std::string
+            parent_object_key;  ///< Parent's persistent UUID (empty if no parent / PGIE obj)
+        std::string parent_instance_key;  ///< Parent's per-batch instance UUID (empty if no parent)
+        std::string parent_id_str;  ///< Parent's tracker_id as decimal string (empty if no parent)
         int class_id;
         std::string label;   ///< PGIE class name (obj_label)
         std::string labels;  ///< SGIE classifier results: "label:id:prob|..." (empty if no SGIE)
@@ -252,10 +284,13 @@ class CropObjectHandler {
      * @brief Determine whether this object should be captured and what publish type.
      *
      * Decision logic (in order):
-     *   1. FirstSeen — new object never captured before.
-     *   2. Heartbeat — capture interval elapsed.
-     *   3. Bypass — within capture interval, SGIE labels changed, and token available.
-     *   4. None — throttled and no label change (or no tokens).
+     *   1. ON hysteresis — object must appear for K_ON_FRAMES consecutive frames,
+     *      allowing at most K_OFF_FRAMES frame distance between observations.
+     *   2. FirstSeen — first publish after ON hysteresis is satisfied.
+     *   3. Heartbeat — capture interval elapsed.
+     *   4. Bypass — within capture interval, changed signature is stable for
+     *      K_LABEL_FRAMES consecutive frames, token available, and debounce gap passed.
+     *   5. None — otherwise.
      *
      * Bypass is modelled after lantanav2 LabelStateV2: fires only when SGIE labels
      * change between publishes, consuming one burst token. This avoids spamming
@@ -264,10 +299,11 @@ class CropObjectHandler {
      * @param key          compose_key(source_id, tracker_id)
      * @param current_pts  Current buffer PTS.
      * @param sgie_labels  Current SGIE label string (empty if no SGIE running).
+     * @param frame_num    Current frame number for ON hysteresis tracking.
      * @return PubDecisionType::FirstSeen, Heartbeat, Bypass, or None.
      */
     PubDecisionType decide_capture(uint64_t key, GstClockTime current_pts,
-                                   const std::string& sgie_labels);
+                                   const std::string& sgie_labels, uint64_t frame_num);
 
     /**
      * @brief Compute a payload hash for dedup (class_id + bbox + label + sgie_labels).
@@ -364,25 +400,19 @@ class CropObjectHandler {
 
     // -- Token Bucket (Bypass) -----------------------------------------------
 
-    /** @brief Maximum bypass tokens per object (burst capacity). */
-    static constexpr int BURST_MAX = 3;
-
-    /** @brief Token refill interval in nanoseconds (5 seconds). */
-    static constexpr uint64_t TOKEN_REFILL_NS = 5'000'000'000ULL;
-
     /**
      * @brief Refill bypass tokens based on elapsed PTS time.
      * @param state  Per-object publish state (modified in place).
      * @param now_pts Current PTS timestamp.
      */
-    static void refill_tokens(ObjectPubState& state, GstClockTime now_pts);
+    void refill_tokens(ObjectPubState& state, GstClockTime now_pts);
 
     /**
      * @brief Attempt to consume one bypass token.
      * @param state  Per-object publish state (modified in place).
      * @return true if a token was consumed (bypass allowed).
      */
-    static bool attempt_bypass(ObjectPubState& state);
+    bool attempt_bypass(ObjectPubState& state);
 };
 
 }  // namespace engine::pipeline::probes

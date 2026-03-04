@@ -32,7 +32,7 @@ version: "1.0.0"
 # Pipeline-level metadata
 # -----------------------------------------------------------------------------
 pipeline:
-  id: "de1"
+  id: "lpr"
   name: "Intrusion Detection Pipeline"
   log_level: "DEBUG" # DEBUG | INFO | WARN | ERROR
   gst_log_level: "*:1" # GStreamer log categories, e.g. "*:3,GST_PADS:5"
@@ -55,7 +55,6 @@ queue_defaults:
 # Events published by probe handlers (on_detect, crop_objects, etc.) are sent here.
 # Omit this block entirely to disable publishing (no-op mode).
 # type: "redis" | "kafka"   (kafka is a stub — not yet production-ready)
-# Handlers publish to a channel specified by the `channel` field (falls back to handler `id` if omitted).
 # -----------------------------------------------------------------------------
 messaging:
   type: redis
@@ -77,7 +76,7 @@ sources:
   #                >0 = enable on that port (DS default is 9000)
   # Use the REST API to add/remove streams at runtime via HTTP POST.
   rest_api_port: 9876 # enable DeepStream REST API on this port
-  max_batch_size: 4 # max number of sources to mux (NOT batch_size)
+  max_batch_size: 1 # max number of sources to mux (NOT batch_size)
   mode: 0 # 0=video-only  1=audio-only
 
   # --- Section 2: per-source nvurisrcbin properties ---
@@ -105,13 +104,7 @@ sources:
 
   cameras:
     - id: camera-ah
-      uri: rtsp://192.168.1.99:18554/kho
-    - id: camera-hanh-trinh
-      uri: rtsp://192.168.1.99:18554/traffic1
-    - id: djuong-5
-      uri: rtsp://192.168.1.99:18554/test_video
-    - id: san
-      uri: rtsp://192.168.1.99:18554/traffic2
+      uri: rtsp://192.168.1.99:18554/bien_so
 
   # Smart Record — flat integer enum properties on nvmultiurisrcbin
   # NOTE: smart_rec_video_cache is DEPRECATED — use smart_rec_cache instead
@@ -138,7 +131,7 @@ sources:
 # =============================================================================
 processing:
   elements:
-    - id: pgie_detection
+    - id: pgie_phat-hien-nguoi-xe_DETECTION
       type: nvinfer # nvinfer (TensorRT) | nvinferserver (Triton)
       role: primary_inference
       unique_id: 1 # gie-unique-id — identifies metadata downstream
@@ -146,6 +139,18 @@ processing:
       process_mode: 1 # 1=Primary (full-frame) | 2=Secondary (per-object)
       # interval: 3 # skip N batches between inferences (0 = every frame)
       # batch_size: 4 # must equal sources.max_batch_size
+      gpu_id: 0
+      queue: {} # → queue before pgie (use defaults)
+
+    - id: sgie_phat-hien-bien-so-xe_DETECTION
+      type: nvinfer # nvinfer (TensorRT) | nvinferserver (Triton)
+      role: secondary_inference
+      unique_id: 2 # gie-unique-id — identifies metadata downstream
+      config_file: "/opt/vms_engine/dev/pipeline_components/sgie_phat-hien-bien-so-xe_DETECTION/package_content/config_infer_engine_placeholder.yml"
+      process_mode: 2 # 1=Primary (full-frame) | 2=Secondary (per-object)
+      operate_on_gie_id: 1
+      operate_on_class_ids: "0;1;2;4"
+      # batch_size: 9 # can be larger (processes crops, not full frames)
       gpu_id: 0
       queue: {} # → queue before pgie (use defaults)
 
@@ -163,14 +168,14 @@ processing:
     # SGIE example — runs on objects detected by PGIE (process_mode: 2)
     # Uncomment and fill config_file to enable secondary inference.
     #
-    - id: sgie_classification
+    - id: sgie_nhan-dien-bien-so-vn_CLASSIFICATION
       type: nvinfer # nvinfer (TensorRT) | nvinferserver (Triton)
       role: secondary_inference
       unique_id: 3
-      config_file: "/opt/vms_engine/dev/pipeline_components/sgie_nhan-dien-nguoi_MULTILABEL_CLASSIFICATION/package_content/config_infer_engine_placeholder.yml"
+      config_file: "/opt/vms_engine/dev/pipeline_components/sgie_nhan-dien-bien-so-vn_CLASSIFICATION/package_content/config_infer_engine_placeholder.yml"
       process_mode: 2 # 2=Secondary: runs on objects, NOT full frames
-      operate_on_gie_id: 1 # only process objects detected by the GIE with unique_id=1
-      operate_on_class_ids: "3" # colon-separated class IDs from parent GIE to process
+      operate_on_gie_id: 2 # only process objects detected by the GIE with unique_id=1
+      operate_on_class_ids: "0" # colon-separated class IDs from parent GIE to process
       # batch_size: 9 # can be larger (processes crops, not full frames)
       gpu_id: 0
       queue: {}
@@ -189,8 +194,8 @@ visuals:
     - id: tiler
       type: nvmultistreamtiler
       gpu_id: 0
-      rows: 2
-      columns: 2
+      rows: 1
+      columns: 1
       width: 1920
       height: 1080
       queue: {} # → queue before tiler
@@ -245,7 +250,7 @@ outputs:
 
       - id: sink
         type: rtspclientsink
-        location: rtsp://192.168.1.99:8554/de1
+        location: rtsp://192.168.1.99:8554/lpr
         protocols: tcp # tcp | udp
         queue: {} # → queue after parser, before sink (use defaults)
 
@@ -300,9 +305,9 @@ event_handlers:
     source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
     trigger: smart_record
     channel: worker_lsr # Redis Stream / Kafka topic to publish smart-record events
-    label_filter: [bike, bus, car, person, truck]
+    label_filter: [bike, bus, car, lp, truck]
     pre_event_sec: 2 # seconds from cache before detection
-    post_event_sec: 13
+    post_event_sec: 15
     min_interval_sec: 2 # minimum gap between recordings per camera
 
   # ---------------------------------------------------------------------------
@@ -312,10 +317,10 @@ event_handlers:
   - id: crop_objects
     enable: true
     type: on_detect
-    probe_element: tracker
+    probe_element: sgie_nhan-dien-bien-so-vn_CLASSIFICATION
     trigger: crop_objects
     channel: worker_lsr_snap # Redis Stream / Kafka topic to publish crop events
-    label_filter: [bike, bus, car, person, truck]
+    label_filter: [bike, bus, car, lp, truck]
     save_dir: "/opt/vms_engine/dev/rec/objects"
     capture_interval_sec: 5 # min seconds between crops for the same track_id
     image_quality: 85 # JPEG quality 0–100

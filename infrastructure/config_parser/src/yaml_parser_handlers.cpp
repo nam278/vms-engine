@@ -15,6 +15,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
         return;
 
     using helpers::yaml_bool;
+    using helpers::yaml_double;
     using helpers::yaml_int;
     using helpers::yaml_str;
     using helpers::yaml_string_list;
@@ -46,6 +47,12 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
         handler.capture_interval_sec = yaml_int(h, "capture_interval_sec", 5);
         handler.image_quality = yaml_int(h, "image_quality", 85);
         handler.save_full_frame = yaml_bool(h, "save_full_frame", true);
+        handler.burst_max = yaml_int(h, "burst_max", 3);
+        handler.k_on_frames = yaml_int(h, "k_on_frames", 5);
+        handler.k_off_frames = yaml_int(h, "k_off_frames", 2);
+        handler.k_label_frames = yaml_int(h, "k_label_frames", 5);
+        handler.token_refill_sec = yaml_double(h, "token_refill_sec", 5.0);
+        handler.bypass_min_gap_sec = yaml_double(h, "bypass_min_gap_sec", 1.0);
 
         // Cleanup sub-section
         if (h["cleanup"] && h["cleanup"].IsMap()) {

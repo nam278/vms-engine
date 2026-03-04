@@ -101,6 +101,9 @@ GstPadProbeReturn ClassIdNamespaceHandler::process_restore(GstBuffer* buf) {
     if (!batch_meta)
         return GST_PAD_PROBE_OK;
 
+    int restored_by_marker = 0;
+    int restored_by_fallback = 0;
+
     for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
         auto* frame_meta = static_cast<NvDsFrameMeta*>(l_frame->data);
 
@@ -108,19 +111,37 @@ GstPadProbeReturn ClassIdNamespaceHandler::process_restore(GstBuffer* buf) {
             auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
 
             // Only restore if magic marker is present (was previously offset)
-            if (obj->misc_obj_info[0] != static_cast<gint64>(MAGIC_MARKER)) {
+            if (obj->misc_obj_info[0] == static_cast<gint64>(MAGIC_MARKER)) {
+                // Restore originals
+                obj->class_id = static_cast<gint>(obj->misc_obj_info[1]);
+                obj->unique_component_id = static_cast<gint>(obj->misc_obj_info[2]);
+
+                // Clear marker
+                obj->misc_obj_info[0] = 0;
+                obj->misc_obj_info[1] = 0;
+                obj->misc_obj_info[2] = 0;
+                restored_by_marker++;
                 continue;
             }
 
-            // Restore originals
-            obj->class_id = static_cast<gint>(obj->misc_obj_info[1]);
-            obj->unique_component_id = static_cast<gint>(obj->misc_obj_info[2]);
-
-            // Clear marker
-            obj->misc_obj_info[0] = 0;
-            obj->misc_obj_info[1] = 0;
-            obj->misc_obj_info[2] = 0;
+            // Fallback restore path:
+            // Some DeepStream elements (notably tracker/meta copy flows) may drop
+            // misc_obj_info marker fields. In that case, derive offset from the
+            // current unique_component_id and de-namespace class_id heuristically.
+            const int uid = static_cast<int>(obj->unique_component_id);
+            const int offset = compute_offset(uid);
+            if (offset > 0 && obj->class_id >= offset) {
+                obj->class_id = static_cast<gint>(obj->class_id - offset);
+                restored_by_fallback++;
+            }
         }
+    }
+
+    if (restored_by_fallback > 0) {
+        LOG_T(
+            "ClassIdNamespaceHandler [Restore]: restored by marker={}, by fallback={} "
+            "(marker lost on some objects)",
+            restored_by_marker, restored_by_fallback);
     }
 
     return GST_PAD_PROBE_OK;

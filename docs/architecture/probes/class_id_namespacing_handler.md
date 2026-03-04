@@ -78,7 +78,13 @@ handler.set_explicit_offsets({
 
 **Idempotency**: Probe Offset kiểm tra `misc_obj_info[0] == MAGIC_MARKER` — nếu đã đánh dấu thì **bỏ qua**, không offset lần 2. Điển hình khi pipeline state changes hoặc probe đính kèm nhiều lần.
 
-**Probe Restore** chỉ restore nếu magic marker tồn tại, rồi clear cả 3 slot về 0.
+**Probe Restore** ưu tiên restore theo magic marker (chuẩn), rồi clear cả 3 slot về 0.
+
+Ngoài ra có **fallback restore**: nếu marker bị mất (một số luồng copy metadata qua
+tracker có thể làm mất `misc_obj_info[]`), handler sẽ tính offset theo
+`unique_component_id` hiện tại và de-namespace `class_id` khi hợp lệ.
+Điều này tránh hiện tượng class_id offset (vd: 1000/2000/...) lọt xuống
+`smart_record` hoặc `crop_objects` dù đã bật `class_id_restore`.
 
 ---
 

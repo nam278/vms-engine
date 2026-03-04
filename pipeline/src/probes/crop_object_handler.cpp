@@ -83,6 +83,16 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
         old_dirs_max_days_ = handler.cleanup->old_dirs_max_days;
     }
 
+    // Publish decision tuning (all have safe defaults in EventHandlerConfig)
+    burst_max_ = std::max(0, handler.burst_max);
+    k_on_frames_ = std::max(1, handler.k_on_frames);
+    k_off_frames_ = std::max(1, handler.k_off_frames);
+    k_label_frames_ = std::max(1, handler.k_label_frames);
+    token_refill_ns_ = std::max<uint64_t>(
+        1ULL, static_cast<uint64_t>(std::max(0.0, handler.token_refill_sec) * GST_SECOND));
+    bypass_min_gap_ns_ =
+        static_cast<uint64_t>(std::max(0.0, handler.bypass_min_gap_sec) * GST_SECOND);
+
     // Channel name: empty = no publish
     broker_channel_ = handler.channel;
 
@@ -107,9 +117,11 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
 
     LOG_I(
         "CropObjectHandler: configured — labels={}, interval={}ns, quality={}, "
-        "full_frame={}, dir='{}', broker='{}', old_dirs_max_days={}",
+        "full_frame={}, dir='{}', broker='{}', old_dirs_max_days={}, "
+        "burst_max={}, k_on={}, k_off={}, k_label={}, token_refill_ns={}, bypass_gap_ns={}",
         label_filter_.size(), capture_interval_ns_, image_quality_, save_full_frame_,
-        save_dir_base_, broker_channel_, old_dirs_max_days_);
+        save_dir_base_, broker_channel_, old_dirs_max_days_, burst_max_, k_on_frames_,
+        k_off_frames_, k_label_frames_, token_refill_ns_, bypass_min_gap_ns_);
 }
 
 // ============================================================================
@@ -212,34 +224,168 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
         // Generate wall-clock timestamp string for file naming (once per frame)
         std::string rt_str = generate_realtime_str();
 
+        // Source name lookup (once per frame)
+        std::string source_name;
+        {
+            auto nit = source_id_to_name_.find(src_id);
+            source_name =
+                (nit != source_id_to_name_.end()) ? nit->second : fmt::format("source_{}", src_id);
+        }
+
+        // ----------------------------------------------------------------
+        // Pass 1: Build groups — order-independent scan of obj_meta_list.
+        // Mirrors lantanav2 V2's group-building pass:
+        //   obj->parent == nullptr  → PGIE parent: create/fill group.parent
+        //   obj->parent != nullptr  → SGIE child: push into group.children
+        // Whether parent or child appears first in DeepStream's list does not
+        // matter — ensure_group() creates a stub for any unseen parent.
+        // This makes Pass 2 completely order-independent of DeepStream internals.
+        // ----------------------------------------------------------------
+        struct ObjectGroup {
+            NvDsObjectMeta* parent = nullptr;
+            uint64_t parent_tid = UNTRACKED_OBJECT_ID;
+            std::vector<NvDsObjectMeta*> children;
+        };
+        std::vector<ObjectGroup> groups;
+        std::unordered_map<uint64_t, size_t> group_index;
+
+        auto ensure_group = [&](uint64_t pid) -> ObjectGroup& {
+            auto it = group_index.find(pid);
+            if (it == group_index.end()) {
+                ObjectGroup group{};
+                group.parent_tid = pid;
+                groups.push_back(group);
+                group_index.emplace(pid, groups.size() - 1);
+                return groups.back();
+            }
+            return groups[it->second];
+        };
+
+        // After nvtracker the obj->parent pointer of SGIE children (e.g. LP objects detected
+        // before the tracker) is NOT guaranteed to be non-null every frame.  We therefore:
+        //   a) record every explicit parent link into child_parent_oid_cache_ (persistent),
+        //   b) defer objects whose parent pointer is null but are known children from the cache,
+        //   c) after the main scan, attach deferred children to their parent groups if present.
+        std::vector<std::pair<NvDsObjectMeta*, uint64_t>> deferred_children;
+
         for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next) {
             auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
             if (!obj)
                 continue;
+            if (obj->object_id == UNTRACKED_OBJECT_ID)
+                continue;
 
-            const std::string label(obj->obj_label);
+            if (!obj->parent) {
+                // Could be a PGIE parent OR an SGIE child whose parent pointer was dropped
+                // by nvtracker.  Check the persistent cache.
+                uint64_t child_key = compose_key(src_id, obj->object_id);
+                auto cit = child_parent_oid_cache_.find(child_key);
+                if (cit != child_parent_oid_cache_.end()) {
+                    // Known child — defer until after the main scan so the parent group
+                    // has already been created (even if parent object appears later in list).
+                    deferred_children.emplace_back(obj, cit->second);
+                } else {
+                    // True PGIE / standalone parent
+                    auto& g = ensure_group(obj->object_id);
+                    if (!g.parent)
+                        g.parent = obj;
+                    g.parent_tid = obj->object_id;
+                }
+            } else {
+                // Explicit parent pointer — record in persistent cache and group.
+                NvDsObjectMeta* pm = obj->parent;
+                if (!pm || pm->object_id == UNTRACKED_OBJECT_ID)
+                    continue;
+                uint64_t child_key = compose_key(src_id, obj->object_id);
+                child_parent_oid_cache_[child_key] = pm->object_id;
+                auto& g = ensure_group(pm->object_id);
+                if (!g.parent)
+                    g.parent = pm;
+                g.parent_tid = pm->object_id;
+                g.children.push_back(obj);
+            }
+        }
 
-            // Extract SGIE classifier labels (empty string if no SGIE running)
-            std::string sgie_labels = build_sgie_labels(obj);
+        // Attach deferred children to parent groups. If parent object didn't appear in this frame,
+        // keep a parent-less group stub keyed by cached parent_tid so child still publishes with
+        // parent_object_key/parent_instance_key using cached linkage.
+        for (auto& [child_obj, cached_parent_tid] : deferred_children) {
+            auto& g = ensure_group(cached_parent_tid);
+            g.parent_tid = cached_parent_tid;
+            g.children.push_back(child_obj);
+        }
+
+        // ----------------------------------------------------------------
+        // Per-frame parent instance key map (keyed by parent object_id).
+        // Pre-populated from pub_state_.last_instance_key so that children
+        // always receive a valid parent_instance_key even when the parent
+        // object is heartbeat-deduped (not published) in this frame.
+        // If the parent IS published in this frame, the value is overwritten
+        // with the fresh instance_key via insert_or_assign in process_object.
+        // ----------------------------------------------------------------
+        std::unordered_map<uint64_t, std::string> frame_parent_inst_keys;
+        for (auto& g : groups) {
+            if (g.parent_tid == UNTRACKED_OBJECT_ID)
+                continue;
+            uint64_t pkey = compose_key(src_id, g.parent_tid);
+            auto sit = pub_state_.find(pkey);
+            if (sit != pub_state_.end() && !sit->second.last_instance_key.empty()) {
+                frame_parent_inst_keys.emplace(g.parent_tid, sit->second.last_instance_key);
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Pass 2: Process groups — parent first, then children.
+        // Mirrors lantanav2 V2:
+        //   prepare_encoding(group.parent, true)
+        //   for child in group.children: prepare_encoding(child, false)
+        // Guarantees pending_messages order: parent before its children,
+        // regardless of DeepStream obj_meta_list ordering.
+        // ----------------------------------------------------------------
+        auto process_object =
+            [&](NvDsObjectMeta* obj, bool is_parent_role, uint64_t parent_tid_hint,
+                bool has_forced_decision, PubDecisionType forced_decision,
+                const std::string* sgie_labels_override,
+                const std::string* decision_signature_override, bool skip_heartbeat_dedup) -> bool {
+            if (!obj)
+                return false;
+
+            const std::string label(obj->obj_label ? obj->obj_label : "");
+            if (label.empty())
+                return false;
+
+            uint64_t tracker_id = obj->object_id;
+            if (tracker_id == UNTRACKED_OBJECT_ID)
+                return false;
+
+            // Always update last_seen, even for filtered-out objects
+            update_object_last_seen(src_id, tracker_id, frame_pts);
+
+            // Extract SGIE classifier labels for payload (empty string if no SGIE running)
+            std::string sgie_labels =
+                sgie_labels_override ? *sgie_labels_override : build_sgie_labels(obj);
+            // Signature used for decision baseline tracking (can differ from payload labels,
+            // e.g. parent publishes parent-only labels but decision uses parent+children
+            // aggregate).
+            const std::string& decision_signature =
+                decision_signature_override ? *decision_signature_override : sgie_labels;
 
             // Label filter check
             if (!label_filter_.empty()) {
                 auto fit = std::find(label_filter_.begin(), label_filter_.end(), label);
                 if (fit == label_filter_.end())
-                    continue;
+                    return false;  // last_seen already updated above
             }
 
-            uint64_t tracker_id = obj->object_id;
             uint64_t key = compose_key(src_id, tracker_id);
 
-            // Always update last_seen (even when not capturing)
-            update_object_last_seen(src_id, tracker_id, frame_pts);
-
-            // Determine publish decision
-            PubDecisionType decision = decide_capture(key, frame_pts, sgie_labels);
-            if (decision == PubDecisionType::None) {
-                continue;
-            }
+            // Determine publish decision (auto or forced by parent-group policy)
+            PubDecisionType decision =
+                has_forced_decision ? forced_decision
+                                    : decide_capture(key, frame_pts, decision_signature,
+                                                     static_cast<uint64_t>(frame_meta->frame_num));
+            if (decision == PubDecisionType::None)
+                return false;
 
             // Compute payload hash for heartbeat dedup
             float left = obj->rect_params.left;
@@ -250,21 +396,63 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
             std::size_t payload_hash =
                 compute_payload_hash(obj->class_id, label, sgie_labels, left, top, width, height);
 
-            // Heartbeat dedup: skip if payload unchanged since last publish
             auto& pub = pub_state_[key];
-            if (decision == PubDecisionType::Heartbeat && payload_hash == pub.last_payload_hash) {
+            if (!skip_heartbeat_dedup && decision == PubDecisionType::Heartbeat &&
+                payload_hash == pub.last_payload_hash) {
                 LOG_T("CropObjectHandler: heartbeat dedup suppressed src={} tid={}", src_id,
                       tracker_id);
-                continue;
+                return false;
             }
 
-            // --- Commit: this object will be captured and published ---
-
+            // --- Commit: this object will be captured and published ---------
             std::string object_key = get_or_create_object_key(src_id, tracker_id);
             std::string instance_key = uuid_gen_.generate();
             last_capture_pts_[key] = frame_pts;
 
-            // Update pub state
+            // ----------------------------------------------------------------
+            // Parent fields
+            // If this is a parent-role object, register its instance_key in
+            // frame_parent_inst_keys so children processed after it can reuse
+            // the same UUID as parent_instance_key (tight V2 correlation).
+            // If this is a child, look up the parent's registered instance_key.
+            // ----------------------------------------------------------------
+            std::string parent_object_key;
+            std::string parent_instance_key;
+            std::string parent_id_str;
+
+            if (is_parent_role) {
+                // Update so children share this fresh instance_key as parent_instance_key.
+                // insert_or_assign overwrites the pre-populated fallback from pub_state_.
+                frame_parent_inst_keys.insert_or_assign(tracker_id, instance_key);
+            } else {
+                uint64_t parent_tid = UNTRACKED_OBJECT_ID;
+                if (parent_tid_hint != UNTRACKED_OBJECT_ID) {
+                    parent_tid = parent_tid_hint;
+                } else if (obj->parent && obj->parent->object_id != UNTRACKED_OBJECT_ID) {
+                    parent_tid = obj->parent->object_id;
+                }
+
+                if (parent_tid != UNTRACKED_OBJECT_ID) {
+                    parent_id_str = std::to_string(parent_tid);
+                    parent_object_key = get_or_create_object_key(src_id, parent_tid);
+
+                    // Reuse parent's instance_key if already processed; generate
+                    // fallback UUID if parent was filtered out and never registered.
+                    auto pit = frame_parent_inst_keys.find(parent_tid);
+                    if (pit != frame_parent_inst_keys.end()) {
+                        parent_instance_key = pit->second;
+                    } else {
+                        parent_instance_key = uuid_gen_.generate();
+                        frame_parent_inst_keys.emplace(parent_tid, parent_instance_key);
+                    }
+                    // Keep parent last_seen current to prevent premature stale-cleanup
+                    update_object_last_seen(src_id, parent_tid, frame_pts);
+                    LOG_T("CropObjectHandler: SGIE child tid={} → parent tid={} key={}", tracker_id,
+                          parent_tid, parent_object_key);
+                }
+            }
+
+            // Pub state update
             std::string prev_mid = pub.last_message_id;
             std::string message_id =
                 generate_message_id(src_id, frame_meta->frame_num, timestamp_ms);
@@ -277,17 +465,15 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
                 pub.heartbeat_seq++;
                 hb_seq = pub.heartbeat_seq;
             } else {
-                // Bypass: use current seq without incrementing
-                hb_seq = pub.heartbeat_seq;
+                hb_seq = pub.heartbeat_seq;  // Bypass: use current seq without incrementing
             }
             pub.last_publish_pts = frame_pts;
             pub.last_payload_hash = payload_hash;
             pub.last_message_id = message_id;
-            pub.last_sgie_labels = sgie_labels;  // Update after commit (baseline for next bypass)
+            pub.last_instance_key = instance_key;
+            pub.last_sgie_labels = decision_signature;
 
             // -- Crop Object -------------------------------------------------
-            // File naming: s{sid}_RT{realtime}_{label}_id{oid}.jpg
-            // Directory: {save_dir_base}/{YYYYMMDD}/ (flat, no src_N/ subdir)
             std::string safe_label = sanitize_label(label);
             std::string crop_filename =
                 fmt::format("s{}_RT{}_{}_id{}.jpg", src_id, rt_str, safe_label, tracker_id);
@@ -301,7 +487,7 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
                 enc_args.scaledWidth = 0;
                 enc_args.scaledHeight = 0;
                 enc_args.quality = image_quality_;
-                enc_args.isFrame = 0;  // Crop object, not full frame
+                enc_args.isFrame = 0;
                 std::snprintf(enc_args.fileNameImg, sizeof(enc_args.fileNameImg), "%s",
                               crop_path.c_str());
 
@@ -313,15 +499,13 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
                 }
             }
 
-            // -- Full Frame (once per source per batch) ----------------------
-            // File naming: s{sid}_RT{realtime}_frame_ff.jpg (lantanav2 aligned)
+            // -- Full Frame (once per frame_num per batch) -------------------
             std::string ff_path;
             uint64_t frame_num_key = static_cast<uint64_t>(frame_meta->frame_num);
 
             if (save_full_frame_) {
                 auto ff_it = full_frame_paths_this_batch_.find(frame_num_key);
                 if (ff_it != full_frame_paths_this_batch_.end()) {
-                    // Already captured for this frame number
                     ff_path = ff_it->second;
                 } else {
                     std::string ff_filename = fmt::format("s{}_RT{}_frame_ff.jpg", src_id, rt_str);
@@ -332,7 +516,7 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
                     ff_args.attachUsrMeta = FALSE;
                     ff_args.scaleImg = FALSE;
                     ff_args.quality = image_quality_;
-                    ff_args.isFrame = 1;  // Full frame
+                    ff_args.isFrame = 1;
                     std::snprintf(ff_args.fileNameImg, sizeof(ff_args.fileNameImg), "%s",
                                   ff_path.c_str());
 
@@ -346,50 +530,105 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
             }
 
             // -- Accumulate Pending Message ----------------------------------
-            std::string source_name;
-            auto name_it = source_id_to_name_.find(src_id);
-            if (name_it != source_id_to_name_.end()) {
-                source_name = name_it->second;
-            } else {
-                source_name = fmt::format("source_{}", src_id);
-            }
+            pending_messages.push_back(PendingMessage{src_id,
+                                                      source_name,
+                                                      object_key,
+                                                      instance_key,
+                                                      parent_object_key,
+                                                      parent_instance_key,
+                                                      parent_id_str,
+                                                      obj->class_id,
+                                                      label,
+                                                      std::move(sgie_labels),
+                                                      obj->confidence,
+                                                      tracker_id,
+                                                      left,
+                                                      top,
+                                                      width,
+                                                      height,
+                                                      relative_path(crop_path),
+                                                      relative_path(ff_path),
+                                                      timestamp_ms,
+                                                      static_cast<uint64_t>(frame_meta->frame_num),
+                                                      message_id,
+                                                      prev_mid,
+                                                      decision,
+                                                      pub_reason_for_type(decision),
+                                                      hb_seq,
+                                                      src_frame_w,
+                                                      src_frame_h,
+                                                      pipeline_width_,
+                                                      pipeline_height_});
 
-            pending_messages.push_back(PendingMessage{
-                src_id,
-                source_name,
-                object_key,
-                instance_key,
-                obj->class_id,
-                label,
-                std::move(sgie_labels),  // labels: SGIE classifier results
-                obj->confidence,
-                tracker_id,
-                left,
-                top,
-                width,
-                height,
-                relative_path(crop_path),  // fname (relative to save_dir_base)
-                relative_path(ff_path),    // fname_ff (relative to save_dir_base)
-                timestamp_ms,
-                static_cast<uint64_t>(frame_meta->frame_num),
-                message_id,
-                prev_mid,
-                decision,
-                pub_reason_for_type(decision),  // pub_reason string
-                hb_seq,
-                src_frame_w,      // source_frame_width
-                src_frame_h,      // source_frame_height
-                pipeline_width_,  // pipeline_width
-                pipeline_height_  // pipeline_height
-            });
-
-            // -- External Processing (label-rule-based HTTP enrichment) -----
+            // -- External Processing -----------------------------------------
             // MUST run while ip_surf is still mapped (before nvds_obj_enc_finish).
-            // The service uses its own NvDsObjEnc context (saveImg=FALSE),
-            // encodes in-memory JPEG, and dispatches a non-blocking API call.
             if (ext_proc_svc_) {
                 ext_proc_svc_->process_object(obj, frame_meta, ip_surf, source_name, instance_key,
                                               object_key);
+            }
+            return true;
+        };  // end process_object lambda
+
+        // Strict parent-driven group publish (default):
+        // 1) Decision is computed from parent object using a combined SGIE signature
+        //    (parent classify + aggregated child classify labels).
+        // 2) Parent publishes first.
+        // 3) Children publish ONLY when parent published, and inherit parent pub_type.
+        // This guarantees parent+children co-publish and aligned frame_num.
+        for (auto& group : groups) {
+            if (!group.parent || group.parent_tid == UNTRACKED_OBJECT_ID) {
+                continue;
+            }
+
+            std::vector<std::string> child_sgie_parts;
+            child_sgie_parts.reserve(group.children.size());
+            for (auto* child : group.children) {
+                if (!child || child->object_id == UNTRACKED_OBJECT_ID) {
+                    continue;
+                }
+                std::string child_sgie = build_sgie_labels(child);
+                if (!child_sgie.empty()) {
+                    child_sgie_parts.push_back(fmt::format("{}={}", child->object_id, child_sgie));
+                }
+            }
+            std::sort(child_sgie_parts.begin(), child_sgie_parts.end());
+
+            std::string child_sgie_agg;
+            for (size_t i = 0; i < child_sgie_parts.size(); ++i) {
+                if (i > 0)
+                    child_sgie_agg += "|";
+                child_sgie_agg += child_sgie_parts[i];
+            }
+
+            std::string parent_sgie = build_sgie_labels(group.parent);
+            std::string group_sgie_signature = parent_sgie;
+            if (!child_sgie_agg.empty()) {
+                group_sgie_signature += "||";
+                group_sgie_signature += child_sgie_agg;
+            }
+
+            uint64_t parent_key = compose_key(src_id, group.parent_tid);
+            PubDecisionType parent_decision =
+                decide_capture(parent_key, frame_pts, group_sgie_signature,
+                               static_cast<uint64_t>(frame_meta->frame_num));
+            if (parent_decision == PubDecisionType::None) {
+                continue;
+            }
+
+            // Parent payload labels must remain parent's own classifier labels only.
+            // Child classifier labels are used for group decision signature above,
+            // but are NOT merged into parent's published `labels` field.
+            const std::string* parent_publish_labels = parent_sgie.empty() ? nullptr : &parent_sgie;
+            bool parent_published =
+                process_object(group.parent, true, UNTRACKED_OBJECT_ID, true, parent_decision,
+                               parent_publish_labels, &group_sgie_signature, false);
+            if (!parent_published) {
+                continue;
+            }
+
+            for (auto* child : group.children) {
+                process_object(child, false, group.parent_tid, true, parent_decision, nullptr,
+                               nullptr, true);
             }
         }
     }
@@ -401,7 +640,8 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
 
     gst_buffer_unmap(buf, &map_info);
 
-    // Publish all accumulated messages AFTER nvds_obj_enc_finish
+    // Publish all accumulated messages AFTER nvds_obj_enc_finish.
+    // Order is guaranteed by group-based processing (parent pushed before children).
     if (!pending_messages.empty()) {
         publish_pending_messages(pending_messages);
     }
@@ -545,14 +785,31 @@ std::string CropObjectHandler::build_sgie_labels(NvDsObjectMeta* obj) {
 // ============================================================================
 
 PubDecisionType CropObjectHandler::decide_capture(uint64_t key, GstClockTime current_pts,
-                                                  const std::string& sgie_labels) {
-    // First-time: new object, always capture.
-    // Seed last_sgie_labels so the first subsequent bypass check has a baseline.
+                                                  const std::string& sgie_labels,
+                                                  uint64_t frame_num) {
+    auto& state = pub_state_[key];
+
+    // ON hysteresis: object/group must appear in k_on_frames_ observations.
+    // Allow up to k_off_frames_ frame distance between observations (jitter tolerance).
+    if (state.last_seen_frame_num > 0 && frame_num > state.last_seen_frame_num &&
+        (frame_num - state.last_seen_frame_num) <= static_cast<uint64_t>(k_off_frames_)) {
+        state.on_stable_count++;
+    } else {
+        state.on_stable_count = 1;
+    }
+    state.last_seen_frame_num = frame_num;
+
+    if (state.on_stable_count < k_on_frames_) {
+        return PubDecisionType::None;
+    }
+
+    // First publish after ON hysteresis is satisfied.
     auto cap_it = last_capture_pts_.find(key);
     if (cap_it == last_capture_pts_.end()) {
-        auto& state = pub_state_[key];
-        state.bypass_tokens = BURST_MAX;
+        state.bypass_tokens = burst_max_;
         state.last_sgie_labels = sgie_labels;  // Baseline — bypass fires on CHANGE from this
+        state.pending_sgie_labels.clear();
+        state.pending_label_count = 0;
         if (GST_CLOCK_TIME_IS_VALID(current_pts)) {
             state.last_refill_pts = current_pts;
         }
@@ -575,16 +832,38 @@ PubDecisionType CropObjectHandler::decide_capture(uint64_t key, GstClockTime cur
 
     // Check if capture interval has elapsed → Heartbeat
     if (elapsed >= capture_interval_ns_) {
-        auto& state = pub_state_[key];
         refill_tokens(state, current_pts);
+        state.pending_sgie_labels.clear();
+        state.pending_label_count = 0;
         return PubDecisionType::Heartbeat;
     }
 
-    // Within capture interval — bypass only on SGIE label change (lantanav2 LabelStateV2)
-    // Empty sgie_labels means no SGIE running — no bypass possible
-    auto& state = pub_state_[key];
+    // Within capture interval — bypass only on stable label/signature change.
     refill_tokens(state, current_pts);
-    if (!sgie_labels.empty() && sgie_labels != state.last_sgie_labels && attempt_bypass(state)) {
+
+    // Debounce bypass: prevent frame-by-frame bursts when signature jitters.
+    if (elapsed < bypass_min_gap_ns_) {
+        return PubDecisionType::None;
+    }
+
+    // No changed signature, reset pending label stability tracking.
+    if (sgie_labels.empty() || sgie_labels == state.last_sgie_labels) {
+        state.pending_sgie_labels.clear();
+        state.pending_label_count = 0;
+        return PubDecisionType::None;
+    }
+
+    // Label stability hysteresis: changed signature must persist k_label_frames_.
+    if (state.pending_sgie_labels == sgie_labels) {
+        state.pending_label_count++;
+    } else {
+        state.pending_sgie_labels = sgie_labels;
+        state.pending_label_count = 1;
+    }
+
+    if (state.pending_label_count >= k_label_frames_ && attempt_bypass(state)) {
+        state.pending_sgie_labels.clear();
+        state.pending_label_count = 0;
         return PubDecisionType::Bypass;
     }
 
@@ -736,6 +1015,7 @@ std::vector<CropObjectHandler::PendingMessage> CropObjectHandler::cleanup_stale_
             object_keys_.erase(key);
             last_capture_pts_.erase(key);
             pub_state_.erase(key);
+            child_parent_oid_cache_.erase(key);
             it = object_last_seen_.erase(it);
             ++removed;
         } else {
@@ -753,6 +1033,7 @@ std::vector<CropObjectHandler::PendingMessage> CropObjectHandler::cleanup_stale_
         object_last_seen_.clear();
         last_capture_pts_.clear();
         pub_state_.clear();
+        child_parent_oid_cache_.clear();
     }
 
     if (removed > 0) {
@@ -769,22 +1050,24 @@ std::vector<CropObjectHandler::PendingMessage> CropObjectHandler::cleanup_stale_
 
 void CropObjectHandler::log_memory_stats() const {
     // Approximate memory usage per map entry (key overhead + value)
-    // object_keys_:       8 (key) + ~56 (string SSO or heap) = ~64 bytes
-    // object_last_seen_:  8 (key) + 8 (GstClockTime)         = ~16 bytes
-    // last_capture_pts_:  8 (key) + 8 (GstClockTime)         = ~16 bytes
-    // pub_state_:         8 (key) + ~80 (ObjectPubState)       = ~88 bytes
+    // object_keys_:            8 (key) + ~56 (string SSO or heap) = ~64 bytes
+    // object_last_seen_:       8 (key) + 8 (GstClockTime)         = ~16 bytes
+    // last_capture_pts_:       8 (key) + 8 (GstClockTime)         = ~16 bytes
+    // pub_state_:              8 (key) + ~96 (ObjectPubState)      = ~104 bytes
+    // child_parent_oid_cache_: 8 (key) + 8 (uint64_t)             = ~16 bytes
 
     size_t n_keys = object_keys_.size();
     size_t n_seen = object_last_seen_.size();
     size_t n_pts = last_capture_pts_.size();
     size_t n_pub = pub_state_.size();
+    size_t n_cache = child_parent_oid_cache_.size();
 
-    size_t approx_kb = (n_keys * 64 + n_seen * 16 + n_pts * 16 + n_pub * 88) / 1024;
+    size_t approx_kb = (n_keys * 64 + n_seen * 16 + n_pts * 16 + n_pub * 104 + n_cache * 16) / 1024;
 
     LOG_I(
         "CropObjectHandler: memory stats — "
-        "object_keys={}, last_seen={}, capture_pts={}, pub_state={}, ~{}KB",
-        n_keys, n_seen, n_pts, n_pub, approx_kb);
+        "tracked={} last_seen={} capture_pts={} pub_state={} parent_cache={} ~{}KB",
+        n_keys, n_seen, n_pts, n_pub, n_cache, approx_kb);
 }
 
 // ============================================================================
@@ -821,10 +1104,10 @@ void CropObjectHandler::publish_pending_messages(const std::vector<PendingMessag
             msg["oid"] = m.tracker_id;
             msg["object_key"] = m.object_key;
 
-            // Parent fields — empty placeholders (future SGIE support)
-            msg["parent_object_key"] = "";
-            msg["parent"] = "";
-            msg["parent_instance_key"] = "";
+            // Parent fields (populated for SGIE child objects; empty for PGIE objects)
+            msg["parent_object_key"] = m.parent_object_key;
+            msg["parent"] = m.parent_id_str;
+            msg["parent_instance_key"] = m.parent_instance_key;
 
             // Classification
             msg["class"] = m.label;
@@ -986,7 +1269,7 @@ void CropObjectHandler::refill_tokens(ObjectPubState& state, GstClockTime now_pt
     if (!GST_CLOCK_TIME_IS_VALID(state.last_refill_pts)) {
         // First call for this object — initialize
         state.last_refill_pts = now_pts;
-        state.bypass_tokens = BURST_MAX;
+        state.bypass_tokens = burst_max_;
         return;
     }
 
@@ -995,9 +1278,9 @@ void CropObjectHandler::refill_tokens(ObjectPubState& state, GstClockTime now_pt
     }
 
     uint64_t elapsed = now_pts - state.last_refill_pts;
-    if (elapsed >= TOKEN_REFILL_NS) {
-        int tokens_to_add = static_cast<int>(elapsed / TOKEN_REFILL_NS);
-        state.bypass_tokens = std::min(state.bypass_tokens + tokens_to_add, BURST_MAX);
+    if (elapsed >= token_refill_ns_) {
+        int tokens_to_add = static_cast<int>(elapsed / token_refill_ns_);
+        state.bypass_tokens = std::min(state.bypass_tokens + tokens_to_add, burst_max_);
         state.last_refill_pts = now_pts;
     }
 }

@@ -254,6 +254,12 @@ struct EventHandlerConfig {
     int capture_interval_sec = 5;
     int image_quality = 85;
     bool save_full_frame = true;
+    int burst_max = 3;
+    int k_on_frames = 5;
+    int k_off_frames = 2;
+    int k_label_frames = 5;
+    double token_refill_sec = 5.0;
+    double bypass_min_gap_sec = 1.0;
     std::optional<CleanupConfig> cleanup;
 
     // External processing (e.g., face recognition via HTTP)
