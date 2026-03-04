@@ -10,7 +10,7 @@
  *   - Token bucket bypass for burst captures of newly-detected objects
  *   - Batched message publishing (accumulate -> encode -> finish -> publish)
  *   - Daily directory rotation (YYYYMMDD/) with lantanav2-aligned file naming
- *   - Robust cleanup: stale objects (with Exit publish), old dirs, emergency limit
+ *   - Robust cleanup: stale objects (with Exit metadata generation), old dirs, emergency limit
  *   - PTS-based capture throttling, sanitized file names
  *   - Message ID chain (mid / prev_mid) for event correlation
  *   - ExternalProcessorService integration: HTTP API enrichment per-object rule
@@ -269,10 +269,63 @@ class CropObjectHandler {
         int pipeline_height = 0;      ///< Streammux output height
     };
 
+    /**
+     * @brief Parent-child object group built from one frame's object metadata.
+     */
+    struct ObjectGroup {
+        NvDsObjectMeta* parent = nullptr;
+        uint64_t parent_tid = UNTRACKED_OBJECT_ID;
+        std::vector<NvDsObjectMeta*> children;
+    };
+
+    /**
+     * @brief Immutable per-frame context used by helper processing methods.
+     */
+    struct FrameProcessContext {
+        NvDsFrameMeta* frame_meta = nullptr;
+        int source_id = 0;
+        GstClockTime frame_pts = GST_CLOCK_TIME_NONE;
+        int64_t timestamp_ms = 0;
+        std::string source_name;
+        std::string realtime_str;
+        int source_frame_width = 0;
+        int source_frame_height = 0;
+    };
+
     // -- Internal Methods ----------------------------------------------------
 
     /** @brief Main processing logic for one batch buffer. */
     GstPadProbeReturn process_batch(GstBuffer* buf);
+
+    /** @brief Process one frame from batch metadata and append pending messages. */
+    void process_frame(const FrameProcessContext& frame_ctx, NvBufSurface* ip_surf,
+                       std::vector<PendingMessage>& pending_messages);
+
+    /** @brief Build parent-child object groups for a frame in an order-independent way. */
+    void build_object_groups(const FrameProcessContext& frame_ctx,
+                             std::vector<ObjectGroup>& groups);
+
+    /** @brief Build stable SGIE decision signature for a parent group. */
+    std::string build_group_sgie_signature(const ObjectGroup& group) const;
+
+    /** @brief Preload parent instance keys from previous publish state for this frame. */
+    std::unordered_map<uint64_t, std::string> build_parent_instance_key_cache(
+        const FrameProcessContext& frame_ctx, const std::vector<ObjectGroup>& groups) const;
+
+    /** @brief Resolve source name by source id with fallback naming. */
+    std::string resolve_source_name(int source_id) const;
+
+    /**
+     * @brief Encode and accumulate one object publish candidate.
+     * @return true if the object produced a pending message.
+     */
+    bool process_object_for_publish(
+        NvDsObjectMeta* obj, const FrameProcessContext& frame_ctx, bool is_parent_role,
+        uint64_t parent_tid_hint, bool has_forced_decision, PubDecisionType forced_decision,
+        const std::string* sgie_labels_override, const std::string* decision_signature_override,
+        bool skip_heartbeat_dedup,
+        std::unordered_map<uint64_t, std::string>& frame_parent_inst_keys,
+        std::vector<PendingMessage>& pending_messages, NvBufSurface* ip_surf);
 
     /** @brief Ensure daily directory exists (rotates on date change). */
     bool ensure_daily_dir();

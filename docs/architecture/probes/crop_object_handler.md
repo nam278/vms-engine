@@ -2,7 +2,7 @@
 
 ## 1. Tổng Quan
 
-`CropObjectHandler` là pad probe cắt (crop) detected objects từ GPU frame thành ảnh JPEG, sử dụng **NvDsObjEnc** CUDA-accelerated encoder. Handler publish metadata dạng JSON đến message broker (Redis Streams) để downstream consumers xử lý.
+`CropObjectHandler` là pad probe cắt (crop) detected objects từ GPU frame thành ảnh JPEG, sử dụng **NvDsObjEnc** CUDA-accelerated encoder. Handler publish metadata dạng JSON đến message broker (Redis Streams) để downstream consumers xử lý. Phần stale cleanup hiện vẫn tạo `Exit` metadata nội bộ nhưng chưa publish ra broker.
 
 ### Vai trò trong pipeline
 
@@ -35,6 +35,9 @@ Handler gắn vào `src` pad của element được chỉ định trong `probe_e
 3. Với mỗi group: xử lý parent trước, children sau theo **strict co-publish default** (parent phải publish thì child mới được publish cùng lượt)
 4. Gọi `nvds_obj_enc_finish()` — đảm bảo tất cả file JPEG đã ghi xong
 5. Publish tất cả pending messages đến broker
+6. Chạy maintenance định kỳ (stale cleanup, old dir cleanup, memory stats)
+
+> Ghi chú maintainability: implementation đã được tách theo phase `process_batch -> process_frame -> build_object_groups/process_object_for_publish` để giảm độ phình của hàm chính và dễ review từng bước.
 
 ---
 
@@ -184,6 +187,7 @@ Aligned với lantanav2 `LabelStateV2` pattern: burst capture khi object state t
 - Metadata-only: no crop/full-frame images
 - `fname` and `fname_ff` are empty strings
 - `pub_type = "exit"`, `pub_reason = "Object removed (stale cleanup)"`
+- Hiện tại các `Exit` messages này chỉ được tạo nội bộ từ `cleanup_stale_objects()` để phục vụ state lifecycle; chưa được gọi `publish_pending_messages()` ra broker.
 
 ### 3.2 Per-Object State (`ObjectPubState`)
 
@@ -481,10 +485,10 @@ Mỗi `check_interval_batches` batch:
 1. Iterate `object_last_seen_` — tìm entries có `(current_pts - last_seen) > timeout_ns`
 2. Tạo `PendingMessage` với `pub_type = "exit"` cho mỗi stale object (metadata-only, no image paths)
 3. Xóa đồng bộ state object: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`, và entry `child_parent_oid_cache_` cùng key compose
-4. Publish tất cả Exit messages
+4. Không publish Exit messages ra broker (current behavior)
 5. Log số lượng removed
 
-**Exit messages** cho phép downstream consumers biết khi object biến mất — dùng để close event timeline.
+> Nếu cần downstream close timeline theo `exit`, có thể bật lại publish cho vector trả về từ `cleanup_stale_objects()` trong `process_batch()`.
 
 ### 7.2 Emergency Hard Limit
 

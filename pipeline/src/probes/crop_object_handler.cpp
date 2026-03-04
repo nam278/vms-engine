@@ -191,7 +191,6 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
     // Batch-accumulate pattern: collect all pending messages, then publish after
     // nvds_obj_enc_finish() ensures all JPEG files are written to disk.
     std::vector<PendingMessage> pending_messages;
-    bool any_encoded = false;
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -207,430 +206,23 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
         if (!frame_meta)
             continue;
 
-        int src_id = static_cast<int>(frame_meta->source_id);
-
-        // Use frame PTS if valid, otherwise fall back to buffer PTS
-        GstClockTime frame_pts =
+        FrameProcessContext frame_ctx;
+        frame_ctx.frame_meta = frame_meta;
+        frame_ctx.source_id = static_cast<int>(frame_meta->source_id);
+        frame_ctx.frame_pts =
             GST_CLOCK_TIME_IS_VALID(frame_meta->buf_pts) ? frame_meta->buf_pts : batch_pts;
+        frame_ctx.timestamp_ms = timestamp_ms;
+        frame_ctx.source_name = resolve_source_name(frame_ctx.source_id);
+        frame_ctx.realtime_str = generate_realtime_str();
 
-        // Get source frame dimensions from NvBufSurface
-        int src_frame_w = 0;
-        int src_frame_h = 0;
         if (frame_meta->batch_id < ip_surf->numFilled) {
-            src_frame_w = static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].width);
-            src_frame_h = static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].height);
+            frame_ctx.source_frame_width =
+                static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].width);
+            frame_ctx.source_frame_height =
+                static_cast<int>(ip_surf->surfaceList[frame_meta->batch_id].height);
         }
 
-        // Generate wall-clock timestamp string for file naming (once per frame)
-        std::string rt_str = generate_realtime_str();
-
-        // Source name lookup (once per frame)
-        std::string source_name;
-        {
-            auto nit = source_id_to_name_.find(src_id);
-            source_name =
-                (nit != source_id_to_name_.end()) ? nit->second : fmt::format("source_{}", src_id);
-        }
-
-        // ----------------------------------------------------------------
-        // Pass 1: Build groups — order-independent scan of obj_meta_list.
-        // Mirrors lantanav2 V2's group-building pass:
-        //   obj->parent == nullptr  → PGIE parent: create/fill group.parent
-        //   obj->parent != nullptr  → SGIE child: push into group.children
-        // Whether parent or child appears first in DeepStream's list does not
-        // matter — ensure_group() creates a stub for any unseen parent.
-        // This makes Pass 2 completely order-independent of DeepStream internals.
-        // ----------------------------------------------------------------
-        struct ObjectGroup {
-            NvDsObjectMeta* parent = nullptr;
-            uint64_t parent_tid = UNTRACKED_OBJECT_ID;
-            std::vector<NvDsObjectMeta*> children;
-        };
-        std::vector<ObjectGroup> groups;
-        std::unordered_map<uint64_t, size_t> group_index;
-
-        auto ensure_group = [&](uint64_t pid) -> ObjectGroup& {
-            auto it = group_index.find(pid);
-            if (it == group_index.end()) {
-                ObjectGroup group{};
-                group.parent_tid = pid;
-                groups.push_back(group);
-                group_index.emplace(pid, groups.size() - 1);
-                return groups.back();
-            }
-            return groups[it->second];
-        };
-
-        // After nvtracker the obj->parent pointer of SGIE children (e.g. LP objects detected
-        // before the tracker) is NOT guaranteed to be non-null every frame.  We therefore:
-        //   a) record every explicit parent link into child_parent_oid_cache_ (persistent),
-        //   b) defer objects whose parent pointer is null but are known children from the cache,
-        //   c) after the main scan, attach deferred children to their parent groups if present.
-        std::vector<std::pair<NvDsObjectMeta*, uint64_t>> deferred_children;
-
-        for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next) {
-            auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
-            if (!obj)
-                continue;
-            if (obj->object_id == UNTRACKED_OBJECT_ID)
-                continue;
-
-            if (!obj->parent) {
-                // Could be a PGIE parent OR an SGIE child whose parent pointer was dropped
-                // by nvtracker.  Check the persistent cache.
-                uint64_t child_key = compose_key(src_id, obj->object_id);
-                auto cit = child_parent_oid_cache_.find(child_key);
-                if (cit != child_parent_oid_cache_.end()) {
-                    // Known child — defer until after the main scan so the parent group
-                    // has already been created (even if parent object appears later in list).
-                    deferred_children.emplace_back(obj, cit->second);
-                } else {
-                    // True PGIE / standalone parent
-                    auto& g = ensure_group(obj->object_id);
-                    if (!g.parent)
-                        g.parent = obj;
-                    g.parent_tid = obj->object_id;
-                }
-            } else {
-                // Explicit parent pointer — record in persistent cache and group.
-                NvDsObjectMeta* pm = obj->parent;
-                if (!pm || pm->object_id == UNTRACKED_OBJECT_ID)
-                    continue;
-                uint64_t child_key = compose_key(src_id, obj->object_id);
-                child_parent_oid_cache_[child_key] = pm->object_id;
-                auto& g = ensure_group(pm->object_id);
-                if (!g.parent)
-                    g.parent = pm;
-                g.parent_tid = pm->object_id;
-                g.children.push_back(obj);
-            }
-        }
-
-        // Attach deferred children to parent groups. If parent object didn't appear in this frame,
-        // keep a parent-less group stub keyed by cached parent_tid so child still publishes with
-        // parent_object_key/parent_instance_key using cached linkage.
-        for (auto& [child_obj, cached_parent_tid] : deferred_children) {
-            auto& g = ensure_group(cached_parent_tid);
-            g.parent_tid = cached_parent_tid;
-            g.children.push_back(child_obj);
-        }
-
-        // ----------------------------------------------------------------
-        // Per-frame parent instance key map (keyed by parent object_id).
-        // Pre-populated from pub_state_.last_instance_key so that children
-        // always receive a valid parent_instance_key even when the parent
-        // object is heartbeat-deduped (not published) in this frame.
-        // If the parent IS published in this frame, the value is overwritten
-        // with the fresh instance_key via insert_or_assign in process_object.
-        // ----------------------------------------------------------------
-        std::unordered_map<uint64_t, std::string> frame_parent_inst_keys;
-        for (auto& g : groups) {
-            if (g.parent_tid == UNTRACKED_OBJECT_ID)
-                continue;
-            uint64_t pkey = compose_key(src_id, g.parent_tid);
-            auto sit = pub_state_.find(pkey);
-            if (sit != pub_state_.end() && !sit->second.last_instance_key.empty()) {
-                frame_parent_inst_keys.emplace(g.parent_tid, sit->second.last_instance_key);
-            }
-        }
-
-        // ----------------------------------------------------------------
-        // Pass 2: Process groups — parent first, then children.
-        // Mirrors lantanav2 V2:
-        //   prepare_encoding(group.parent, true)
-        //   for child in group.children: prepare_encoding(child, false)
-        // Guarantees pending_messages order: parent before its children,
-        // regardless of DeepStream obj_meta_list ordering.
-        // ----------------------------------------------------------------
-        auto process_object =
-            [&](NvDsObjectMeta* obj, bool is_parent_role, uint64_t parent_tid_hint,
-                bool has_forced_decision, PubDecisionType forced_decision,
-                const std::string* sgie_labels_override,
-                const std::string* decision_signature_override, bool skip_heartbeat_dedup) -> bool {
-            if (!obj)
-                return false;
-
-            const std::string label(obj->obj_label ? obj->obj_label : "");
-            if (label.empty())
-                return false;
-
-            uint64_t tracker_id = obj->object_id;
-            if (tracker_id == UNTRACKED_OBJECT_ID)
-                return false;
-
-            // Always update last_seen, even for filtered-out objects
-            update_object_last_seen(src_id, tracker_id, frame_pts);
-
-            // Extract SGIE classifier labels for payload (empty string if no SGIE running)
-            std::string sgie_labels =
-                sgie_labels_override ? *sgie_labels_override : build_sgie_labels(obj);
-            // Signature used for decision baseline tracking (can differ from payload labels,
-            // e.g. parent publishes parent-only labels but decision uses parent+children
-            // aggregate).
-            const std::string& decision_signature =
-                decision_signature_override ? *decision_signature_override : sgie_labels;
-
-            // Label filter check
-            if (!label_filter_.empty()) {
-                auto fit = std::find(label_filter_.begin(), label_filter_.end(), label);
-                if (fit == label_filter_.end())
-                    return false;  // last_seen already updated above
-            }
-
-            uint64_t key = compose_key(src_id, tracker_id);
-
-            // Determine publish decision (auto or forced by parent-group policy)
-            PubDecisionType decision =
-                has_forced_decision ? forced_decision
-                                    : decide_capture(key, frame_pts, decision_signature,
-                                                     static_cast<uint64_t>(frame_meta->frame_num));
-            if (decision == PubDecisionType::None)
-                return false;
-
-            // Compute payload hash for heartbeat dedup
-            float left = obj->rect_params.left;
-            float top = obj->rect_params.top;
-            float width = obj->rect_params.width;
-            float height = obj->rect_params.height;
-
-            std::size_t payload_hash =
-                compute_payload_hash(obj->class_id, label, sgie_labels, left, top, width, height);
-
-            auto& pub = pub_state_[key];
-            if (!skip_heartbeat_dedup && decision == PubDecisionType::Heartbeat &&
-                payload_hash == pub.last_payload_hash) {
-                LOG_T("CropObjectHandler: heartbeat dedup suppressed src={} tid={}", src_id,
-                      tracker_id);
-                return false;
-            }
-
-            // --- Commit: this object will be captured and published ---------
-            std::string object_key = get_or_create_object_key(src_id, tracker_id);
-            std::string instance_key = uuid_gen_.generate();
-            last_capture_pts_[key] = frame_pts;
-
-            // ----------------------------------------------------------------
-            // Parent fields
-            // If this is a parent-role object, register its instance_key in
-            // frame_parent_inst_keys so children processed after it can reuse
-            // the same UUID as parent_instance_key (tight V2 correlation).
-            // If this is a child, look up the parent's registered instance_key.
-            // ----------------------------------------------------------------
-            std::string parent_object_key;
-            std::string parent_instance_key;
-            std::string parent_id_str;
-
-            if (is_parent_role) {
-                // Update so children share this fresh instance_key as parent_instance_key.
-                // insert_or_assign overwrites the pre-populated fallback from pub_state_.
-                frame_parent_inst_keys.insert_or_assign(tracker_id, instance_key);
-            } else {
-                uint64_t parent_tid = UNTRACKED_OBJECT_ID;
-                if (parent_tid_hint != UNTRACKED_OBJECT_ID) {
-                    parent_tid = parent_tid_hint;
-                } else if (obj->parent && obj->parent->object_id != UNTRACKED_OBJECT_ID) {
-                    parent_tid = obj->parent->object_id;
-                }
-
-                if (parent_tid != UNTRACKED_OBJECT_ID) {
-                    parent_id_str = std::to_string(parent_tid);
-                    parent_object_key = get_or_create_object_key(src_id, parent_tid);
-
-                    // Reuse parent's instance_key if already processed; generate
-                    // fallback UUID if parent was filtered out and never registered.
-                    auto pit = frame_parent_inst_keys.find(parent_tid);
-                    if (pit != frame_parent_inst_keys.end()) {
-                        parent_instance_key = pit->second;
-                    } else {
-                        parent_instance_key = uuid_gen_.generate();
-                        frame_parent_inst_keys.emplace(parent_tid, parent_instance_key);
-                    }
-                    // Keep parent last_seen current to prevent premature stale-cleanup
-                    update_object_last_seen(src_id, parent_tid, frame_pts);
-                    LOG_T("CropObjectHandler: SGIE child tid={} → parent tid={} key={}", tracker_id,
-                          parent_tid, parent_object_key);
-                }
-            }
-
-            // Pub state update
-            std::string prev_mid = pub.last_message_id;
-            std::string message_id =
-                generate_message_id(src_id, frame_meta->frame_num, timestamp_ms);
-            uint64_t hb_seq = 0;
-
-            if (decision == PubDecisionType::FirstSeen) {
-                pub.heartbeat_seq = 0;
-                hb_seq = 0;
-            } else if (decision == PubDecisionType::Heartbeat) {
-                pub.heartbeat_seq++;
-                hb_seq = pub.heartbeat_seq;
-            } else {
-                hb_seq = pub.heartbeat_seq;  // Bypass: use current seq without incrementing
-            }
-            pub.last_publish_pts = frame_pts;
-            pub.last_payload_hash = payload_hash;
-            pub.last_message_id = message_id;
-            pub.last_instance_key = instance_key;
-            pub.last_sgie_labels = decision_signature;
-
-            // -- Crop Object -------------------------------------------------
-            std::string safe_label = sanitize_label(label);
-            std::string crop_filename =
-                fmt::format("s{}_RT{}_{}_id{}.jpg", src_id, rt_str, safe_label, tracker_id);
-            std::string crop_path = current_day_dir_ + "/" + crop_filename;
-
-            {
-                NvDsObjEncUsrArgs enc_args = {};
-                enc_args.saveImg = TRUE;
-                enc_args.attachUsrMeta = FALSE;
-                enc_args.scaleImg = FALSE;
-                enc_args.scaledWidth = 0;
-                enc_args.scaledHeight = 0;
-                enc_args.quality = image_quality_;
-                enc_args.isFrame = 0;
-                std::snprintf(enc_args.fileNameImg, sizeof(enc_args.fileNameImg), "%s",
-                              crop_path.c_str());
-
-                if (nvds_obj_enc_process(enc_ctx_, &enc_args, ip_surf, obj, frame_meta)) {
-                    any_encoded = true;
-                } else {
-                    LOG_W("CropObjectHandler: nvds_obj_enc_process failed for crop src={} tid={}",
-                          src_id, tracker_id);
-                }
-            }
-
-            // -- Full Frame (once per frame_num per batch) -------------------
-            std::string ff_path;
-            uint64_t frame_num_key = static_cast<uint64_t>(frame_meta->frame_num);
-
-            if (save_full_frame_) {
-                auto ff_it = full_frame_paths_this_batch_.find(frame_num_key);
-                if (ff_it != full_frame_paths_this_batch_.end()) {
-                    ff_path = ff_it->second;
-                } else {
-                    std::string ff_filename = fmt::format("s{}_RT{}_frame_ff.jpg", src_id, rt_str);
-                    ff_path = current_day_dir_ + "/" + ff_filename;
-
-                    NvDsObjEncUsrArgs ff_args = {};
-                    ff_args.saveImg = TRUE;
-                    ff_args.attachUsrMeta = FALSE;
-                    ff_args.scaleImg = FALSE;
-                    ff_args.quality = image_quality_;
-                    ff_args.isFrame = 1;
-                    std::snprintf(ff_args.fileNameImg, sizeof(ff_args.fileNameImg), "%s",
-                                  ff_path.c_str());
-
-                    if (nvds_obj_enc_process(enc_ctx_, &ff_args, ip_surf, obj, frame_meta)) {
-                        full_frame_paths_this_batch_[frame_num_key] = ff_path;
-                        any_encoded = true;
-                    } else {
-                        ff_path.clear();
-                    }
-                }
-            }
-
-            // -- Accumulate Pending Message ----------------------------------
-            pending_messages.push_back(PendingMessage{src_id,
-                                                      source_name,
-                                                      object_key,
-                                                      instance_key,
-                                                      parent_object_key,
-                                                      parent_instance_key,
-                                                      parent_id_str,
-                                                      obj->class_id,
-                                                      label,
-                                                      std::move(sgie_labels),
-                                                      obj->confidence,
-                                                      tracker_id,
-                                                      left,
-                                                      top,
-                                                      width,
-                                                      height,
-                                                      relative_path(crop_path),
-                                                      relative_path(ff_path),
-                                                      timestamp_ms,
-                                                      static_cast<uint64_t>(frame_meta->frame_num),
-                                                      message_id,
-                                                      prev_mid,
-                                                      decision,
-                                                      pub_reason_for_type(decision),
-                                                      hb_seq,
-                                                      src_frame_w,
-                                                      src_frame_h,
-                                                      pipeline_width_,
-                                                      pipeline_height_});
-
-            // -- External Processing -----------------------------------------
-            // MUST run while ip_surf is still mapped (before nvds_obj_enc_finish).
-            if (ext_proc_svc_) {
-                ext_proc_svc_->process_object(obj, frame_meta, ip_surf, source_name, instance_key,
-                                              object_key);
-            }
-            return true;
-        };  // end process_object lambda
-
-        // Strict parent-driven group publish (default):
-        // 1) Decision is computed from parent object using a combined SGIE signature
-        //    (parent classify + aggregated child classify labels).
-        // 2) Parent publishes first.
-        // 3) Children publish ONLY when parent published, and inherit parent pub_type.
-        // This guarantees parent+children co-publish and aligned frame_num.
-        for (auto& group : groups) {
-            if (!group.parent || group.parent_tid == UNTRACKED_OBJECT_ID) {
-                continue;
-            }
-
-            std::vector<std::string> child_sgie_parts;
-            child_sgie_parts.reserve(group.children.size());
-            for (auto* child : group.children) {
-                if (!child || child->object_id == UNTRACKED_OBJECT_ID) {
-                    continue;
-                }
-                std::string child_sgie = build_sgie_labels(child);
-                if (!child_sgie.empty()) {
-                    child_sgie_parts.push_back(fmt::format("{}={}", child->object_id, child_sgie));
-                }
-            }
-            std::sort(child_sgie_parts.begin(), child_sgie_parts.end());
-
-            std::string child_sgie_agg;
-            for (size_t i = 0; i < child_sgie_parts.size(); ++i) {
-                if (i > 0)
-                    child_sgie_agg += "|";
-                child_sgie_agg += child_sgie_parts[i];
-            }
-
-            std::string parent_sgie = build_sgie_labels(group.parent);
-            std::string group_sgie_signature = parent_sgie;
-            if (!child_sgie_agg.empty()) {
-                group_sgie_signature += "||";
-                group_sgie_signature += child_sgie_agg;
-            }
-
-            uint64_t parent_key = compose_key(src_id, group.parent_tid);
-            PubDecisionType parent_decision =
-                decide_capture(parent_key, frame_pts, group_sgie_signature,
-                               static_cast<uint64_t>(frame_meta->frame_num));
-            if (parent_decision == PubDecisionType::None) {
-                continue;
-            }
-
-            // Parent payload labels must remain parent's own classifier labels only.
-            // Child classifier labels are used for group decision signature above,
-            // but are NOT merged into parent's published `labels` field.
-            const std::string* parent_publish_labels = parent_sgie.empty() ? nullptr : &parent_sgie;
-            bool parent_published =
-                process_object(group.parent, true, UNTRACKED_OBJECT_ID, true, parent_decision,
-                               parent_publish_labels, &group_sgie_signature, false);
-            if (!parent_published) {
-                continue;
-            }
-
-            for (auto* child : group.children) {
-                process_object(child, false, group.parent_tid, true, parent_decision, nullptr,
-                               nullptr, true);
-            }
-        }
+        process_frame(frame_ctx, ip_surf, pending_messages);
     }
 
     // CRITICAL: Always call nvds_obj_enc_finish every batch to release accumulated
@@ -659,6 +251,365 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
     }
 
     return GST_PAD_PROBE_OK;
+}
+
+std::string CropObjectHandler::resolve_source_name(int source_id) const {
+    auto it = source_id_to_name_.find(source_id);
+    return (it != source_id_to_name_.end()) ? it->second : fmt::format("source_{}", source_id);
+}
+
+void CropObjectHandler::build_object_groups(const FrameProcessContext& frame_ctx,
+                                            std::vector<ObjectGroup>& groups) {
+    std::unordered_map<uint64_t, size_t> group_index;
+    std::vector<std::pair<NvDsObjectMeta*, uint64_t>> deferred_children;
+
+    auto ensure_group = [&](uint64_t parent_tid) -> ObjectGroup& {
+        auto it = group_index.find(parent_tid);
+        if (it == group_index.end()) {
+            ObjectGroup group{};
+            group.parent_tid = parent_tid;
+            groups.push_back(group);
+            group_index.emplace(parent_tid, groups.size() - 1);
+            return groups.back();
+        }
+        return groups[it->second];
+    };
+
+    for (NvDsMetaList* l_obj = frame_ctx.frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next) {
+        auto* obj = static_cast<NvDsObjectMeta*>(l_obj->data);
+        if (!obj || obj->object_id == UNTRACKED_OBJECT_ID) {
+            continue;
+        }
+
+        if (!obj->parent) {
+            uint64_t child_key = compose_key(frame_ctx.source_id, obj->object_id);
+            auto cached = child_parent_oid_cache_.find(child_key);
+            if (cached != child_parent_oid_cache_.end()) {
+                deferred_children.emplace_back(obj, cached->second);
+            } else {
+                auto& group = ensure_group(obj->object_id);
+                if (!group.parent)
+                    group.parent = obj;
+                group.parent_tid = obj->object_id;
+            }
+            continue;
+        }
+
+        auto* parent = obj->parent;
+        if (!parent || parent->object_id == UNTRACKED_OBJECT_ID) {
+            continue;
+        }
+
+        uint64_t child_key = compose_key(frame_ctx.source_id, obj->object_id);
+        child_parent_oid_cache_[child_key] = parent->object_id;
+
+        auto& group = ensure_group(parent->object_id);
+        if (!group.parent)
+            group.parent = parent;
+        group.parent_tid = parent->object_id;
+        group.children.push_back(obj);
+    }
+
+    for (auto& [child_obj, cached_parent_tid] : deferred_children) {
+        auto& group = ensure_group(cached_parent_tid);
+        group.parent_tid = cached_parent_tid;
+        group.children.push_back(child_obj);
+    }
+}
+
+std::unordered_map<uint64_t, std::string> CropObjectHandler::build_parent_instance_key_cache(
+    const FrameProcessContext& frame_ctx, const std::vector<ObjectGroup>& groups) const {
+    std::unordered_map<uint64_t, std::string> frame_parent_inst_keys;
+    for (const auto& group : groups) {
+        if (group.parent_tid == UNTRACKED_OBJECT_ID) {
+            continue;
+        }
+
+        uint64_t parent_key = compose_key(frame_ctx.source_id, group.parent_tid);
+        auto sit = pub_state_.find(parent_key);
+        if (sit != pub_state_.end() && !sit->second.last_instance_key.empty()) {
+            frame_parent_inst_keys.emplace(group.parent_tid, sit->second.last_instance_key);
+        }
+    }
+    return frame_parent_inst_keys;
+}
+
+std::string CropObjectHandler::build_group_sgie_signature(const ObjectGroup& group) const {
+    std::vector<std::string> child_sgie_parts;
+    child_sgie_parts.reserve(group.children.size());
+
+    for (auto* child : group.children) {
+        if (!child || child->object_id == UNTRACKED_OBJECT_ID) {
+            continue;
+        }
+        std::string child_sgie = build_sgie_labels(child);
+        if (!child_sgie.empty()) {
+            child_sgie_parts.push_back(fmt::format("{}={}", child->object_id, child_sgie));
+        }
+    }
+    std::sort(child_sgie_parts.begin(), child_sgie_parts.end());
+
+    std::string child_sgie_agg;
+    for (size_t i = 0; i < child_sgie_parts.size(); ++i) {
+        if (i > 0) {
+            child_sgie_agg += "|";
+        }
+        child_sgie_agg += child_sgie_parts[i];
+    }
+
+    std::string parent_sgie = build_sgie_labels(group.parent);
+    if (!child_sgie_agg.empty()) {
+        parent_sgie += "||";
+        parent_sgie += child_sgie_agg;
+    }
+
+    return parent_sgie;
+}
+
+bool CropObjectHandler::process_object_for_publish(
+    NvDsObjectMeta* obj, const FrameProcessContext& frame_ctx, bool is_parent_role,
+    uint64_t parent_tid_hint, bool has_forced_decision, PubDecisionType forced_decision,
+    const std::string* sgie_labels_override, const std::string* decision_signature_override,
+    bool skip_heartbeat_dedup, std::unordered_map<uint64_t, std::string>& frame_parent_inst_keys,
+    std::vector<PendingMessage>& pending_messages, NvBufSurface* ip_surf) {
+    if (!obj) {
+        return false;
+    }
+
+    const std::string label(obj->obj_label ? obj->obj_label : "");
+    if (label.empty()) {
+        return false;
+    }
+
+    uint64_t tracker_id = obj->object_id;
+    if (tracker_id == UNTRACKED_OBJECT_ID) {
+        return false;
+    }
+
+    update_object_last_seen(frame_ctx.source_id, tracker_id, frame_ctx.frame_pts);
+
+    std::string sgie_labels = sgie_labels_override ? *sgie_labels_override : build_sgie_labels(obj);
+    const std::string& decision_signature =
+        decision_signature_override ? *decision_signature_override : sgie_labels;
+
+    if (!label_filter_.empty()) {
+        auto fit = std::find(label_filter_.begin(), label_filter_.end(), label);
+        if (fit == label_filter_.end()) {
+            return false;
+        }
+    }
+
+    uint64_t key = compose_key(frame_ctx.source_id, tracker_id);
+
+    PubDecisionType decision =
+        has_forced_decision
+            ? forced_decision
+            : decide_capture(key, frame_ctx.frame_pts, decision_signature,
+                             static_cast<uint64_t>(frame_ctx.frame_meta->frame_num));
+    if (decision == PubDecisionType::None) {
+        return false;
+    }
+
+    float left = obj->rect_params.left;
+    float top = obj->rect_params.top;
+    float width = obj->rect_params.width;
+    float height = obj->rect_params.height;
+
+    std::size_t payload_hash =
+        compute_payload_hash(obj->class_id, label, sgie_labels, left, top, width, height);
+
+    auto& pub = pub_state_[key];
+    if (!skip_heartbeat_dedup && decision == PubDecisionType::Heartbeat &&
+        payload_hash == pub.last_payload_hash) {
+        LOG_T("CropObjectHandler: heartbeat dedup suppressed src={} tid={}", frame_ctx.source_id,
+              tracker_id);
+        return false;
+    }
+
+    std::string object_key = get_or_create_object_key(frame_ctx.source_id, tracker_id);
+    std::string instance_key = uuid_gen_.generate();
+    last_capture_pts_[key] = frame_ctx.frame_pts;
+
+    std::string parent_object_key;
+    std::string parent_instance_key;
+    std::string parent_id_str;
+
+    if (is_parent_role) {
+        frame_parent_inst_keys.insert_or_assign(tracker_id, instance_key);
+    } else {
+        uint64_t parent_tid = UNTRACKED_OBJECT_ID;
+        if (parent_tid_hint != UNTRACKED_OBJECT_ID) {
+            parent_tid = parent_tid_hint;
+        } else if (obj->parent && obj->parent->object_id != UNTRACKED_OBJECT_ID) {
+            parent_tid = obj->parent->object_id;
+        }
+
+        if (parent_tid != UNTRACKED_OBJECT_ID) {
+            parent_id_str = std::to_string(parent_tid);
+            parent_object_key = get_or_create_object_key(frame_ctx.source_id, parent_tid);
+
+            auto pit = frame_parent_inst_keys.find(parent_tid);
+            if (pit != frame_parent_inst_keys.end()) {
+                parent_instance_key = pit->second;
+            } else {
+                parent_instance_key = uuid_gen_.generate();
+                frame_parent_inst_keys.emplace(parent_tid, parent_instance_key);
+            }
+
+            update_object_last_seen(frame_ctx.source_id, parent_tid, frame_ctx.frame_pts);
+            LOG_T("CropObjectHandler: SGIE child tid={} → parent tid={} key={}", tracker_id,
+                  parent_tid, parent_object_key);
+        }
+    }
+
+    std::string prev_mid = pub.last_message_id;
+    std::string message_id = generate_message_id(
+        frame_ctx.source_id, frame_ctx.frame_meta->frame_num, frame_ctx.timestamp_ms);
+    uint64_t hb_seq = 0;
+
+    if (decision == PubDecisionType::FirstSeen) {
+        pub.heartbeat_seq = 0;
+        hb_seq = 0;
+    } else if (decision == PubDecisionType::Heartbeat) {
+        pub.heartbeat_seq++;
+        hb_seq = pub.heartbeat_seq;
+    } else {
+        hb_seq = pub.heartbeat_seq;
+    }
+
+    pub.last_publish_pts = frame_ctx.frame_pts;
+    pub.last_payload_hash = payload_hash;
+    pub.last_message_id = message_id;
+    pub.last_instance_key = instance_key;
+    pub.last_sgie_labels = decision_signature;
+
+    std::string safe_label = sanitize_label(label);
+    std::string crop_filename = fmt::format("s{}_RT{}_{}_id{}.jpg", frame_ctx.source_id,
+                                            frame_ctx.realtime_str, safe_label, tracker_id);
+    std::string crop_path = current_day_dir_ + "/" + crop_filename;
+
+    {
+        NvDsObjEncUsrArgs enc_args = {};
+        enc_args.saveImg = TRUE;
+        enc_args.attachUsrMeta = FALSE;
+        enc_args.scaleImg = FALSE;
+        enc_args.scaledWidth = 0;
+        enc_args.scaledHeight = 0;
+        enc_args.quality = image_quality_;
+        enc_args.isFrame = 0;
+        std::snprintf(enc_args.fileNameImg, sizeof(enc_args.fileNameImg), "%s", crop_path.c_str());
+
+        if (!nvds_obj_enc_process(enc_ctx_, &enc_args, ip_surf, obj, frame_ctx.frame_meta)) {
+            LOG_W("CropObjectHandler: nvds_obj_enc_process failed for crop src={} tid={}",
+                  frame_ctx.source_id, tracker_id);
+        }
+    }
+
+    std::string ff_path;
+    uint64_t frame_num_key = static_cast<uint64_t>(frame_ctx.frame_meta->frame_num);
+
+    if (save_full_frame_) {
+        auto ff_it = full_frame_paths_this_batch_.find(frame_num_key);
+        if (ff_it != full_frame_paths_this_batch_.end()) {
+            ff_path = ff_it->second;
+        } else {
+            std::string ff_filename =
+                fmt::format("s{}_RT{}_frame_ff.jpg", frame_ctx.source_id, frame_ctx.realtime_str);
+            ff_path = current_day_dir_ + "/" + ff_filename;
+
+            NvDsObjEncUsrArgs ff_args = {};
+            ff_args.saveImg = TRUE;
+            ff_args.attachUsrMeta = FALSE;
+            ff_args.scaleImg = FALSE;
+            ff_args.quality = image_quality_;
+            ff_args.isFrame = 1;
+            std::snprintf(ff_args.fileNameImg, sizeof(ff_args.fileNameImg), "%s", ff_path.c_str());
+
+            if (nvds_obj_enc_process(enc_ctx_, &ff_args, ip_surf, obj, frame_ctx.frame_meta)) {
+                full_frame_paths_this_batch_[frame_num_key] = ff_path;
+            } else {
+                ff_path.clear();
+            }
+        }
+    }
+
+    pending_messages.push_back(
+        PendingMessage{frame_ctx.source_id,
+                       frame_ctx.source_name,
+                       object_key,
+                       instance_key,
+                       parent_object_key,
+                       parent_instance_key,
+                       parent_id_str,
+                       obj->class_id,
+                       label,
+                       std::move(sgie_labels),
+                       obj->confidence,
+                       tracker_id,
+                       left,
+                       top,
+                       width,
+                       height,
+                       relative_path(crop_path),
+                       relative_path(ff_path),
+                       frame_ctx.timestamp_ms,
+                       static_cast<uint64_t>(frame_ctx.frame_meta->frame_num),
+                       message_id,
+                       prev_mid,
+                       decision,
+                       pub_reason_for_type(decision),
+                       hb_seq,
+                       frame_ctx.source_frame_width,
+                       frame_ctx.source_frame_height,
+                       pipeline_width_,
+                       pipeline_height_});
+
+    if (ext_proc_svc_) {
+        ext_proc_svc_->process_object(obj, frame_ctx.frame_meta, ip_surf, frame_ctx.source_name,
+                                      instance_key, object_key);
+    }
+
+    return true;
+}
+
+void CropObjectHandler::process_frame(const FrameProcessContext& frame_ctx, NvBufSurface* ip_surf,
+                                      std::vector<PendingMessage>& pending_messages) {
+    std::vector<ObjectGroup> groups;
+    build_object_groups(frame_ctx, groups);
+
+    auto frame_parent_inst_keys = build_parent_instance_key_cache(frame_ctx, groups);
+
+    for (const auto& group : groups) {
+        if (!group.parent || group.parent_tid == UNTRACKED_OBJECT_ID) {
+            continue;
+        }
+
+        const std::string group_sgie_signature = build_group_sgie_signature(group);
+        const std::string parent_sgie = build_sgie_labels(group.parent);
+
+        uint64_t parent_key = compose_key(frame_ctx.source_id, group.parent_tid);
+        PubDecisionType parent_decision =
+            decide_capture(parent_key, frame_ctx.frame_pts, group_sgie_signature,
+                           static_cast<uint64_t>(frame_ctx.frame_meta->frame_num));
+        if (parent_decision == PubDecisionType::None) {
+            continue;
+        }
+
+        const std::string* parent_publish_labels = parent_sgie.empty() ? nullptr : &parent_sgie;
+        bool parent_published = process_object_for_publish(
+            group.parent, frame_ctx, true, UNTRACKED_OBJECT_ID, true, parent_decision,
+            parent_publish_labels, &group_sgie_signature, false, frame_parent_inst_keys,
+            pending_messages, ip_surf);
+        if (!parent_published) {
+            continue;
+        }
+
+        for (auto* child : group.children) {
+            process_object_for_publish(child, frame_ctx, false, group.parent_tid, true,
+                                       parent_decision, nullptr, nullptr, true,
+                                       frame_parent_inst_keys, pending_messages, ip_surf);
+        }
+    }
 }
 
 // ============================================================================

@@ -258,6 +258,12 @@ struct ExternalProcessorService::Impl {
             // Publish with empty labels — still useful for logging/tracing
         }
 
+        if (result_val.empty()) {
+            LOG_D("ExternalProcessorService: skip publish ext_proc (empty result) label='{}'",
+                  label);
+            return;
+        }
+
         // ── Publish enrichment event ──────────────────────────────────────
         // Field structure mirrors lantanav2 ExternalProcessingServiceV2 so
         // downstream consumers (FastAPI, analytics) require no changes.
