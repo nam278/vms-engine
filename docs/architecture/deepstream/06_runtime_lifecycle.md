@@ -1,43 +1,66 @@
 # 06. Runtime Lifecycle — GstBus & Pipeline State Machine
 
+> **Phạm vi**: PipelineState machine, GstBus message routing, signal handling, RTSP reconnection, dynamic stream add/remove, restart logic, debugging.
+>
+> **Đọc trước**: [03_pipeline_building.md](03_pipeline_building.md) — pipeline phải build xong trước khi runtime lifecycle bắt đầu.
+
+---
+
+## Mục lục
+
+- [1. Tổng quan](#1-tổng-quan)
+- [2. PipelineState Machine](#2-pipelinestate-machine)
+- [3. GstBus — Message Routing](#3-gstbus--message-routing)
+- [4. Signal Handling — Graceful Shutdown](#4-signal-handling--graceful-shutdown)
+- [5. RTSP Source Reconnection](#5-rtsp-source-reconnection)
+- [6. Dynamic Stream Add/Remove](#6-dynamic-stream-addremove)
+- [7. Restart Logic](#7-restart-logic)
+- [8. PipelineInfo Query](#8-pipelineinfo-query)
+- [9. Debugging Runtime Issues](#9-debugging-runtime-issues)
+- [Tham chiếu chéo](#tham-chiếu-chéo)
+
+---
+
 ## 1. Tổng quan
 
-Sau khi pipeline được build, `PipelineManager` chịu trách nhiệm quản lý **toàn bộ vòng đời runtime**:
+Sau khi pipeline được build, `PipelineManager` quản lý **toàn bộ vòng đời runtime**:
 
 - Transition qua `PipelineState` machine
-- Xử lý messages từ `GstBus` (EOS, Error, State changes, Custom messages)
+- Xử lý messages từ `GstBus` (EOS, Error, State changes, Custom)
 - Graceful shutdown theo SIGINT/SIGTERM
 - Error recovery (retry logic)
 
+---
+
 ## 2. PipelineState Machine
 
-```
-    initialize()          start()           pause()
-         │                  │                  │
-         ▼                  ▼                  ▼
-  Uninitialized ──────► Ready ──────────► Playing ◄────────► Paused
-                                              │
-                                        stop() │ hoặc
-                                       error   │
-                                              ▼
-                                          Stopped / Error
+```mermaid
+stateDiagram-v2
+    [*] --> Uninitialized
+    Uninitialized --> Ready : initialize()
+    Ready --> Playing : start()
+    Playing --> Paused : pause()
+    Paused --> Playing : start()
+    Playing --> Stopped : stop()
+    Playing --> Error : error
+    Paused --> Stopped : stop()
+    Error --> Ready : restart (nếu retry_on_error)
+    Stopped --> [*]
+    Error --> Stopped : max_retries exceeded
 ```
 
-```cpp
-enum class PipelineState {
-    Uninitialized,   // Trước initialize()
-    Ready,           // Sau build thành công, chưa PLAYING
-    Playing,         // GST_STATE_PLAYING đang chạy
-    Paused,          // GST_STATE_PAUSED
-    Stopped,         // gst_element_set_state(NULL) đã gọi
-    Error            // Không recover được — log chi tiết
-};
-```
+| State | Meaning | GStreamer State |
+|-------|---------|----------------|
+| `Uninitialized` | Trước `initialize()` | — |
+| `Ready` | Build thành công, chưa play | `GST_STATE_READY` |
+| `Playing` | Pipeline đang xử lý video | `GST_STATE_PLAYING` |
+| `Paused` | Tạm dừng (buffer giữ nguyên) | `GST_STATE_PAUSED` |
+| `Stopped` | `set_state(NULL)` đã gọi | `GST_STATE_NULL` |
+| `Error` | Không recover được | — |
 
 ### State Transitions
 
 ```cpp
-// PipelineManager implementation
 bool PipelineManager::start() {
     if (state_ != PipelineState::Ready && state_ != PipelineState::Paused) {
         LOG_W("Cannot start from state: {}", to_string(state_.load()));
@@ -56,24 +79,16 @@ bool PipelineManager::start() {
     return true;
 }
 
-bool PipelineManager::pause() {
-    if (state_ != PipelineState::Playing) return false;
-    gst_element_set_state(pipeline_, GST_STATE_PAUSED);
-    state_ = PipelineState::Paused;
-    LOG_I("Pipeline '{}' → PAUSED", config_name_);
-    return true;
-}
-
 bool PipelineManager::stop() {
     LOG_I("Stopping pipeline '{}'", config_name_);
 
-    // 1. Loại bỏ bus watch trước
+    // 1. Remove bus watch trước
     if (bus_watch_id_ != 0) {
         g_source_remove(bus_watch_id_);
         bus_watch_id_ = 0;
     }
 
-    // 2. Set NULL state để giải phóng resources
+    // 2. Set NULL → giải phóng resources
     if (pipeline_) {
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
@@ -85,44 +100,55 @@ bool PipelineManager::stop() {
 }
 ```
 
+> 🔒 **Thứ tự cleanup**: Luôn `g_source_remove(bus_watch_id_)` **trước** `set_state(NULL)` — tránh callback chạy trên pipeline đang bị hủy.
+
+---
+
 ## 3. GstBus — Message Routing
 
-`GstBus` là kênh giao tiếp giữa GStreamer pipeline thread và application. `PipelineManager` đăng ký một `watch` callback để nhận và xử lý messages.
+`GstBus` là kênh giao tiếp giữa pipeline thread và application. `PipelineManager` đăng ký `watch` callback:
 
 ```cpp
 bool PipelineManager::initialize(PipelineConfig& config, GMainLoop* loop) {
     // ... build pipeline ...
-
-    // Set up GstBus watch
     GstBus* bus = gst_element_get_bus(pipeline_);
-
-    bus_watch_id_ = gst_bus_add_watch(
-        bus,
-        [](GstBus* bus, GstMessage* msg, gpointer data) -> gboolean {
-            auto* self = static_cast<PipelineManager*>(data);
-            return self->handle_bus_message(bus, msg);
-        },
-        this);
-
+    bus_watch_id_ = gst_bus_add_watch(bus,
+        [](GstBus*, GstMessage* msg, gpointer data) -> gboolean {
+            return static_cast<PipelineManager*>(data)->handle_bus_message(msg);
+        }, this);
     gst_object_unref(bus);
     main_loop_ = loop;
-
     state_ = PipelineState::Ready;
     return true;
 }
 ```
 
-### `handle_bus_message()` — Message Handler
+### Message Types
+
+```mermaid
+flowchart TD
+    BUS["GstBus Message"] --> |GST_MESSAGE_EOS| EOS["Handle EOS<br/>Loop or Stop"]
+    BUS --> |GST_MESSAGE_ERROR| ERR["Handle Error<br/>Retry or Quit"]
+    BUS --> |GST_MESSAGE_WARNING| WARN["Log Warning"]
+    BUS --> |GST_MESSAGE_STATE_CHANGED| STATE["Track State<br/>Export DOT Graph"]
+    BUS --> |GST_MESSAGE_APPLICATION| APP["Custom Messages<br/>SmartRecord / Stream events"]
+    BUS --> |GST_MESSAGE_ELEMENT| ELEM["Element Messages"]
+
+    style BUS fill:#4a9eff,color:#fff
+    style ERR fill:#ff6b6b,color:#fff
+    style EOS fill:#ffd93d,color:#333
+    style APP fill:#6c5ce7,color:#fff
+```
+
+### `handle_bus_message()` — Core Handler
 
 ```cpp
-gboolean PipelineManager::handle_bus_message(GstBus* bus, GstMessage* msg) {
+gboolean PipelineManager::handle_bus_message(GstBus*, GstMessage* msg) {
     switch (GST_MESSAGE_TYPE(msg)) {
 
-    // ── EOS (End of Stream) ────────────────────────────────────────────
     case GST_MESSAGE_EOS:
         LOG_I("EOS received on pipeline '{}'", config_name_);
         if (config_.sources.loop_on_eos) {
-            // Seek về đầu (cho file sources)
             gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
                 GST_SEEK_FLAG_FLUSH, 0);
         } else {
@@ -131,28 +157,26 @@ gboolean PipelineManager::handle_bus_message(GstBus* bus, GstMessage* msg) {
         }
         break;
 
-    // ── Error ─────────────────────────────────────────────────────────
     case GST_MESSAGE_ERROR: {
         GError* err = nullptr;
         gchar* debug_info = nullptr;
         gst_message_parse_error(msg, &err, &debug_info);
 
-        {
-            std::lock_guard<std::mutex> lock(error_mutex_);
-            last_error_ = fmt::format("{}: {}", err->message, debug_info ? debug_info : "");
-        }
+        { std::lock_guard<std::mutex> lock(error_mutex_);
+          last_error_ = fmt::format("{}: {}",
+              err->message, debug_info ? debug_info : ""); }
 
         LOG_E("GStreamer ERROR from '{}': {}",
               GST_OBJECT_NAME(msg->src), last_error_);
-
         g_clear_error(&err);
         g_free(debug_info);
 
         state_ = PipelineState::Error;
 
-        if (config_.pipeline.retry_on_error && retry_count_ < config_.pipeline.max_retries) {
+        if (config_.pipeline.retry_on_error &&
+            retry_count_ < config_.pipeline.max_retries) {
             ++retry_count_;
-            LOG_W("Attempting restart ({}/{})", retry_count_, config_.pipeline.max_retries);
+            LOG_W("Restart ({}/{})", retry_count_, config_.pipeline.max_retries);
             schedule_restart();
         } else {
             stop();
@@ -161,196 +185,140 @@ gboolean PipelineManager::handle_bus_message(GstBus* bus, GstMessage* msg) {
         break;
     }
 
-    // ── Warning ───────────────────────────────────────────────────────
-    case GST_MESSAGE_WARNING: {
-        GError* err = nullptr;
-        gchar* debug_info = nullptr;
-        gst_message_parse_warning(msg, &err, &debug_info);
-        LOG_W("GStreamer WARNING from '{}': {} ({})",
-              GST_OBJECT_NAME(msg->src), err->message, debug_info ? debug_info : "");
-        g_clear_error(&err);
-        g_free(debug_info);
-        break;
-    }
-
-    // ── State Changed ─────────────────────────────────────────────────
     case GST_MESSAGE_STATE_CHANGED: {
         if (GST_MESSAGE_SRC(msg) == GST_OBJECT(pipeline_)) {
             GstState old_state, new_state, pending;
             gst_message_parse_state_changed(msg, &old_state, &new_state, &pending);
-            LOG_D("Pipeline state: {} → {} (pending: {})",
+            LOG_D("Pipeline state: {} → {}",
                 gst_element_state_get_name(old_state),
-                gst_element_state_get_name(new_state),
-                gst_element_state_get_name(pending));
+                gst_element_state_get_name(new_state));
 
-            if (new_state == GST_STATE_PLAYING) {
-                // Export DOT graph khi pipeline đã PLAYING
-                if (!config_.pipeline.dot_file_dir.empty()) {
-                    GST_DEBUG_BIN_TO_DOT_FILE(
-                        GST_BIN(pipeline_),
-                        GST_DEBUG_GRAPH_SHOW_ALL,
-                        config_.pipeline.id.c_str());
-                    LOG_I("DOT graph exported to {}", config_.pipeline.dot_file_dir);
-                }
+            if (new_state == GST_STATE_PLAYING &&
+                !config_.pipeline.dot_file_dir.empty()) {
+                GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline_),
+                    GST_DEBUG_GRAPH_SHOW_ALL, config_.pipeline.id.c_str());
             }
         }
         break;
     }
 
-    // ── Custom Application Messages ───────────────────────────────────
     case GST_MESSAGE_APPLICATION: {
         const GstStructure* s = gst_message_get_structure(msg);
         const gchar* name = gst_structure_get_name(s);
-
-        if (g_strcmp0(name, "SmartRecordStarted") == 0) {
+        if (g_strcmp0(name, "SmartRecordStarted") == 0)
             handle_smart_record_started(s);
-        } else if (g_strcmp0(name, "SmartRecordStopped") == 0) {
+        else if (g_strcmp0(name, "SmartRecordStopped") == 0)
             handle_smart_record_stopped(s);
-        } else if (g_strcmp0(name, "StreamAdded") == 0) {
+        else if (g_strcmp0(name, "StreamAdded") == 0)
             handle_stream_added(s);
-        } else if (g_strcmp0(name, "StreamRemoved") == 0) {
+        else if (g_strcmp0(name, "StreamRemoved") == 0)
             handle_stream_removed(s);
-        }
         break;
     }
 
-    // ── Element Message (từ nvmultiurisrcbin, nvdssmartrecordbin) ──────
-    case GST_MESSAGE_ELEMENT: {
-        const GstStructure* s = gst_message_get_structure(msg);
-        if (s) {
-            const gchar* name = gst_structure_get_name(s);
-            LOG_D("Element message: {} from {}", name, GST_OBJECT_NAME(msg->src));
-        }
-        break;
+    default: break;
     }
-
-    default:
-        break;
-    }
-
-    return TRUE;  // Giữ watch (FALSE = remove watch)
+    return TRUE;  // Giữ watch (FALSE = remove)
 }
 ```
+
+---
 
 ## 4. Signal Handling — Graceful Shutdown
 
 ```cpp
 // app/main.cpp
-struct SignalContext {
-    PipelineManager* manager;
-    GMainLoop* loop;
-};
-
 static void setup_signal_handlers(PipelineManager* mgr, GMainLoop* loop) {
     static SignalContext ctx{mgr, loop};
 
     auto handler = [](int sig) {
-        LOG_I("Received signal {} — initiating graceful shutdown", sig);
+        LOG_I("Received signal {} — graceful shutdown", sig);
         ctx.manager->stop();
         if (ctx.loop) g_main_loop_quit(ctx.loop);
     };
 
     std::signal(SIGINT, handler);   // Ctrl+C
-    std::signal(SIGTERM, handler);  // systemctl stop / docker stop
+    std::signal(SIGTERM, handler);  // docker stop / systemctl stop
 }
 ```
 
+> 📋 **Docker stop**: Sends SIGTERM → handler gọi `stop()` → `set_state(NULL)` → clean exit.
+
+---
+
 ## 5. RTSP Source Reconnection
 
-`nvmultiurisrcbin` hỗ trợ auto-reconnect:
+`nvmultiurisrcbin` hỗ trợ auto-reconnect — không cần manual reconnect logic:
 
 ```yaml
 sources:
-  rtsp_reconnect_interval: 10 # Retry sau 10 giây nếu mất kết nối
+  rtsp_reconnect_interval: 10   # Retry sau 10 giây
+  rtsp_reconnect_attempts: -1   # -1 = retry forever
 ```
 
-Khi một camera mất kết nối:
+**Luồng**: Camera mất kết nối → `nvmultiurisrcbin` phát GstMessage lên bus → `PipelineManager` log warning → auto reconnect sau interval.
 
-1. `nvmultiurisrcbin` phát `GstMessage` lên bus
-2. `PipelineManager.handle_bus_message()` log warning
-3. `nvmultiurisrcbin` tự reconnect sau interval
+---
 
-Không cần manual reconnect logic trong application code.
+## 6. Dynamic Stream Add/Remove
 
-## 6. Dynamic Stream Add/Remove (CivetWeb REST API)
-
-`nvmultiurisrcbin` tích hợp sẵn HTTP server (**CivetWeb** / `nvds_rest_server`) cho phép thêm/bỏ camera **lúc pipeline đang chạy** mà không cần restart.
-
-> 📖 **Hướng dẫn đầy đủ**: xem [`10_rest_api.md`](10_rest_api.md)
-
-### Cấu hình
+`nvmultiurisrcbin` tích hợp CivetWeb HTTP server cho **runtime camera management** mà không restart pipeline.
 
 ```yaml
 sources:
-  rest_api_port: 9000 # 0=disable, >0=enable CivetWeb trên port đó
-  drop_pipeline_eos: true # BẮt buộc khi dùng dynamic add/remove
-  max_batch_size: 8 # Phải ≥ tổng số camera tối đa
+  rest_api_port: 9000        # 0=disable, >0=enable
+  drop_pipeline_eos: true    # BẮT BUỘC khi dynamic add/remove
+  max_batch_size: 8          # ≥ tổng cameras tối đa
 ```
-
-### Add stream
 
 ```bash
+# Add camera
 curl -XPOST 'http://localhost:9000/api/v1/stream/add' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "key": "sensor",
-    "value": {
-      "camera_id": "camera-03",
-      "camera_url": "rtsp://192.168.1.103:554/stream",
-      "change": "camera_add"
-    }
-  }'
-```
+  -d '{"key":"sensor","value":{"camera_id":"camera-03",
+       "camera_url":"rtsp://192.168.1.103:554/stream",
+       "change":"camera_add"}}'
 
-### Remove stream
-
-```bash
+# Remove camera
 curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "key": "sensor",
-    "value": {
-      "camera_id": "camera-03",
-      "camera_url": "rtsp://192.168.1.103:554/stream",
-      "change": "camera_remove"
-    }
-  }'
+  -d '{"key":"sensor","value":{"camera_id":"camera-03",
+       "camera_url":"rtsp://192.168.1.103:554/stream",
+       "change":"camera_remove"}}'
 ```
 
-### Notes
+> ⚠️ **DS8 SIGSEGV**: `ip-address` property gây crash — server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
 
-- `value.camera_id`, `value.camera_url`, `value.change` là **mandatory**
-- `change` phải chứa substring `"add"` hoặc `"remove"`
-- `ip-address` property gây **SIGSEGV** trong DS8 — server luôn bind `0.0.0.0`
-- Khi port mậu thuẫn: đổi `rest_api_port` hoặc dùng `rest_api_port: 0` để disable
+---
 
 ## 7. Restart Logic
 
 ```cpp
 void PipelineManager::schedule_restart() {
-    // Sử dụng GLib timeout để restart sau 2 giây
-    // (không trực tiếp từ bus callback — tránh deadlock)
+    // g_timeout — defer restart khỏi bus callback thread (tránh deadlock)
     g_timeout_add_seconds(2, [](gpointer data) -> gboolean {
         auto* self = static_cast<PipelineManager*>(data);
-
         LOG_I("Restarting pipeline...");
         gst_element_set_state(self->pipeline_, GST_STATE_NULL);
         gst_element_set_state(self->pipeline_, GST_STATE_PLAYING);
         self->state_ = PipelineState::Playing;
-
         return G_SOURCE_REMOVE;  // Chỉ run một lần
     }, this);
 }
 ```
+
+> ⚠️ **Không restart trực tiếp** trong bus callback — dùng `g_timeout_add_seconds` để defer, tránh deadlock trên pipeline thread.
+
+---
 
 ## 8. PipelineInfo Query
 
 ```cpp
 PipelineInfo PipelineManager::get_info() const {
     return PipelineInfo{
-        .id       = config_id_,
-        .name     = config_name_,
-        .state    = state_.load(),
+        .id     = config_id_,
+        .name   = config_name_,
+        .state  = state_.load(),
         .last_error = [&] {
             std::lock_guard<std::mutex> lock(error_mutex_);
             return last_error_;
@@ -361,31 +329,43 @@ PipelineInfo PipelineManager::get_info() const {
 }
 ```
 
+---
+
 ## 9. Debugging Runtime Issues
 
 ```bash
-# Monitor GStreamer state transitions
+# Monitor state transitions
 GST_DEBUG="GST_STATES:4" ./build/bin/vms_engine -c configs/default.yml
 
 # Monitor bus messages
-GST_DEBUG="GST_BUS:4" ./build/bin/vms_engine ...
+GST_DEBUG="GST_BUS:4" ./build/bin/vms_engine -c configs/default.yml
 
-# Full debug (rất verbose)
-GST_DEBUG="5" ./build/bin/vms_engine ...
-
-# Log DeepStream elements specifically
+# DeepStream elements (verbose)
 GST_DEBUG="nvinfer:5,nvtracker:4,nvmultiurisrcbin:3" ./build/bin/vms_engine ...
 
-# Check pipeline state manually (GDB)
+# GDB pipeline state
 (gdb) p gst_element_get_state(pipeline_, nullptr, nullptr, 0)
 ```
 
-### Common Runtime Error Messages
+### Common Runtime Errors
 
-| GStreamer Message                 | Nguyên nhân                      | Fix                                    |
-| --------------------------------- | -------------------------------- | -------------------------------------- |
-| `Could not decode stream`         | Codec không được support         | Check CUDA/codec support, GPU driver   |
-| `Internal data stream error`      | Buffer overflow hoặc decode fail | Giảm `batch_size`, tăng queue buffers  |
-| `Failed to connect to RTSP`       | Camera offline                   | Kiểm tra `rtsp_reconnect_interval`     |
-| `nvdsinfer: Failed to init model` | TensorRT engine fail             | Check TensorRT version, `.engine` file |
-| `nvtracker: Failed to init`       | Tracker `.so` không tương thích  | Check `DEEPSTREAM_DIR` và tracker path |
+| GStreamer Message | Nguyên nhân | Fix |
+|---|---|---|
+| `Could not decode stream` | Codec không supported | Check CUDA/codec, GPU driver |
+| `Internal data stream error` | Buffer overflow / decode fail | Giảm `batch_size`, tăng queue buffers |
+| `Failed to connect to RTSP` | Camera offline | Kiểm tra `rtsp_reconnect_interval` |
+| `nvdsinfer: Failed to init model` | TensorRT engine fail | Check TRT version, `.engine` file |
+| `nvtracker: Failed to init` | Tracker `.so` không tương thích | Check `DEEPSTREAM_DIR` + tracker path |
+
+---
+
+## Tham chiếu chéo
+
+| Tài liệu | Liên quan |
+|-----------|-----------|
+| [02_core_interfaces.md](02_core_interfaces.md) | IPipelineManager interface, PipelineState enum |
+| [03_pipeline_building.md](03_pipeline_building.md) | Pipeline phải build xong trước runtime |
+| [05_configuration.md](05_configuration.md) | `pipeline.retry_on_error`, `pipeline.max_retries` config |
+| [07_event_handlers_probes.md](07_event_handlers_probes.md) | SmartRecord messages trên GstBus |
+| [10_rest_api.md](10_rest_api.md) | CivetWeb REST API chi tiết |
+| [../RAII.md](../RAII.md) | GstBus cleanup patterns |

@@ -1,5 +1,21 @@
 # 01. Cấu trúc thư mục chi tiết
 
+## Mục lục
+
+- [1. Root Directory](#1-root-directory)
+- [2. Application Entry (app/)](#2-application-entry-app)
+- [3. Core Layer (core/)](#3-core-layer-core)
+- [4. Pipeline Layer (pipeline/)](#4-pipeline-layer-pipeline)
+- [5. Domain Layer (domain/)](#5-domain-layer-domain)
+- [6. Infrastructure Layer (infrastructure/)](#6-infrastructure-layer-infrastructure)
+- [7. Configuration Files (configs/)](#7-configuration-files-configs)
+- [8. Runtime Data (dev/)](#8-runtime-data-dev)
+- [9. Build Output (build/)](#9-build-output-build)
+- [Tổng quan layers](#tổng-quan-layers)
+- [Tài liệu liên quan](#tài-liệu-liên-quan)
+
+---
+
 ## 1. Root Directory
 
 ```
@@ -13,6 +29,8 @@ vms-engine/
 └── AGENTS.md               # AI agent context — conventions, build commands
 ```
 
+---
+
 ## 2. Application Entry (`app/`)
 
 ```
@@ -21,7 +39,7 @@ app/
 └── main.cpp                # Entry point
 ```
 
-### `main.cpp` — Luồng khởi động
+### Luồng khởi động `main.cpp`
 
 ```cpp
 int main(int argc, char* argv[]) {
@@ -67,9 +85,13 @@ int main(int argc, char* argv[]) {
 }
 ```
 
+> 📋 Luồng tuần tự: **Parse config** → **GStreamer init** → **Logger init** → **Build pipeline** → **Start** → **Main loop** → **Cleanup**.
+
+---
+
 ## 3. Core Layer (`core/`)
 
-> **Quy tắc**: `core/` chỉ phụ thuộc vào C++ standard library và GStreamer forward-declarations. **Không** include DeepStream headers.
+> 🔒 **Quy tắc**: `core/` chỉ phụ thuộc vào C++ standard library và GStreamer forward-declarations. **Không** include DeepStream headers.
 
 ```
 core/
@@ -140,9 +162,26 @@ core/
         └── handler_registry.cpp
 ```
 
+### Tổng hợp sub-directories trong core
+
+| Sub-directory | Vai trò | Key interfaces |
+|---------------|---------|----------------|
+| `builders/` | Builder system contracts | `IBuilderFactory`, `IElementBuilder`, `IPipelineBuilder` |
+| `config/` | Config types (pure data) | `PipelineConfig`, `IConfigParser`, `IConfigValidator` |
+| `pipeline/` | Pipeline lifecycle | `IPipelineManager`, `PipelineState` |
+| `eventing/` | Event handling | `IEventHandler`, `IEventManager`, `IEventListener` |
+| `probes/` | Pad probe contract | `IProbeHandler` |
+| `handlers/` | Plugin handler | `IHandler`, `HandlerRegistry` |
+| `messaging/` | Message broker | `IMessageProducer`, `IMessageConsumer` |
+| `storage/` | Storage abstraction | `IStorageManager` |
+| `runtime/` | Runtime control | `IRuntimeParamManager`, `IRuntimeStreamManager` |
+| `utils/` | Utilities | `LOG_*` macros, UUIDv7, thread-safe queue |
+
+---
+
 ## 4. Pipeline Layer (`pipeline/`)
 
-> Đây là nơi chứa toàn bộ **DeepStream-specific implementation**. Tương đương `backends/deepstream/` trong lantanav2 nhưng là layer cấp cao hơn, không phải "backend".
+> 📦 Đây là nơi chứa toàn bộ **DeepStream-specific implementation**. Tương đương `backends/deepstream/` trong lantanav2 nhưng là layer cấp cao hơn, không phải "backend".
 
 ```
 pipeline/
@@ -200,33 +239,19 @@ pipeline/
     ├── pipeline_manager.cpp
     ├── builder_factory.cpp
     ├── link_manager.cpp
-    ├── block_builders/
-    │   ├── pipeline_builder.cpp
-    │   ├── source_builder.cpp
-    │   ├── processing_builder.cpp
-    │   ├── visuals_builder.cpp
-    │   ├── outputs_builder.cpp
-    │   └── standalone_builder.cpp
-    ├── builders/
-    │   ├── source_builder.cpp
-    │   ├── muxer_builder.cpp
-    │   ├── infer_builder.cpp
-    │   ├── tracker_builder.cpp
-    │   ├── analytics_builder.cpp
-    │   ├── demuxer_builder.cpp
-    │   ├── tiler_builder.cpp
-    │   ├── osd_builder.cpp
-    │   ├── encoder_builder.cpp
-    │   ├── sink_builder.cpp
-    │   ├── smart_record_builder.cpp
-    │   ├── msgconv_broker_builder.cpp
-    │   └── queue_builder.cpp
-    ├── probes/
-    │   ├── probe_handler_manager.cpp
-    │   ├── class_id_namespace_handler.cpp
-    │   ├── crop_object_handler.cpp
-    │   └── smart_record_probe_handler.cpp
+    ├── block_builders/                 # (source/processing/visuals/outputs/standalone)
+    ├── builders/                       # (source/infer/tracker/.../queue)
+    └── probes/                         # (probe_handler_manager/class_id/crop/smart_record)
 ```
+
+### Phân biệt `block_builders/` vs `builders/`
+
+| Loại | Thư mục | Vai trò | Ví dụ |
+|------|---------|---------|-------|
+| **Block builder** | `block_builders/` | Điều phối 1 phase — gọi nhiều element builders | `SourceBuilder`, `ProcessingBuilder` |
+| **Element builder** | `builders/` | Build 1 GstElement cụ thể | `InferBuilder`, `TrackerBuilder` |
+
+---
 
 ## 5. Domain Layer (`domain/`)
 
@@ -239,11 +264,14 @@ domain/
     └── event_processor.hpp         # Event filtering, dedup, routing
 ```
 
+---
+
 ## 6. Infrastructure Layer (`infrastructure/`)
 
 ```
 infrastructure/
 ├── CMakeLists.txt
+│
 ├── config_parser/
 │   ├── include/engine/infrastructure/config_parser/
 │   │   └── yaml_config_parser.hpp      # YamlConfigParser : IConfigParser
@@ -263,23 +291,31 @@ infrastructure/
 │   │   ├── redis_stream_producer.hpp   # RedisStreamProducer : IMessageProducer
 │   │   └── kafka_adapter.hpp           # KafkaAdapter : IMessageProducer
 │   └── src/
-│       ├── redis_stream_producer.cpp
-│       └── kafka_adapter.cpp
 │
 ├── storage/
 │   ├── include/engine/infrastructure/storage/
 │   │   ├── local_storage_manager.hpp   # LocalStorageManager : IStorageManager
 │   │   └── s3_storage_manager.hpp      # S3StorageManager : IStorageManager
 │   └── src/
-│       ├── local_storage_manager.cpp
-│       └── s3_storage_manager.cpp
 │
 └── rest_api/
     ├── include/engine/infrastructure/rest_api/
     │   └── pistache_server.hpp         # PistacheServer (runtime HTTP API)
     └── src/
-        └── pistache_server.cpp
 ```
+
+### Tổng hợp Infrastructure adapters
+
+| Adapter | Interface | Protocol | Use case |
+|---------|-----------|----------|----------|
+| `YamlConfigParser` | `IConfigParser` | YAML (yaml-cpp) | Đọc config file |
+| `RedisStreamProducer` | `IMessageProducer` | Redis Streams (hiredis) | Real-time event publishing |
+| `KafkaAdapter` | `IMessageProducer` | Apache Kafka (librdkafka) | High-throughput event log |
+| `LocalStorageManager` | `IStorageManager` | Local FS | Dev, edge deployment |
+| `S3StorageManager` | `IStorageManager` | S3 / MinIO | Cloud, shared storage |
+| `PistacheServer` | — | HTTP REST (Pistache) | Runtime control API |
+
+---
 
 ## 7. Configuration Files (`configs/`)
 
@@ -298,16 +334,17 @@ configs/
 └── analytics/                      # (auto-generated at runtime)
 ```
 
-> **Tài liệu config YAML đầy đủ** → [`../../configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+> 📖 **Tài liệu config YAML đầy đủ** → [05_configuration.md](05_configuration.md)
+
+---
 
 ## 8. Runtime Data (`dev/`)
 
+> ⚠️ Chỉ `dev/.gitkeep` được track bởi git. Tất cả data khác tạo tự động khi chạy.
+
 ```
 dev/
-└── .gitkeep             # Chỉ file này được track bởi git
-
-# Tạo tự động khi chạy:
-dev/
+├── .gitkeep
 ├── logs/
 │   ├── app.log                     # spdlog output
 │   └── de1_build_graph.dot         # DOT graph (visualize bằng Graphviz)
@@ -322,22 +359,85 @@ dev/
 ### Visualize DOT Graph
 
 ```bash
-# Sau khi chạy pipeline, export graph nếu dot_file_dir được set:
+# Export graph nếu dot_file_dir được set trong YAML:
 dot -Tpng dev/logs/de1_build_graph.dot -o pipeline.png
-# Hoặc xem trực tiếp với xdot:
+
+# Hoặc xem trực tiếp:
 xdot dev/logs/de1_build_graph.dot
 ```
+
+---
 
 ## 9. Build Output (`build/`)
 
 ```
 build/
 ├── bin/
-│   └── vms_engine           # Main executable
+│   └── vms_engine                  # Main executable
 ├── lib/
 │   ├── libvms_engine_core.a
 │   ├── libvms_engine_pipeline.a
 │   ├── libvms_engine_domain.a
 │   └── libvms_engine_infra.a
-└── compile_commands.json    # clangd language server database
+└── compile_commands.json           # clangd language server database
 ```
+
+---
+
+## Tổng quan layers
+
+```mermaid
+graph TB
+    subgraph APP["app/ — Entry point"]
+        MAIN["main.cpp<br/>Wire all layers"]
+    end
+
+    subgraph PIPELINE["pipeline/ — DeepStream implementation"]
+        PM["PipelineManager"]
+        PB["PipelineBuilder"]
+        BB["Block Builders (5 phases)"]
+        EB["Element Builders (13 types)"]
+        PR["Probes (3 handlers)"]
+    end
+
+    subgraph CORE["core/ — Interfaces & Config"]
+        IF["I* Interfaces"]
+        CFG["Config types"]
+        UTIL["Utils (LOG, UUID)"]
+    end
+
+    subgraph DOMAIN["domain/ — Business Rules"]
+        META["Metadata parser"]
+        EVT["Event processor"]
+    end
+
+    subgraph INFRA["infrastructure/ — Adapters"]
+        YAML["YAML Parser"]
+        MSG["Redis / Kafka"]
+        STORE["Local FS / S3"]
+        REST["Pistache REST"]
+    end
+
+    APP --> PIPELINE
+    APP --> DOMAIN
+    APP --> INFRA
+    PIPELINE --> CORE
+    DOMAIN --> CORE
+    INFRA --> CORE
+
+    style CORE fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px
+```
+
+> 🔒 Mũi tên chỉ hướng dependency: tất cả đều **hướng vào** `core/`.
+
+---
+
+## Tài liệu liên quan
+
+| Tài liệu | Mô tả |
+|-----------|-------|
+| [00_project_overview.md](00_project_overview.md) | Tổng quan dự án, tech stack |
+| [02_core_interfaces.md](02_core_interfaces.md) | Chi tiết từng interface trong `core/` |
+| [03_pipeline_building.md](03_pipeline_building.md) | Quy trình build 5 phases |
+| [../CMAKE.md](../CMAKE.md) | CMake build system chi tiết |
+| [../ARCHITECTURE_BLUEPRINT.md](../ARCHITECTURE_BLUEPRINT.md) | Blueprint kiến trúc tổng thể |

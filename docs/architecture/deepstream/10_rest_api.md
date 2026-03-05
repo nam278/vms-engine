@@ -1,174 +1,135 @@
 # 10. DeepStream REST API — Quản lý Stream Động
 
-## 1. Tổng quan
-
-`nvmultiurisrcbin` tích hợp sẵn một **HTTP server** (dựa trên CivetWeb) có tên `nvds_rest_server`. Server này cho phép thêm/bỏ camera **trong khi pipeline đang chạy** mà không cần restart.
-
-```
-[FastAPI / cURL]
-      │
-      │  POST /api/v1/stream/add
-      │  POST /api/v1/stream/remove
-      ▼
-[CivetWeb — nvds_rest_server]  ←── nvmultiurisrcbin
-      │                                     │
-      │  camera_add / camera_remove          │
-      ▼                                     ▼
-[nvurisrcbin] ──────────────────► [nvstreammux]
-(tạo / xóa source pad động)
-```
-
-### Đặc điểm kỹ thuật
-
-| Attribute      | Value                                         |
-| -------------- | --------------------------------------------- |
-| HTTP Server    | CivetWeb (`nvds_rest_server`)                 |
-| Protocol       | HTTP/1.1 (không có TLS)                       |
-| Default port   | `9000`                                        |
-| Bind address   | `0.0.0.0` (tất cả interfaces, không đổi được) |
-| Configuration  | YAML field `rest_api_port` trong `sources:`   |
-| Disable        | `rest_api_port: 0`                            |
-| Available from | DeepStream 6.2+                               |
-
-> ⚠️ **DS8 SIGSEGV Constraint**: Property `ip-address` trên `nvmultiurisrcbin` luôn gây **SIGSEGV** trong DeepStream 8.0 khi set qua `g_object_set`, bất kể giá trị. Do đó server luôn bind `0.0.0.0`. Không được thêm `ip_address` vào YAML hay C++ code.
+> **Scope**: CivetWeb HTTP server embedded trong `nvmultiurisrcbin` — dynamic camera add/remove trong khi pipeline đang chạy.
+>
+> **Đọc trước**: [05 — Configuration](05_configuration.md) · [06 — Runtime Lifecycle](06_runtime_lifecycle.md)
 
 ---
 
-## 2. Cấu hình trong YAML
+## Mục lục
+
+- [1. Tổng quan](#1-tổng-quan)
+- [2. Cấu hình YAML](#2-cấu-hình-yaml)
+- [3. Endpoints](#3-endpoints)
+- [4. Hành vi quan trọng](#4-hành-vi-quan-trọng)
+- [5. Tích hợp FastAPI Backend](#5-tích-hợp-fastapi-backend)
+- [6. Static vs Dynamic Sources](#6-static-vs-dynamic-sources)
+- [7. Xử lý lỗi & Debug](#7-xử-lý-lỗi--debug)
+- [8. Cross-references](#8-cross-references)
+
+---
+
+## 1. Tổng quan
+
+`nvmultiurisrcbin` tích hợp sẵn **HTTP server** (CivetWeb / `nvds_rest_server`) cho phép thêm/bỏ camera **mà không restart pipeline**.
+
+```mermaid
+sequenceDiagram
+    participant FE as Dashboard / FastAPI
+    participant REST as CivetWeb :9000
+    participant SRC as nvmultiurisrcbin
+    participant MUX as nvstreammux
+    participant PIPE as Pipeline (infer → tracker → …)
+
+    FE->>REST: POST /api/v1/stream/add
+    REST->>SRC: camera_add(camera_id, uri)
+    SRC->>MUX: Create nvurisrcbin + dynamic src pad
+    MUX->>PIPE: New frame batches include new stream
+
+    FE->>REST: POST /api/v1/stream/remove
+    REST->>SRC: camera_remove(camera_id)
+    SRC->>MUX: Release pad + EOS on stream
+```
+
+| Attribute      | Value                                          |
+| -------------- | ---------------------------------------------- |
+| HTTP Server    | CivetWeb (`nvds_rest_server`)                  |
+| Protocol       | HTTP/1.1 (không TLS)                           |
+| Default port   | `9000`                                         |
+| Bind address   | `0.0.0.0` (tất cả interfaces, **không đổi được**) |
+| Disable        | `rest_api_port: 0`                             |
+| Available from | DeepStream 6.2+                                |
+
+> ⚠️ **DS8 SIGSEGV**: Property `ip-address` trên `nvmultiurisrcbin` **luôn gây SIGSEGV** trong DeepStream 8.0 khi set qua `g_object_set`. Server luôn bind `0.0.0.0` — **KHÔNG** thêm `ip_address` vào YAML hay C++ code.
+
+---
+
+## 2. Cấu hình YAML
 
 ```yaml
 sources:
   type: nvmultiurisrcbin
 
-  # REST API built-in (CivetWeb / nvds_rest_server)
-  # 0 = disable hoàn toàn (mặc định, tránh port conflict)
-  # >0 = bind trên port đó (DS default là 9000)
-  # NOTE: ip_address KHÔNG thể config — DS8 SIGSEGV bug.
-  rest_api_port: 9000 # bật REST API
-  # rest_api_port: 0   # tắt REST API
+  # REST API: 0 = disable, >0 = bind trên port đó
+  rest_api_port: 9000           # bật REST API
+  # rest_api_port: 0            # tắt REST API (mặc định)
 
-  max_batch_size: 4
+  max_batch_size: 8             # ≥ tổng camera tối đa (static + dynamic)
+  drop_pipeline_eos: true       # BẮT BUỘC khi dùng dynamic add/remove
   mode: 0
-  # ... các properties khác ...
 ```
 
-### Lưu ý quan trọng về cấu hình
+> 📋 **Type conversion**: `rest_api_port` là **integer** trong YAML nhưng được convert sang **string** cho `g_object_set` (GStreamer property `port` là type `gchararray`).
 
-- `rest_api_port` là **integer** trong YAML, nhưng được convert sang **string** trước khi gọi `g_object_set` (GStreamer property `port` là type `string`)
-- Không cần restart pipeline khi thêm/bỏ camera — REST API xử lý hoàn toàn dynamic
-- `max_batch_size` phải ≥ tổng số camera tối đa bạn định dùng (gồm camera khởi động + camera add sau)
+> 📋 **`max_batch_size`**: Phải ≥ tổng số camera tối đa (gồm camera khởi động + camera add sau). Request add vượt quá batch sẽ bị từ chối.
 
 ---
 
-## 3. Các Endpoints
+## 3. Endpoints
 
 Base URL: `http://<host>:<rest_api_port>`
 
-### 3.1 Thêm stream mới
+### 3.1 Stream Add
 
 ```
 POST /api/v1/stream/add
 Content-Type: application/json
 ```
 
-**Payload:**
-
 ```json
 {
   "key": "sensor",
   "value": {
     "camera_id": "camera-03",
-    "camera_name": "back_door",
     "camera_url": "rtsp://192.168.1.103:554/stream",
-    "change": "camera_add",
-    "metadata": {
-      "resolution": "1920 x1080",
-      "codec": "h264",
-      "framerate": 25
-    }
-  },
-  "headers": {
-    "source": "vms_app",
-    "created_at": "2025-01-15T08:00:00.000Z"
+    "change": "camera_add"
   }
 }
 ```
 
-**Mandatory fields** (các trường bắt buộc):
+| Field              | Required | Mô tả                                                        |
+| ------------------ | -------- | ------------------------------------------------------------ |
+| `value.camera_id`  | ✅       | ID duy nhất cho camera — dùng để track và remove             |
+| `value.camera_url` | ✅       | RTSP URI hoặc file URI                                       |
+| `value.change`     | ✅       | **Phải chứa substring `"add"`** — e.g. `"camera_add"`       |
+| `value.camera_name`| ❌       | Tên hiển thị (accept nhưng bị ignore bởi nvmultiurisrcbin)  |
+| `value.metadata`   | ❌       | Metadata tùy chỉnh (accept nhưng bị ignore)                 |
 
-| Field              | Mô tả                                                                       |
-| ------------------ | --------------------------------------------------------------------------- |
-| `value.camera_id`  | ID duy nhất cho sensor/camera. Dùng để track và remove                      |
-| `value.camera_url` | RTSP URI hoặc file URI                                                      |
-| `value.change`     | **Phải chứa substring `"add"`** — e.g. `"camera_add"`, `"camera_streaming"` |
-
-**Optional fields**: `camera_name`, `metadata`, `headers` — được accept nhưng phần lớn bị ignore bởi nvmultiurisrcbin.
-
-**cURL example:**
-
-```bash
-curl -XPOST 'http://localhost:9000/api/v1/stream/add' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "key": "sensor",
-    "value": {
-      "camera_id": "camera-03",
-      "camera_url": "rtsp://192.168.1.103:554/stream",
-      "change": "camera_add"
-    }
-  }'
-```
-
-### 3.2 Bỏ stream
+### 3.2 Stream Remove
 
 ```
 POST /api/v1/stream/remove
 Content-Type: application/json
 ```
 
-**Payload:**
-
 ```json
 {
   "key": "sensor",
   "value": {
     "camera_id": "camera-03",
-    "camera_name": "back_door",
     "camera_url": "rtsp://192.168.1.103:554/stream",
-    "change": "camera_remove",
-    "metadata": {
-      "resolution": "1920 x1080",
-      "codec": "h264",
-      "framerate": 25
-    }
+    "change": "camera_remove"
   }
 }
 ```
 
-**Mandatory fields**:
+| Field              | Required | Mô tả                                                    |
+| ------------------ | -------- | -------------------------------------------------------- |
+| `value.camera_id`  | ✅       | ID camera muốn remove (phải match với lúc add)          |
+| `value.camera_url` | ✅       | URI (nên match với lúc add)                              |
+| `value.change`     | ✅       | **Phải chứa substring `"remove"`** — e.g. `"camera_remove"` |
 
-| Field              | Mô tả                                                       |
-| ------------------ | ----------------------------------------------------------- |
-| `value.camera_id`  | ID của camera muốn remove (phải match với lúc add)          |
-| `value.camera_url` | URI (nên match với lúc add, dùng để xác định stream)        |
-| `value.change`     | **Phải chứa substring `"remove"`** — e.g. `"camera_remove"` |
-
-**cURL example:**
-
-```bash
-curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "key": "sensor",
-    "value": {
-      "camera_id": "camera-03",
-      "camera_url": "rtsp://192.168.1.103:554/stream",
-      "change": "camera_remove"
-    }
-  }'
-```
-
-### 3.3 GET Stream Info (DS 7.0+)
+### 3.3 Stream Info (DS 7.0+)
 
 ```
 GET /api/v1/stream/info
@@ -176,13 +137,7 @@ GET /api/v1/stream/info
 
 Returns list of currently active streams.
 
-**cURL example:**
-
-```bash
-curl 'http://localhost:9000/api/v1/stream/info'
-```
-
-### 3.4 GET DeepStream Readiness (DS 8.0+)
+### 3.4 Pipeline Readiness (DS 8.0+)
 
 ```
 GET /api/v1/stream/readiness
@@ -190,59 +145,65 @@ GET /api/v1/stream/readiness
 
 Returns whether the pipeline is ready to accept streams.
 
-**cURL example:**
+**cURL examples:**
 
 ```bash
+# Add stream
+curl -XPOST 'http://localhost:9000/api/v1/stream/add' \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"sensor","value":{"camera_id":"cam03","camera_url":"rtsp://host/s","change":"camera_add"}}'
+
+# Remove stream
+curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"sensor","value":{"camera_id":"cam03","camera_url":"rtsp://host/s","change":"camera_remove"}}'
+
+# Check readiness
 curl 'http://localhost:9000/api/v1/stream/readiness'
 ```
 
 ---
 
-## 4. Hành vi quan trọng từ DeepStream docs
+## 4. Hành vi quan trọng
 
 ### 4.1 Quy tắc `change` field
 
-> **Từ NVIDIA docs**: `value.change` must contain substring `"add"` or `"remove"` respectively.
+`value.change` được NVIDIA match bằng **substring**:
 
-```
- "camera_add"        → ✅ add stream
- "camera_streaming"  → ✅ add stream (chứa...không, cái này đặc biệt)
- "camera_remove"     → ✅ remove stream
- "add_camera"        → ✅ add stream (chứa "add")
- "remove_camera"     → ✅ remove stream (chứa "remove")
- "update"            → ❌ không match — bị ignore
-```
+| Value               | Action  | Vì sao                        |
+| ------------------- | ------- | ----------------------------- |
+| `"camera_add"`      | ✅ Add  | Chứa `"add"`                 |
+| `"add_camera"`      | ✅ Add  | Chứa `"add"`                 |
+| `"camera_remove"`   | ✅ Remove | Chứa `"remove"`            |
+| `"remove_camera"`   | ✅ Remove | Chứa `"remove"`            |
+| `"update"`          | ❌ Ignore | Không chứa `"add"` / `"remove"` |
 
 ### 4.2 Pad reuse
 
-Khi một stream bị remove và sau đó một stream mới được add:
+Khi stream bị remove rồi add stream mới → pad ID cũ được **reuse** — pipeline topology không thay đổi.
 
-- Pad ID cũ được **reuse** — không tạo pad mới
-- Giúp pipeline không bị thay đổi topology
-
-### 4.3 `drop-pipeline-eos` bắt buộc
+### 4.3 `drop_pipeline_eos` bắt buộc
 
 ```yaml
 sources:
-  drop_pipeline_eos: true # BẮT BUỘC khi dùng dynamic add/remove
+  drop_pipeline_eos: true  # BẮT BUỘC
 ```
 
-Nếu không set `drop_pipeline_eos: true`, khi camera cuối cùng bị remove (EOS), pipeline sẽ tắt hoàn toàn và không nhận add request tiếp theo.
-
-### 4.4 `max_batch_size` giới hạn số camera tối đa
-
-```yaml
-sources:
-  max_batch_size: 8 # tối đa 8 camera cùng lúc (kể cả camera static + dynamic)
-```
-
-Sau khi đạt `max_batch_size`, request `/stream/add` tiếp theo sẽ bị từ chối.
+> ⚠️ Nếu thiếu `drop_pipeline_eos: true` — khi camera cuối cùng bị remove (EOS), **pipeline tắt hoàn toàn** và không nhận add request tiếp.
 
 ---
 
-## 5. Tích hợp với FastAPI Backend (`vms_app_fastapi`)
+## 5. Tích hợp FastAPI Backend
 
-Khi `vms_app_fastapi` nhận yêu cầu thêm/bỏ camera, nó forward đến REST API của vms-engine:
+```mermaid
+flowchart TD
+    USER["User / Dashboard"] -->|REST| FAST["vms_app_fastapi"]
+    FAST -->|"1. Persist to PostgreSQL"| DB[(PostgreSQL)]
+    FAST -->|"2. Forward to vms-engine"| REST["CivetWeb :9000"]
+    REST -->|"camera_add / remove"| SRC["nvmultiurisrcbin"]
+    SRC --> MUX["nvstreammux"]
+    MUX --> PIPE["nvinfer → nvtracker → …"]
+```
 
 ```python
 import httpx
@@ -259,13 +220,10 @@ async def add_camera_to_pipeline(camera_id: str, camera_url: str) -> bool:
         }
     }
     async with httpx.AsyncClient() as client:
-        response = await client.post(
+        resp = await client.post(
             f"{DEEPSTREAM_REST_BASE}/api/v1/stream/add",
-            json=payload,
-            timeout=10.0
-        )
-    return response.status_code == 200
-
+            json=payload, timeout=10.0)
+    return resp.status_code == 200
 
 async def remove_camera_from_pipeline(camera_id: str, camera_url: str) -> bool:
     payload = {
@@ -277,115 +235,69 @@ async def remove_camera_from_pipeline(camera_id: str, camera_url: str) -> bool:
         }
     }
     async with httpx.AsyncClient() as client:
-        response = await client.post(
+        resp = await client.post(
             f"{DEEPSTREAM_REST_BASE}/api/v1/stream/remove",
-            json=payload,
-            timeout=10.0
-        )
-    return response.status_code == 200
-```
-
-### Sơ đồ luồng đầy đủ
-
-```
-[User/Dashboard]
-      │
-      │  REST call: POST /api/v1/cameras
-      ▼
-[vms_app_fastapi]
-      │  1. Persist camera record to PostgreSQL
-      │  2. Forward to vms-engine REST API
-      ▼
-[vms-engine: CivetWeb :9000]
-      │  POST /api/v1/stream/add
-      ▼
-[nvmultiurisrcbin]
-      │  Dynamically create nvurisrcbin + pad
-      ▼
-[nvstreammux → nvinfer → nvtracker → ...]
+            json=payload, timeout=10.0)
+    return resp.status_code == 200
 ```
 
 ---
 
-## 6. Xử lý lỗi
+## 6. Static vs Dynamic Sources
 
-### Port đã bị chiếm
+| Approach        | Khi nào dùng                       | Cấu hình                                   |
+| --------------- | ---------------------------------- | ------------------------------------------- |
+| **Static list** | Biết trước tất cả cameras khi start | `cameras:` section trong YAML              |
+| **Dynamic add** | Cameras thay đổi lúc runtime       | REST API `/api/v1/stream/add`              |
+| **Kết hợp**     | Start với 1–2, thêm sau            | YAML `cameras:` + REST API — cả hai work   |
+
+> 📋 Static cameras auto-add qua `uri-list` property khi pipeline start. REST API add thêm on top.
+
+---
+
+## 7. Xử lý lỗi & Debug
+
+### Response codes
+
+| HTTP Status | Ý nghĩa                                         |
+| ----------- | ------------------------------------------------ |
+| `200`       | Stream đã được add/remove thành công             |
+| `4xx`       | Payload thiếu mandatory fields                   |
+| `5xx`       | Internal DeepStream error                        |
+
+> 📋 REST API nvmultiurisrcbin **không trả body JSON chi tiết** — chỉ có status code.
+
+### Port conflict
 
 ```
 cannot bind to 9000: 98 (Address already in use)
 CivetException caught: null context when constructing CivetServer
 ```
 
-**Nguyên nhân**: Port đã được process khác sử dụng (ví dụ: nhiều container chạy trên cùng host network).
+Fix: đổi `rest_api_port: 9001` hoặc disable `rest_api_port: 0`.
 
-**Fix**: Đổi port hoặc disable:
-
-```yaml
-# Option 1: Đổi port
-rest_api_port: 9001
-
-# Option 2: Disable hoàn toàn (không cần dynamic add/remove)
-rest_api_port: 0
-```
-
-### Kiểm tra port đang lắng nghe
+### Debug commands
 
 ```bash
-# Trong container
-ss -tlnp | grep 9000
-
-# Từ host
-curl -s 'http://localhost:9000/api/v1/stream/readiness'
-```
-
-### Response codes
-
-| HTTP Status | Ý nghĩa                                          |
-| ----------- | ------------------------------------------------ |
-| `200 OK`    | Request được accept và stream đã được add/remove |
-| `4xx`       | Payload không hợp lệ (thiếu mandatory fields)    |
-| `5xx`       | Internal DeepStream error                        |
-
-> **Note**: nvmultiurisrcbin REST API không trả về body JSON chi tiết — chỉ có status code là quan trọng.
-
----
-
-## 7. So sánh static sources vs dynamic add
-
-| Approach        | Khi nào dùng                            | Cách cấu hình                             |
-| --------------- | --------------------------------------- | ----------------------------------------- |
-| **Static list** | Đã biết trước toàn bộ cameras khi start | Liệt kê trong `cameras:` section của YAML |
-| **Dynamic add** | Cameras thay đổi lúc runtime            | Dùng REST API `/api/v1/stream/add`        |
-| **Kết hợp**     | Start với 1–2 cameras, thêm sau         | YAML + REST API — cả hai đều work         |
-
-Static cameras được add tự động qua `uri-list` property khi pipeline start. REST API add thêm on top.
-
----
-
-## 8. Debug
-
-```bash
-# Xem DeepStream REST server logs
+# GStreamer debug — REST server logs
 GST_DEBUG="nvmultiurisrcbin:4" ./build/bin/vms_engine -c configs/default.yml
 
-# Kiểm tra port
+# Kiểm tra port listening
 ss -tlnp | grep 9000
 
-# Test add stream
-curl -v -XPOST 'http://localhost:9000/api/v1/stream/add' \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"sensor","value":{"camera_id":"test01","camera_url":"rtsp://...","change":"camera_add"}}'
-
-# Test readiness (DS 8.0)
+# Test readiness (DS 8.0+)
 curl 'http://localhost:9000/api/v1/stream/readiness'
 ```
 
 ---
 
-## 9. Tham khảo
+## 8. Cross-references
 
-- [NVIDIA DeepStream — Gst-nvmultiurisrcbin](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvmultiurisrcbin.html)
-- [nvds_rest_server source](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_RestServer.html)
-- [`source_builder.cpp`](../../../pipeline/src/builders/source_builder.cpp) — trong vms-engine
-- [`config_types.hpp`](../../../core/include/engine/core/config/config_types.hpp) — `SourcesConfig.rest_api_port`
-- [`dev/configs/default.yml`](../../../dev/configs/default.yml) — runtime config
+| Topic                           | Document                                                    |
+| ------------------------------- | ----------------------------------------------------------- |
+| Source builder & nvmultiurisrcbin props | [03 — Pipeline Building](03_pipeline_building.md)   |
+| YAML full schema                | [05 — Configuration](05_configuration.md)                   |
+| Runtime lifecycle & bus events  | [06 — Runtime Lifecycle](06_runtime_lifecycle.md)           |
+| Smart Record via nvmultiurisrcbin | [09 — Outputs & Smart Record](09_outputs_smart_record.md) |
+| NVIDIA docs — nvmultiurisrcbin  | [DeepStream Plugin Guide](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvmultiurisrcbin.html) |
+| NVIDIA docs — REST Server       | [DS REST Server](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_RestServer.html) |

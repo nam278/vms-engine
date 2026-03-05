@@ -1,64 +1,90 @@
-# Class ID Namespace Handler
+# Class ID Namespace Handler — Multi-GIE Collision Resolution
 
-## 1. Vấn đề — Class ID Collision trong Multi-Detector Pipelines
+> **Scope**: Two-probe system (Offset + Restore) giải quyết `class_id` collision khi pipeline có nhiều nvinfer (PGIE + SGIE).
+>
+> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md)
 
-Khi pipeline sử dụng **nhiều nvinfer** (PGIE + nhiều SGIE), mỗi detector dùng `class_id` riêng bắt đầu từ `0`. Ví dụ:
+---
 
-| GIE              | `unique_component_id` | Class 0  | Class 1 |
-| ---------------- | --------------------- | -------- | ------- |
-| PGIE (detection) | 1                     | person   | car     |
-| SGIE (face)      | 2                     | identity | emotion |
-| SGIE (vehicle)   | 3                     | sedan    | truck   |
+## Mục lục
 
-Sau khi `nvtracker` tổng hợp metadata từ nhiều GIE, tất cả object đều nằm chung trong cùng một `obj_meta_list`. Lúc đó:
+- [1. Vấn đề — Class ID Collision](#1-vấn-đề--class-id-collision)
+- [2. Kiến trúc — Hai Probe, Hai Pad](#2-kiến-trúc--hai-probe-hai-pad)
+- [3. Offset Formula](#3-offset-formula)
+- [4. Lưu trữ giá trị gốc — misc_obj_info](#4-lưu-trữ-giá-trị-gốc--misc_obj_info)
+- [5. Probe Ordering — GStreamer FIFO](#5-probe-ordering--gstreamer-fifo)
+- [6. YAML Config](#6-yaml-config)
+- [7. Code Reference](#7-code-reference)
+- [8. Khi nào bật / tắt](#8-khi-nào-bật--tắt)
+- [9. Cross-references](#9-cross-references)
 
-- `smart_record` dùng `label_filter` để match — label lookup dựa vào `class_id` → **sai label** nếu SGIE class 0 trùng với PGIE class 0.
-- `crop_objects` cũng đọc `class_id` để filter → tương tự lỗi.
-- Downstream analytics (nvdsanalytics) cần phân biệt classes across GIEs.
+---
 
-**Giải pháp**: Offset `class_id` của mỗi GIE bằng một lượng dựa trên `unique_component_id` — trước khi dữ liệu vào tracker. Sau tracker, restore về giá trị gốc khi cần.
+## 1. Vấn đề — Class ID Collision
+
+Khi pipeline dùng **nhiều nvinfer** (PGIE + SGIE), mỗi detector dùng `class_id` bắt đầu từ `0`:
+
+| GIE              | `unique_component_id` | Class 0    | Class 1 |
+| ---------------- | --------------------- | ---------- | ------- |
+| PGIE (detection) | 1                     | person     | car     |
+| SGIE (face)      | 2                     | identity   | emotion |
+| SGIE (vehicle)   | 3                     | sedan      | truck   |
+
+Sau `nvtracker`, tất cả objects nằm chung `obj_meta_list` → **class_id 0 của PGIE trùng class_id 0 của SGIE** → `label_filter` trong `smart_record` / `crop_objects` match **sai label**.
+
+```mermaid
+flowchart LR
+    PGIE["PGIE<br/>class 0=person<br/>class 1=car"] --> TRACKER["nvtracker<br/>obj_meta_list"]
+    SGIE["SGIE<br/>class 0=identity<br/>class 1=emotion"] --> TRACKER
+    TRACKER --> DOWNSTREAM["smart_record / crop_objects<br/>❌ class_id 0 = person hay identity?"]
+
+    style DOWNSTREAM fill:#f66,stroke:#333,color:#fff
+```
+
+**Giải pháp**: Offset `class_id` theo `unique_component_id` **trước tracker**, restore **sau tracker**.
 
 ---
 
 ## 2. Kiến trúc — Hai Probe, Hai Pad
 
-```
-[nvinfer PGIE] --(src pad)--> ... --> [nvtracker] --(src pad)--> [OSD / smart_record / crop_objects]
-                                             ↑                          ↑
-                                      class_id_offset              class_id_restore
-                                      (sink pad, BEFORE tracker)   (src pad, AFTER tracker)
+```mermaid
+flowchart LR
+    PGIE["nvinfer PGIE"] --> OFFSET["class_id_offset<br/>📍 tracker:sink"]
+    OFFSET --> TRACKER["nvtracker"]
+    TRACKER --> RESTORE["class_id_restore<br/>📍 tracker:src"]
+    RESTORE --> SR["smart_record"]
+    RESTORE --> CROP["crop_objects"]
+
+    style OFFSET fill:#f96,stroke:#333,color:#fff
+    style RESTORE fill:#4af,stroke:#333,color:#fff
 ```
 
 | Handler            | Pad              | Thời điểm     | Mục đích                                     |
 | ------------------ | ---------------- | ------------- | -------------------------------------------- |
-| `class_id_offset`  | `tracker` — sink | Trước tracker | Remap `class_id` → `base_offset + class_id`  |
-| `class_id_restore` | `tracker` — src  | Sau tracker   | Phục hồi `class_id` gốc từ `misc_obj_info[]` |
+| `class_id_offset`  | `tracker` — **sink** | Trước tracker | Remap `class_id → base_offset + class_id`   |
+| `class_id_restore` | `tracker` — **src**  | Sau tracker   | Phục hồi `class_id` gốc từ `misc_obj_info[]` |
 
 ---
 
 ## 3. Offset Formula
 
 ```
-base_offset = gie_unique_id × offset_step
+base_offset = gie_unique_id × offset_step     (offset_step default = 1000)
 ```
 
-Với `offset_step = 1000` (default):
+| GIE ID | base_offset | Class 0 → offset | Class 1 → offset |
+| ------ | ----------- | ----------------- | ----------------- |
+| 1      | 1000        | 1000              | 1001              |
+| 2      | 2000        | 2000              | 2001              |
+| 3      | 3000        | 3000              | 3001              |
 
-| GIE ID | base_offset | Class 0 sau offset | Class 1 sau offset |
-| ------ | ----------- | ------------------ | ------------------ |
-| 1      | 1000        | 1000               | 1001               |
-| 2      | 2000        | 2000               | 2001               |
-| 3      | 3000        | 3000               | 3001               |
-
-Sau offset, tất cả class IDs là **globally unique** trong batch — không còn collision.
+Sau offset → tất cả class IDs **globally unique** trong batch.
 
 ### Explicit Overrides
 
-Nếu muốn offset tuỳ ý thay vì dùng công thức, gọi:
-
 ```cpp
 handler.set_explicit_offsets({
-    {1, 0},    // PGIE không offset (giữ 0..N)
+    {1, 0},    // PGIE: giữ 0..N (không offset)
     {2, 100},  // SGIE face: 100..199
     {3, 200},  // SGIE vehicle: 200..299
 });
@@ -66,79 +92,79 @@ handler.set_explicit_offsets({
 
 ---
 
-## 4. Lưu Trữ Giá Trị Gốc — `misc_obj_info[]`
+## 4. Lưu trữ giá trị gốc — misc_obj_info
 
-`NvDsObjectMeta::misc_obj_info` là mảng `gint64[4]` dự phòng cho user data. Handler dùng 3 slot:
+`NvDsObjectMeta::misc_obj_info` là mảng `gint64[4]` dự phòng. Handler dùng 3 slot:
 
 | Index | Giá trị                        | Mô tả                        |
 | ----- | ------------------------------ | ---------------------------- |
-| `[0]` | `0x4C4E5441` = `"LNTA"`        | **Magic marker** — đã offset |
-| `[1]` | `original_class_id`            | `class_id` trước khi offset  |
-| `[2]` | `original_unique_component_id` | `unique_component_id` gốc    |
+| `[0]` | `0x4C4E5441` = `"LNTA"`       | **Magic marker** — đã offset |
+| `[1]` | `original_class_id`           | `class_id` gốc trước offset |
+| `[2]` | `original_unique_component_id` | `unique_component_id` gốc   |
 
-**Idempotency**: Probe Offset kiểm tra `misc_obj_info[0] == MAGIC_MARKER` — nếu đã đánh dấu thì **bỏ qua**, không offset lần 2. Điển hình khi pipeline state changes hoặc probe đính kèm nhiều lần.
+> 📋 **Idempotency**: Offset probe check `misc_obj_info[0] == MAGIC_MARKER` — nếu đã mark thì **skip** (tránh double-offset khi pipeline state changes). Restore probe clear cả 3 slot về 0 sau khi phục hồi.
 
-**Probe Restore** ưu tiên restore theo magic marker (chuẩn), rồi clear cả 3 slot về 0.
-
-Ngoài ra có **fallback restore**: nếu marker bị mất (một số luồng copy metadata qua
-tracker có thể làm mất `misc_obj_info[]`), handler sẽ tính offset theo
-`unique_component_id` hiện tại và de-namespace `class_id` khi hợp lệ.
-Điều này tránh hiện tượng class_id offset (vd: 1000/2000/...) lọt xuống
-`smart_record` hoặc `crop_objects` dù đã bật `class_id_restore`.
+> 📋 **Fallback restore**: Nếu tracker copy metadata mà mất `misc_obj_info[]`, handler tính ngược offset theo `unique_component_id` hiện tại và de-namespace `class_id`. Tránh class_id offset (1000/2000/…) lọt xuống downstream.
 
 ---
 
-## 5. Xếp Thứ Tự Probe — GStreamer FIFO
+## 5. Probe Ordering — GStreamer FIFO
 
-GStreamer thực thi các probe trên cùng một pad theo **thứ tự đăng ký (FIFO)**. Trong `event_handlers:`, thứ tự entries **quyết định** thứ tự đăng ký:
+GStreamer thực thi probes trên cùng pad theo **thứ tự đăng ký (FIFO)**:
 
+```mermaid
+flowchart TD
+    subgraph "tracker:sink pad"
+        O1["1. class_id_offset"]
+    end
+
+    subgraph "tracker:src pad (FIFO order)"
+        R1["1. class_id_restore ← PHẢI trước!"]
+        R2["2. smart_record ← thấy class_ids đã restore"]
+        R3["3. crop_objects ← thấy class_ids đã restore"]
+    end
+
+    O1 --> |"nvtracker processing"| R1
+    R1 --> R2
+    R2 --> R3
+
+    style R1 fill:#4af,stroke:#333,color:#fff
 ```
-tracker:sink pad:
-  1. class_id_offset   ← phải đứng trước tracker (pad: sink)
 
-tracker:src pad (thứ tự đăng ký):
-  1. class_id_restore  ← PHẢI đăng ký TRƯỚC smart_record và crop_objects
-  2. smart_record      ← thấy class_ids đã restore → label_filter đúng
-  3. crop_objects      ← thấy class_ids đã restore → label_filter đúng
-```
-
-> ⚠️ **Nếu `class_id_restore` đứng SAU `smart_record`/`crop_objects`** trong config, các handler đó sẽ thấy class_ids đã bị offset → `label_filter` KHÔNG khớp.
+> ⚠️ **Nếu `class_id_restore` đứng SAU `smart_record`/`crop_objects`** trong config → các handler đó thấy class_ids đã bị offset → `label_filter` **KHÔNG khớp**.
 
 ---
 
 ## 6. YAML Config
 
 ```yaml
-# ── PROBE ORDERING NOTE ─────────────────────────────────────────────────────
-# GStreamer executes probes in FIFO (registration) order.
-# class_id_offset  → tracker:sink  (runs before nvtracker processes objects)
-# class_id_restore → tracker:src   (MUST register BEFORE smart_record/crop_objects)
-# smart_record     → tracker:src   (sees restored IDs → label_filter correct)
-# crop_objects     → tracker:src   (sees restored IDs → label_filter correct)
-# ────────────────────────────────────────────────────────────────────────────
 event_handlers:
+  # ── Probe ordering: FIFO registration ──────────────────────────
+  # class_id_offset  → tracker:sink  (before nvtracker)
+  # class_id_restore → tracker:src   (MUST be before smart_record/crop_objects)
+  # smart_record     → tracker:src   (sees restored IDs)
+  # crop_objects     → tracker:src   (sees restored IDs)
+  # ────────────────────────────────────────────────────────────────
+
   - id: class_id_offset
-    enable: false # set true when multi-GIE pipeline is active
+    enable: false              # true khi multi-GIE pipeline
     type: on_detect
     probe_element: tracker
-    pad_name: sink # IMPORTANT: attach to sink pad (BEFORE nvtracker)
+    pad_name: sink             # IMPORTANT: sink pad = BEFORE tracker
     trigger: class_id_offset
-    # label_filter, save_dir, etc. not used by this handler
 
   - id: class_id_restore
     enable: false
     type: on_detect
     probe_element: tracker
-    pad_name: src # explicit (src is also the default)
+    pad_name: src              # src pad = AFTER tracker (default)
     trigger: class_id_restore
-    # Must appear before smart_record/crop_objects in this list
 
   - id: smart_record
     enable: true
     type: on_detect
     probe_element: tracker
     trigger: smart_record
-    channel: worker_lsr # Redis Stream / Kafka topic
     label_filter: [car, person, truck]
 
   - id: crop_objects
@@ -146,35 +172,24 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     trigger: crop_objects
-    channel: worker_lsr_snap # Redis Stream / Kafka topic
     label_filter: [car, person]
     save_dir: "/opt/engine/data/rec/objects"
 ```
 
-### `pad_name` field
-
-| Value    | Pad                | Dùng khi nào                     |
-| -------- | ------------------ | -------------------------------- |
-| `"src"`  | Element output pad | Default — hầu hết probe handlers |
-| `"sink"` | Element input pad  | `class_id_offset` trước tracker  |
-
-Mặc định là `"src"` nếu không khai báo trong YAML.
+| `pad_name` | Pad              | Dùng khi nào                      |
+| ---------- | ---------------- | --------------------------------- |
+| `"src"`    | Element output   | Default — hầu hết probe handlers  |
+| `"sink"`   | Element input    | `class_id_offset` trước tracker   |
 
 ---
 
 ## 7. Code Reference
 
-### File Locations
-
-| File                                                                     | Nội dung                                             |
-| ------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `pipeline/include/engine/pipeline/probes/class_id_namespace_handler.hpp` | Header — `ClassIdNamespaceHandler`, `Mode` enum      |
-| `pipeline/src/probes/class_id_namespace_handler.cpp`                     | Triển khai `process_offset()` / `process_restore()`  |
-| `pipeline/src/probes/probe_handler_manager.cpp`                          | Dispatch: `"class_id_offset"` / `"class_id_restore"` |
-| `core/include/engine/core/config/config_types.hpp`                       | `EventHandlerConfig::pad_name` field                 |
-| `infrastructure/config_parser/src/yaml_parser_handlers.cpp`              | Parse `pad_name` từ YAML                             |
-
-### Class Interface
+| File                                                         | Nội dung                                            |
+| ------------------------------------------------------------ | --------------------------------------------------- |
+| `pipeline/include/.../probes/class_id_namespace_handler.hpp` | Header — `ClassIdNamespaceHandler`, `Mode` enum     |
+| `pipeline/src/probes/class_id_namespace_handler.cpp`         | `process_offset()` / `process_restore()`            |
+| `pipeline/src/probes/probe_handler_manager.cpp`              | Dispatch `"class_id_offset"` / `"class_id_restore"` |
 
 ```cpp
 namespace engine::pipeline::probes {
@@ -183,70 +198,38 @@ class ClassIdNamespaceHandler {
 public:
     enum class Mode { Offset, Restore };
 
-    /**
-     * @brief Configure for Offset or Restore mode.
-     * @param config         Full pipeline config (for element unique_id lookup).
-     * @param mode           Mode::Offset or Mode::Restore.
-     * @param element_index  Index into config.processing.elements (Offset only).
-     */
-    void configure(const engine::core::config::PipelineConfig& config, Mode mode,
-                   int element_index = -1);
-
-    /**
-     * @brief Override offset formula with explicit GIE→offset map.
-     */
+    void configure(const PipelineConfig& config, Mode mode, int element_index = -1);
     void set_explicit_offsets(const std::unordered_map<int, int>& offsets);
-
-    /** @brief Static GStreamer pad probe callback. */
-    static GstPadProbeReturn on_buffer(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
+    static GstPadProbeReturn on_buffer(GstPad*, GstPadProbeInfo*, gpointer);
 
 private:
     Mode mode_ = Mode::Offset;
-    int gie_unique_id_ = 0;     ///< Offset mode: which GIE this handler targets
-    int offset_step_ = 1000;    ///< Multiplier for offset formula
-    int base_offset_ = 0;       ///< Precomputed: gie_unique_id_ * offset_step_
-
-    std::unordered_map<int, int> explicit_offsets_;
-
+    int  base_offset_ = 0;
+    int  offset_step_ = 1000;
     static constexpr int64_t MAGIC_MARKER = 0x4C4E5441;  // "LNTA"
 };
-}
-```
-
-### ProbeHandlerManager Dispatch (probe_handler_manager.cpp)
-
-```cpp
-} else if (cfg.trigger == "class_id_offset") {
-    auto* handler = new ClassIdNamespaceHandler();
-    handler->configure(full_config_, ClassIdNamespaceHandler::Mode::Offset, elem_index);
-    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
-        ClassIdNamespaceHandler::on_buffer, handler,
-        [](gpointer ud) { delete static_cast<ClassIdNamespaceHandler*>(ud); });
-
-} else if (cfg.trigger == "class_id_restore") {
-    auto* handler = new ClassIdNamespaceHandler();
-    handler->configure(full_config_, ClassIdNamespaceHandler::Mode::Restore);
-    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
-        ClassIdNamespaceHandler::on_buffer, handler,
-        [](gpointer ud) { delete static_cast<ClassIdNamespaceHandler*>(ud); });
-}
+} // namespace engine::pipeline::probes
 ```
 
 ---
 
-## 8. When to Enable
+## 8. Khi nào bật / tắt
 
-| Scenario                          | `class_id_offset`                                   | `class_id_restore` |
-| --------------------------------- | --------------------------------------------------- | ------------------ |
-| Single PGIE, no SGIE              | `enable: false`                                     | `enable: false`    |
-| PGIE + 1 SGIE (no label conflict) | `enable: false`                                     | `enable: false`    |
-| PGIE + multiple SGIEs             | `enable: true`                                      | `enable: true`     |
-| Label filter failing unexpectedly | Check if class_id collision exists → `enable: true` |
+| Scenario                             | `class_id_offset` | `class_id_restore` |
+| ------------------------------------ | ------------------ | ------------------ |
+| Single PGIE, no SGIE                 | `false`            | `false`            |
+| PGIE + 1 SGIE (no label conflict)   | `false`            | `false`            |
+| PGIE + multiple SGIEs               | **`true`**         | **`true`**         |
+| `label_filter` matching sai bất thường | Check collision → `true` | `true`       |
 
 ---
 
-## 9. Liên kết
+## 9. Cross-references
 
-- [`docs/architecture/deepstream/07_event_handlers_probes.md`](../deepstream/07_event_handlers_probes.md) — Tổng quan probe system
-- [`docs/architecture/RAII.md`](../RAII.md) — RAII patterns cho GStreamer resources
-- Config example: [`docs/configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+| Topic                    | Document                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| Probe system overview    | [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md)        |
+| Pipeline building        | [03 — Pipeline Building](../deepstream/03_pipeline_building.md)                  |
+| RAII for pad probes      | [RAII Guide](../RAII.md)                                                         |
+| SmartRecord probe        | [smart_record_probe_handler.md](smart_record_probe_handler.md)                   |
+| CropObject probe         | [crop_object_handler.md](crop_object_handler.md)                                 |

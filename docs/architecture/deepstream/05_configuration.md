@@ -1,116 +1,118 @@
 # 05. Configuration System — YAML Config Schema
 
+> **Phạm vi**: YAML convention, full schema reference, nvinfer/tracker config files, parsing architecture, env var substitution, validation.
+>
+> **Đọc trước**: [02_core_interfaces.md](02_core_interfaces.md) — PipelineConfig struct definition.
+
+---
+
+## Mục lục
+
+- [1. Tổng quan](#1-tổng-quan)
+- [2. YAML Conventions Bắt Buộc](#2-yaml-conventions-bắt-buộc)
+- [3. Schema Đầy Đủ](#3-schema-đầy-đủ)
+- [4. nvinfer Config File (.txt)](#4-nvinfer-config-file-txt)
+- [5. Tracker Config File (.yml)](#5-tracker-config-file-yml)
+- [6. YAML Parsing Architecture](#6-yaml-parsing-architecture)
+- [7. Environment Variable Substitution](#7-environment-variable-substitution)
+- [8. Config Validation](#8-config-validation)
+- [Tham chiếu chéo](#tham-chiếu-chéo)
+
+---
+
 ## 1. Tổng quan
 
-VMS Engine hoàn toàn **config-driven**: pipeline topology, inference models, output sinks, smart record, messaging — tất cả được định nghĩa trong file YAML. Không cần recompile để thay đổi deployment.
+VMS Engine hoàn toàn **config-driven**: pipeline topology, inference models, output sinks, smart record, messaging — tất cả trong file YAML. Không cần recompile để thay đổi deployment.
 
-File ref: [`../../configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+```mermaid
+flowchart LR
+    YAML["YAML File"] --> Parser["YamlConfigParser"]
+    ENV["Environment Vars"] --> Parser
+    Parser --> Config["PipelineConfig"]
+    Config --> Validator["ConfigValidator"]
+    Validator --> Builder["PipelineBuilder"]
+    style YAML fill:#ffd93d,color:#333
+    style Config fill:#4a9eff,color:#fff
+    style Builder fill:#00b894,color:#fff
+```
+
+Canonical reference: [`configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+
+---
 
 ## 2. YAML Conventions Bắt Buộc
 
-### 2.1 Property Names
+### 2.1 Property Names — snake_case → kebab-case
 
-- YAML dùng `snake_case` (e.g., `config_file_path`, `ll_lib_file`)
-- GStreamer properties dùng `kebab-case` (e.g., `config-file-path`, `ll-lib-file`)
-- YAML parser tự động convert `_` → `-` khi set GStreamer properties
+YAML parser tự động convert `_` → `-` khi set GStreamer properties:
 
-```yaml
-# YAML (snake_case)          GStreamer property (kebab-case)
-config_file_path: …     →   config-file-path
-ll_lib_file: …     →   ll-lib-file
-max_size_buffers: …     →   max-size-buffers
-```
+| YAML (snake_case) | GStreamer property (kebab-case) |
+|---|---|
+| `config_file_path` | `config-file-path` |
+| `ll_lib_file` | `ll-lib-file` |
+| `max_size_buffers` | `max-size-buffers` |
 
 ### 2.2 Enum Fields là Integers
 
-Tất cả enum properties trong GStreamer được represent bởi **integer** trong YAML:
+Tất cả enum properties trong GStreamer → **integer** trong YAML:
 
 ```yaml
-smart_record: 1 # 0=off, 1=audio+video, 2=video-only
-process_mode: 1 # 1=primary (PGIE), 2=secondary (SGIE)
-compute_hw: 0 # 0=default, 1=GPU, 2=VIC
+smart_record: 1   # 0=off, 1=audio+video, 2=video-only
+process_mode: 1   # 1=primary (PGIE), 2=secondary (SGIE)
+compute_hw: 0     # 0=default, 1=GPU, 2=VIC
 ```
 
 ### 2.3 `queue: {}` Pattern
 
-Thêm `queue: {}` vào bất kỳ element nào để auto-insert GstQueue với default settings trước element đó:
+Thêm `queue: {}` vào element để auto-insert GstQueue trước nó:
 
 ```yaml
 - id: "pgie"
-  queue: {} # Insert queue trước pgie
+  queue: {}              # Dùng queue_defaults
 
-# Hoặc override defaults:
 - id: "tracker"
-  queue:
+  queue:                 # Override cụ thể
     max_size_buffers: 20
     leaky: 2
 ```
 
+> 📋 **Queue naming**: Element `pgie` có queue → ID = `pgie_prequeue`. Xem [04_linking_system.md](04_linking_system.md#4-queue-insertion--queue--pattern).
+
+---
+
 ## 3. Schema Đầy Đủ
 
-> **Canonical reference**: [`docs/configs/deepstream_default.yml`](../../configs/deepstream_default.yml)
+### Pipeline Topology
+
+```mermaid
+flowchart LR
+    S["sources_bin<br/>Stage 1"] --> P["processing_bin<br/>Stage 2"]
+    P --> V["visuals_bin<br/>Stage 3"]
+    V --> O["outputs_bin<br/>Stage 4"]
+    style S fill:#4a9eff,color:#fff
+    style P fill:#00b894,color:#fff
+    style V fill:#6c5ce7,color:#fff
+    style O fill:#ff6b6b,color:#fff
+```
+
+### Stage 1 — Sources
 
 ```yaml
-# =============================================================================
-# VMS Engine — DeepStream Pipeline Configuration
-# =============================================================================
-# PIPELINE TOPOLOGY (left-to-right, each stage = GstBin with ghost pads):
-#   [sources_bin] →
-#   [processing_bin] →
-#   [visuals_bin] →
-#   [output_bin_{id}]
-#
-# QUEUE RULES:
-#   queue: {}         → insert queue before this element (inside its bin)
-#   queue: { ... }    → insert queue, override specific fields
-#   (no queue field)  → no queue before this element
-# =============================================================================
-
-version: "1.0.0"
-
-# ─────────────────────────────────────────────────────────────────────
-# Pipeline-level metadata
-# ─────────────────────────────────────────────────────────────────────
-pipeline:
-  id: "de1"
-  name: "Intrusion Detection Pipeline"
-  log_level: "INFO" # DEBUG | INFO | WARN | ERROR
-  gst_log_level: "*:1" # GStreamer categories, e.g. "*:3,GST_PADS:5"
-  dot_file_dir: "/opt/engine/data/logs"
-  log_file: "/opt/engine/data/logs/app.log"
-
-# Queue defaults — any queue: {} with no overrides inherits these
-queue_defaults:
-  max_size_buffers: 10
-  max_size_bytes_mb: 20
-  max_size_time_sec: 0.5
-  leaky: 2 # 0=none, 1=upstream, 2=downstream
-  silent: true
-
-# =============================================================================
-# STAGE 1 — Sources Block (→ sources_bin)
-# Element: nvmultiurisrcbin
-# Properties in 3 groups: direct, nvurisrcbin passthrough, nvstreammux passthrough
-# =============================================================================
 sources:
   type: nvmultiurisrcbin
 
   # Group 1 — nvmultiurisrcbin direct
-  # NOTE: ip_address is NOT configurable — DS8 ip-address setter causes SIGSEGV (fatal).
-  # rest_api_port: 0 = disable CivetWeb REST API entirely
-  #               >0 = enable on that port (DS default is 9000)
-  # See: docs/architecture/deepstream/10_rest_api.md for usage guide
-  rest_api_port: 9000  # 0=disable REST API, >0=bind CivetWeb on that port
+  rest_api_port: 9000        # 0=disable REST API, >0=enable CivetWeb
   max_batch_size: 4
-  mode: 0 # 0=video  1=audio
+  mode: 0                    # 0=video  1=audio
 
-  # Group 2 — nvurisrcbin per-source passthrough
+  # Group 2 — nvurisrcbin passthrough
   gpu_id: 0
   num_extra_surfaces: 9
-  cudadec_memtype: 0 # 0=device  1=pinned  2=unified
-  dec_skip_frames: 0 # 0=all  1=non-ref  2=key-only
+  cudadec_memtype: 0         # 0=device  1=pinned  2=unified
+  dec_skip_frames: 0         # 0=all  1=non-ref  2=key-only
   drop_frame_interval: 0
-  select_rtp_protocol: 4 # 0=multi  4=TCP-only
+  select_rtp_protocol: 4     # 0=multi  4=TCP-only
   rtsp_reconnect_interval: 10
   rtsp_reconnect_attempts: -1
   latency: 400
@@ -122,7 +124,7 @@ sources:
   # Group 3 — nvstreammux passthrough
   width: 1920
   height: 1080
-  batched_push_timeout: 40000 # µs
+  batched_push_timeout: 40000  # µs
   live_source: true
   sync_inputs: false
 
@@ -132,27 +134,29 @@ sources:
     - id: camera-02
       uri: rtsp://192.168.1.99:8554/view_cam_camera-02
 
-  # Smart Record — flat properties on nvmultiurisrcbin
-  smart_record: 2 # 0=disable  1=cloud-only  2=multi
+  # Smart Record
+  smart_record: 2            # 0=disable  1=cloud-only  2=multi
   smart_rec_dir_path: "/opt/engine/data/rec"
   smart_rec_file_prefix: "lsr"
-  smart_rec_cache: 10 # pre-event buffer (sec)
+  smart_rec_cache: 10        # pre-event buffer (sec)
   smart_rec_default_duration: 20
-  smart_rec_mode: 0 # 0=audio+video  1=video  2=audio
-  smart_rec_container: 0 # 0=mp4  1=mkv
+  smart_rec_mode: 0          # 0=audio+video  1=video  2=audio
+  smart_rec_container: 0     # 0=mp4  1=mkv
+```
 
-# =============================================================================
-# STAGE 2 — Processing Block (→ processing_bin)
-# Elements: nvinfer | nvinferserver, nvtracker, nvstreamdemux
-# =============================================================================
+> ⚠️ **DS8 SIGSEGV**: `ip_address` **KHÔNG ĐƯỢC** config — setter gây crash. Server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
+
+### Stage 2 — Processing
+
+```yaml
 processing:
   elements:
     - id: pgie_detection
-      type: nvinfer # nvinfer | nvinferserver
+      type: nvinfer
       role: primary_inference
       unique_id: 1
       config_file: "/opt/engine/data/components/pgie_detection/config.yml"
-      process_mode: 1 # 1=primary  2=secondary
+      process_mode: 1          # 1=primary  2=secondary
       interval: 3
       batch_size: 4
       gpu_id: 0
@@ -165,13 +169,14 @@ processing:
       tracker_width: 640
       tracker_height: 640
       gpu_id: 0
-      compute_hw: 1 # 0=default  1=GPU  2=VIC
+      compute_hw: 1            # 0=default  1=GPU  2=VIC
       user_meta_pool_size: 512
       queue: {}
+```
 
-# =============================================================================
-# STAGE 3 — Visuals Block (→ visuals_bin)
-# =============================================================================
+### Stage 3 — Visuals
+
+```yaml
 visuals:
   enable: true
   elements:
@@ -187,16 +192,16 @@ visuals:
     - id: osd
       type: nvdsosd
       gpu_id: 0
-      process_mode: 1 # 0=cpu  1=gpu  2=auto
+      process_mode: 1          # 0=CPU  1=GPU  2=auto
       display_bbox: true
       display_text: false
       display_mask: false
       queue: {}
+```
 
-# =============================================================================
-# STAGE 4 — Outputs Block (→ outputs_bin)
-# Each output = flat elements[] list in GStreamer link order
-# =============================================================================
+### Stage 4 — Outputs
+
+```yaml
 outputs:
   - id: rtsp_out
     type: rtsp_client
@@ -205,52 +210,44 @@ outputs:
         type: nvvideoconvert
         nvbuf_memory_type: nvbuf-mem-cuda-device
         queue: {}
-
       - id: preencode_caps
         type: capsfilter
         caps: "video/x-raw(memory:NVMM), format=(string)NV12"
-
       - id: encoder
         type: nvv4l2h264enc
         bitrate: 3000000
         control_rate: cbr
         profile: main
         iframeinterval: 30
-
       - id: parser
         type: h264parse
         queue:
           max_size_buffers: 20
           leaky: 2
-
       - id: sink
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
         protocols: tcp
         queue: {}
+```
 
-# =============================================================================
-# MESSAGING — Centralized broker config (Redis / Kafka)
-# =============================================================================
+### Messaging
+
+```yaml
 messaging:
-  type: redis # "redis" | "kafka"
+  type: redis              # "redis" | "kafka"
   host: 192.168.1.99
-  port: 6379 # Redis default; use 9092 for Kafka
-### Reconnect Behavior
+  port: 6379               # Redis default; 9092 cho Kafka
+```
 
-**Redis** (hiredis):
-- Background thread with exponential backoff (5s → 10s → ... → 60s max)
-- Retries forever; messages are dropped + logged if broker is down
-- Reconnect starts immediately when a publish fails
+| Broker | Reconnect | Message handling khi broker down |
+|--------|-----------|--------------------------------|
+| **Redis** (hiredis) | Exponential backoff 5s→60s, retry forever | Messages **dropped** + logged |
+| **Kafka** (librdkafka) | Built-in 5s→60s, automatic | Messages **queued** indefinitely |
 
-**Kafka** (librdkafka):
-- Built-in broker-level reconnect with exponential backoff (5s initial → 60s max)
-- Messages are queued indefinitely (`message.timeout.ms=0`); broker reconnect is automatic
-- Once enqueued, messages will eventually be delivered even if broker is down for hours
-- No application thread needed — librdkafka manages everything internally
-# =============================================================================
-# EVENT HANDLERS — GStreamer pad probe callbacks
-# =============================================================================
+### Event Handlers
+
+```yaml
 event_handlers:
   - id: smart_record
     enable: true
@@ -258,7 +255,7 @@ event_handlers:
     probe_element: tracker
     source_element: sources
     trigger: smart_record
-    channel: worker_lsr # Redis Stream / Kafka topic to publish events to
+    channel: worker_lsr
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2
     post_event_sec: 20
@@ -269,7 +266,7 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     trigger: crop_object
-    channel: worker_lsr_snap # Redis Stream / Kafka topic to publish crop events
+    channel: worker_lsr_snap
     label_filter: [bike, bus, car, person, truck]
     save_dir: "/opt/engine/data/rec/objects"
     capture_interval_sec: 5
@@ -281,18 +278,41 @@ event_handlers:
       old_dirs_max_days: 7
 ```
 
-## 4. nvinfer Config File (`.txt`)
+### Queue Defaults & Pipeline Metadata
 
-Các nvinfer properties trong YAML chỉ set GStreamer element properties. Model details được config trong file `.txt` riêng:
+```yaml
+version: "1.0.0"
+
+pipeline:
+  id: "de1"
+  name: "Intrusion Detection Pipeline"
+  log_level: "INFO"
+  gst_log_level: "*:1"
+  dot_file_dir: "/opt/engine/data/logs"
+  log_file: "/opt/engine/data/logs/app.log"
+
+queue_defaults:
+  max_size_buffers: 10
+  max_size_bytes_mb: 20
+  max_size_time_sec: 0.5
+  leaky: 2                 # 0=none  1=upstream  2=downstream
+  silent: true
+```
+
+---
+
+## 4. nvinfer Config File (.txt)
+
+Các nvinfer properties trong YAML chỉ set **GStreamer element properties**. Model details nằm trong file `.txt` riêng:
 
 ```ini
-# configs/nvinfer/pgie_config.txt (DeepStream nvinfer format)
+# configs/nvinfer/pgie_config.txt
 [property]
 gpu-id=0
 net-scale-factor=0.00392156862745098
 model-color-format=0
 gie-unique-id=1
-network-type=0                         # 0=Detector, 1=Classifier, 2=Segmentation
+network-type=0                  # 0=Detector, 1=Classifier, 2=Segmentation
 num-detected-classes=80
 interval=0
 labelfile-path=configs/nvinfer/labels.txt
@@ -304,7 +324,11 @@ topk=300
 nms-threshold=0.5
 ```
 
-## 5. Tracker Config File (`.yml`)
+> 📋 **Phân biệt**: YAML = GStreamer element properties. `.txt` = TensorRT model + inference parameters.
+
+---
+
+## 5. Tracker Config File (.yml)
 
 ```yaml
 # configs/tracker/nvdcf_config.yml
@@ -316,28 +340,38 @@ TargetManagement:
   enableBboxUnClipping: 1
 
 PreProcessor:
-  pixelFormat: 3 # 3=BGR, 1=GRAY
+  pixelFormat: 3    # 3=BGR, 1=GRAY
 
 DataAssociator:
   useMatching: 1
 ```
 
+---
+
 ## 6. YAML Parsing Architecture
 
-```
-YamlConfigParser::parse(path)
-  ├── parse_pipeline_meta()       → PipelineConfig.pipeline
-  ├── parse_queue_defaults()      → PipelineConfig.queue_defaults
-  ├── parse_sources()             → PipelineConfig.sources
-  │     ├── cameras[]
-  │     └── smart_record flat props
-  ├── parse_processing()          → PipelineConfig.processing
-  │     └── elements[]            (nvinfer, nvtracker, ...)
-  ├── parse_visuals()             → PipelineConfig.visuals
-  │     └── elements[]            (tiler, osd, ...)
-  ├── parse_outputs()             → PipelineConfig.outputs (vector)
-  │     └── per output: elements[]
-  └── parse_event_handlers()      → PipelineConfig.event_handlers (vector)
+```mermaid
+flowchart TD
+    F["YAML File"] --> P["YamlConfigParser::parse()"]
+    P --> M["parse_pipeline_meta()"]
+    P --> QD["parse_queue_defaults()"]
+    P --> S["parse_sources()"]
+    P --> PR["parse_processing()"]
+    P --> V["parse_visuals()"]
+    P --> O["parse_outputs()"]
+    P --> EH["parse_event_handlers()"]
+
+    M --> PC["PipelineConfig"]
+    QD --> PC
+    S --> PC
+    PR --> PC
+    V --> PC
+    O --> PC
+    EH --> PC
+
+    style F fill:#ffd93d,color:#333
+    style P fill:#4a9eff,color:#fff
+    style PC fill:#00b894,color:#fff
 ```
 
 ```cpp
@@ -367,31 +401,59 @@ bool YamlConfigParser::parse(const std::string& file_path,
 }
 ```
 
+---
+
 ## 7. Environment Variable Substitution
 
-Config hỗ trợ `${}` syntax cho env vars (thực hiện trong parser trước khi parse YAML nodes):
+Config hỗ trợ `${}` syntax — parser substitutes trước khi parse YAML nodes:
 
 ```yaml
 sources:
   cameras:
     - id: camera-01
-      uri: "${RTSP_URI_CAM01}" # Substituted từ env
+      uri: "${RTSP_URI_CAM01}"    # Thay bằng giá trị env tại runtime
 ```
+
+---
 
 ## 8. Config Validation
 
+`ConfigValidator` chạy **sau parse, trước build pipeline**:
+
+| Validation Rule | Mô tả |
+|----------------|-------|
+| `check_sources_has_cameras` | Ít nhất 1 camera trong `sources.cameras[]` |
+| `check_batch_size_consistency` | `max_batch_size` >= `cameras.size()` |
+| `check_processing_unique_ids` | `unique_id` không trùng giữa PGIE/SGIE |
+| `check_operate_on_gie_references` | SGIE `operate_on_gie_id` phải tồn tại |
+| `check_output_elements_order` | Encoder phải trước sink trong `outputs.elements[]` |
+| `check_event_handler_probe_refs` | `probe_element` phải khớp element ID trong pipeline |
+
 ```cpp
-// ConfigValidator — chạy sau khi parse, trước khi build pipeline:
 class ConfigValidator : public engine::core::config::IConfigValidator {
 public:
     ValidationResult validate(const PipelineConfig& config) {
-        check_sources_has_cameras(config);         // ít nhất 1 camera
-        check_batch_size_consistency(config);       // max_batch_size >= cameras.size()
-        check_processing_unique_ids(config);        // pgie/sgie unique_id không dupe
-        check_operate_on_gie_references(config);    // sgie.operate_on_gie_id phải tồn tại
-        check_output_elements_order(config);        // encoder trước sink
-        check_event_handler_probe_refs(config);     // probe_element phải tồn tại trong pipeline
+        check_sources_has_cameras(config);
+        check_batch_size_consistency(config);
+        check_processing_unique_ids(config);
+        check_operate_on_gie_references(config);
+        check_output_elements_order(config);
+        check_event_handler_probe_refs(config);
         return result_;
     }
 };
 ```
+
+---
+
+## Tham chiếu chéo
+
+| Tài liệu | Liên quan |
+|-----------|-----------|
+| [02_core_interfaces.md](02_core_interfaces.md) | `PipelineConfig` struct definition |
+| [03_pipeline_building.md](03_pipeline_building.md) | Builders consume config |
+| [04_linking_system.md](04_linking_system.md) | `queue: {}` pattern linking details |
+| [07_event_handlers_probes.md](07_event_handlers_probes.md) | `event_handlers` config usage |
+| [09_outputs_smart_record.md](09_outputs_smart_record.md) | `smart_record` properties |
+| [10_rest_api.md](10_rest_api.md) | `rest_api_port` runtime camera API |
+| [`configs/deepstream_default.yml`](../../configs/deepstream_default.yml) | Canonical YAML reference |
