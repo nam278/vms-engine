@@ -1,46 +1,49 @@
+---
+goal: "Plan 04 — Domain Layer: Business Logic (Pure, Framework-Free)"
+version: "1.0"
+date_created: "2025-01-15"
+last_updated: "2025-07-17"
+owner: "VMS Engine Team"
+status: "Planned"
+tags: [domain, business-logic, event-processor, metadata-parser, runtime-params, c++17]
+---
+
 # Plan 04 — Domain Layer (Business Logic)
 
-> Create all files in `domain/` from scratch.
-> **Business rules and interfaces defined cleanly** — no framework (GStreamer, DeepStream SDK) in this layer.
-> The domain layer defines types and interfaces that pipeline and infrastructure implement.
+![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+
+Create all files in `domain/` from scratch.
+**Business rules and interfaces defined cleanly** — no framework (GStreamer, DeepStream SDK) in this layer.
+The domain layer defines types and interfaces that pipeline and infrastructure implement.
 
 ---
 
-## Prerequisites
+## 1. Requirements & Constraints
 
-- Plan 02 completed (core interfaces compile)
-
-## Context
-
-The domain layer contains pure business logic decoupled from all frameworks:
-
-- No GStreamer headers
-- No DeepStream SDK headers
-- No infrastructure dependencies
-- Only `engine::core::config::` types and standard library
-
-Actual DeepStream-specific metadata parsing lives in `pipeline/probes/` where
-the SDK is available. The domain layer only defines interfaces and domain types.
+- **REQ-001**: Plan 02 completed (core interfaces compile).
+- **REQ-002**: Domain layer contains pure business logic — no GStreamer, no DeepStream SDK headers.
+- **REQ-003**: Only depends on `engine::core::config::` types and C++ standard library.
+- **REQ-004**: Actual DeepStream-specific metadata parsing lives in `pipeline/probes/` — domain defines interfaces only.
+- **CON-001**: No infrastructure dependencies (`#include "engine/infrastructure/"` forbidden).
+- **CON-002**: No pipeline dependencies (`#include "engine/pipeline/"` forbidden).
+- **CON-003**: All files use `engine::domain::` namespace.
+- **GUD-001**: Use `std::any` as opaque handle for backend-specific metadata — keeps domain framework-free.
+- **GUD-002**: `RuntimeParamRules` uses `std::variant<int, float, double, bool, std::string>` for type-safe values.
+- **PAT-001**: Interface-first — domain defines `IEventProcessor` and `IMetadataParser`, pipeline implements them.
 
 ---
 
-## Deliverables
+## 2. Implementation Steps
 
-- [ ] `domain/include/engine/domain/event_processor.hpp` — Interface for processing detection events
-- [ ] `domain/include/engine/domain/metadata_parser.hpp` — Interface for parsing frame metadata
-- [ ] `domain/include/engine/domain/runtime_param_rules.hpp` — Runtime parameter validation rules
-- [ ] `domain/src/event_processor.cpp` — Stub or default implementation
-- [ ] `domain/src/metadata_parser.cpp` — Stub or default implementation
-- [ ] `domain/CMakeLists.txt` updated
-- [ ] Domain library compiles
+### Phase 1 — Event Processing Types & Interface
 
----
+**GOAL-001**: Create `IEventProcessor` with `DetectionResult` and `FrameEvent` domain types.
 
-## Interface Definitions
-
-### 4.1 — IEventProcessor
-
-Processes raw detection events from probes and converts them to domain events for publishing.
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-001 | Create `DetectionResult` struct (class_id, label, confidence, bbox, tracker_id, object_id, extra as `std::any`) | ☐ | |
+| TASK-002 | Create `FrameEvent` struct (source_id, source_uri, frame_number, timestamp, detections, pipeline_id) | ☐ | |
+| TASK-003 | Create `IEventProcessor` interface (process_batch, filter_detections) | ☐ | |
 
 ```cpp
 // domain/include/engine/domain/event_processor.hpp
@@ -53,7 +56,6 @@ Processes raw detection events from probes and converts them to domain events fo
 
 namespace engine::domain {
 
-/// Represents a single detection from a frame
 struct DetectionResult {
     int         class_id{-1};
     std::string label;
@@ -63,11 +65,10 @@ struct DetectionResult {
     float       width{0.0f};
     float       height{0.0f};
     int         tracker_id{-1};
-    std::string object_id;             // UUID assigned to tracked object
-    std::any    extra;                  // Backend-specific extra data
+    std::string object_id;
+    std::any    extra;
 };
 
-/// Represents a processed frame with all its detections
 struct FrameEvent {
     int                          source_id{0};
     std::string                  source_uri;
@@ -77,16 +78,11 @@ struct FrameEvent {
     std::string                  pipeline_id;
 };
 
-/// Interface — processes raw frame data into domain events
 class IEventProcessor {
 public:
     virtual ~IEventProcessor() = default;
-
-    /// Process a batch of frame events (one per source in muxed pipeline)
     virtual std::vector<FrameEvent> process_batch(
         const std::any& raw_batch_meta) = 0;
-
-    /// Filter detections by class IDs, confidence threshold, etc.
     virtual std::vector<DetectionResult> filter_detections(
         const std::vector<DetectionResult>& detections,
         const std::vector<int>& class_ids,
@@ -96,9 +92,13 @@ public:
 } // namespace engine::domain
 ```
 
-### 4.2 — IMetadataParser
+### Phase 2 — Metadata Parser Interface
 
-Extracts structured metadata from backend-specific batch metadata pointers.
+**GOAL-002**: Create `IMetadataParser` for backend-agnostic metadata extraction.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-004 | Create `IMetadataParser` interface (parse_batch, parse_frame_objects, get_source_uri) | ☐ | |
 
 ```cpp
 // domain/include/engine/domain/metadata_parser.hpp
@@ -111,20 +111,13 @@ Extracts structured metadata from backend-specific batch metadata pointers.
 
 namespace engine::domain {
 
-/// Interface — parses backend-specific metadata into domain types
 class IMetadataParser {
 public:
     virtual ~IMetadataParser() = default;
-
-    /// Parse batch metadata into a list of FrameEvents
     virtual std::vector<FrameEvent> parse_batch(
         const std::any& batch_meta) = 0;
-
-    /// Parse a single frame's object metadata into DetectionResults
     virtual std::vector<DetectionResult> parse_frame_objects(
         const std::any& frame_meta) = 0;
-
-    /// Extract source URI from frame metadata
     virtual std::string get_source_uri(
         const std::any& frame_meta, int source_id) const = 0;
 };
@@ -132,9 +125,15 @@ public:
 } // namespace engine::domain
 ```
 
-### 4.3 — RuntimeParamRules
+### Phase 3 — Runtime Parameter Rules
 
-Defines which parameters can be changed at runtime and their validation rules.
+**GOAL-003**: Create `RuntimeParamRules` registry with validation and default rules.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-005 | Define `ParamValue` variant and `ParamRule` struct | ☐ | |
+| TASK-006 | Implement `RuntimeParamRules` class (register_rule, is_modifiable, validate, get_default, requires_restart) | ☐ | |
+| TASK-007 | Implement `create_default()` with common runtime-modifiable parameters | ☐ | |
 
 ```cpp
 // domain/include/engine/domain/runtime_param_rules.hpp
@@ -147,41 +146,25 @@ Defines which parameters can be changed at runtime and their validation rules.
 
 namespace engine::domain {
 
-/// Allowed runtime parameter value types
 using ParamValue = std::variant<int, float, double, bool, std::string>;
 
-/// Validation constraint for a single runtime parameter
 struct ParamRule {
     std::string  name;
     std::string  description;
     ParamValue   default_value;
-    ParamValue   min_value;      // For numeric types
-    ParamValue   max_value;      // For numeric types
+    ParamValue   min_value;
+    ParamValue   max_value;
     bool         requires_restart{false};
 };
 
-/// Registry of all runtime-changeable parameters
 class RuntimeParamRules {
 public:
-    /// Register a new parameter rule
     void register_rule(const std::string& param_name, ParamRule rule);
-
-    /// Check if a parameter exists and can be changed at runtime
     bool is_modifiable(const std::string& param_name) const;
-
-    /// Validate a parameter value against its rules
     bool validate(const std::string& param_name, const ParamValue& value) const;
-
-    /// Get the default value for a parameter
     ParamValue get_default(const std::string& param_name) const;
-
-    /// Get all registered parameter names
     std::unordered_set<std::string> get_all_param_names() const;
-
-    /// Check if parameter change requires pipeline restart
     bool requires_restart(const std::string& param_name) const;
-
-    /// Built-in rules for common parameters
     static RuntimeParamRules create_default();
 
 private:
@@ -190,22 +173,6 @@ private:
 
 } // namespace engine::domain
 ```
-
----
-
-## Source Implementations
-
-### 4.4 — Stub EventProcessor
-
-```cpp
-// domain/src/event_processor.cpp
-// Default stub — actual implementation in pipeline layer
-// (DeepStream-specific parsing lives in pipeline/probes/ and pipeline/event_handlers/)
-```
-
-This file will remain minimal. The actual `IEventProcessor` implementation will live in the pipeline layer (where it has access to DeepStream SDK types). The domain layer only defines the interface and domain types.
-
-### 4.5 — RuntimeParamRules Implementation
 
 ```cpp
 // domain/src/runtime_param_rules.cpp
@@ -224,7 +191,6 @@ bool RuntimeParamRules::is_modifiable(const std::string& param_name) const {
 bool RuntimeParamRules::validate(const std::string& param_name, const ParamValue& value) const {
     auto it = rules_.find(param_name);
     if (it == rules_.end()) return false;
-    // Type must match default_value variant index
     return value.index() == it->second.default_value.index();
 }
 
@@ -242,13 +208,12 @@ std::unordered_set<std::string> RuntimeParamRules::get_all_param_names() const {
 
 bool RuntimeParamRules::requires_restart(const std::string& param_name) const {
     auto it = rules_.find(param_name);
-    if (it == rules_.end()) return true; // Unknown params require restart
+    if (it == rules_.end()) return true;
     return it->second.requires_restart;
 }
 
 RuntimeParamRules RuntimeParamRules::create_default() {
     RuntimeParamRules rules;
-    // Common runtime-modifiable parameters
     rules.register_rule("confidence_threshold", {
         "confidence_threshold",
         "Minimum detection confidence (0.0 – 1.0)",
@@ -257,7 +222,7 @@ RuntimeParamRules RuntimeParamRules::create_default() {
     rules.register_rule("tracker_enabled", {
         "tracker_enabled",
         "Enable/disable object tracker",
-        true, false, true, true // requires restart
+        true, false, true, true
     });
     return rules;
 }
@@ -265,9 +230,13 @@ RuntimeParamRules RuntimeParamRules::create_default() {
 } // namespace engine::domain
 ```
 
----
+### Phase 4 — Build Integration
 
-## CMakeLists.txt
+**GOAL-004**: Create `domain/CMakeLists.txt` defining `vms_engine_domain` static library.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-008 | Create `domain/CMakeLists.txt` with STATIC library target | ☐ | |
 
 ```cmake
 # domain/CMakeLists.txt
@@ -286,31 +255,57 @@ target_link_libraries(vms_engine_domain
 
 ---
 
-## Verification
+## 3. Alternatives
 
-```bash
-# Inside container: docker compose exec app bash
-cd /opt/vms_engine
-
-# 1. Compile domain library
-cmake --build build --target vms_engine_domain -- -j5
-
-# 2. Check no infrastructure or pipeline dependencies
-grep -r "infrastructure\|pipeline\|deepstream\|gst\|nvds" domain/ \
-    --include="*.hpp" --include="*.cpp" && echo "FAIL" || echo "PASS"
-
-# 3. Check namespace
-grep -rL "engine::domain" domain/include/ --include="*.hpp" | head -10
-```
+- **ALT-001**: Use `void*` instead of `std::any` for opaque metadata (rejected — `std::any` is type-safe and standard C++17).
+- **ALT-002**: Put `DetectionResult`/`FrameEvent` in core layer (rejected — these are domain concepts, not framework interfaces).
+- **ALT-003**: Implement metadata parsing in domain layer (rejected — parsing requires DeepStream SDK headers, violating domain purity).
 
 ---
 
-## Checklist
+## 4. Dependencies
 
-- [ ] `event_processor.hpp` — interface + `FrameEvent` / `DetectionResult` types
-- [ ] `metadata_parser.hpp` — interface for backend-agnostic metadata parsing
-- [ ] `runtime_param_rules.hpp` — parameter validation rules + registry
-- [ ] `runtime_param_rules.cpp` — implementation with default rules
-- [ ] `domain/CMakeLists.txt` updated
-- [ ] `vms_engine_domain` compiles
-- [ ] Zero infrastructure/pipeline/backend dependencies
+- **DEP-001**: Plan 02 completed — `vms_engine_core` with config types.
+- **DEP-002**: C++17 standard library — `std::any`, `std::variant`, `std::unordered_map`.
+- **DEP-003**: No external dependencies beyond core.
+
+---
+
+## 5. Files
+
+| ID | File Path | Description |
+|----|-----------|-------------|
+| FILE-001 | `domain/include/engine/domain/event_processor.hpp` | IEventProcessor + DetectionResult + FrameEvent |
+| FILE-002 | `domain/include/engine/domain/metadata_parser.hpp` | IMetadataParser interface |
+| FILE-003 | `domain/include/engine/domain/runtime_param_rules.hpp` | RuntimeParamRules registry |
+| FILE-004 | `domain/src/runtime_param_rules.cpp` | RuntimeParamRules implementation + defaults |
+| FILE-005 | `domain/CMakeLists.txt` | Build config for vms_engine_domain |
+
+---
+
+## 6. Testing & Verification
+
+- **TEST-001**: Compile domain library — `cmake --build build --target vms_engine_domain -- -j5`.
+- **TEST-002**: No infrastructure/pipeline/backend dependencies — `grep -r "infrastructure\|pipeline\|deepstream\|gst\|nvds" domain/ --include="*.hpp" --include="*.cpp" && echo "FAIL" || echo "PASS"`.
+- **TEST-003**: Namespace consistency — `grep -rL "engine::domain" domain/include/ --include="*.hpp" | head -10`.
+- **TEST-004**: `RuntimeParamRules::create_default()` returns valid rules with expected param names.
+- **TEST-005**: `validate()` accepts correct types and rejects mismatched variant types.
+
+---
+
+## 7. Risks & Assumptions
+
+- **RISK-001**: `std::any` runtime type erasure limits compile-time safety; mitigated by clear interface contracts and pipeline-layer type checks.
+- **ASSUMPTION-001**: Actual `IEventProcessor` and `IMetadataParser` implementations live in `pipeline/` where DeepStream SDK is available.
+- **ASSUMPTION-002**: Domain layer remains thin — heavy processing logic lives in pipeline probes and event handlers.
+- **ASSUMPTION-003**: `ParamValue` variant covers all runtime-modifiable parameter types needed by the system.
+
+---
+
+## 8. Related Specifications
+
+- [Plan 02 — Core Layer](02_core_layer.md) (prerequisite interfaces)
+- [Plan 03 — Pipeline Layer](03_pipeline_layer.md) (implements domain interfaces)
+- [Plan 05 — Infrastructure Layer](05_infrastructure_layer.md)
+- [Event Handlers & Probes](../../docs/architecture/deepstream/07_event_handlers_probes.md)
+- [AGENTS.md](../../AGENTS.md)

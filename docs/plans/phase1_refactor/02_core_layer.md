@@ -1,33 +1,57 @@
+---
+goal: "Plan 02 — Core Layer: Interfaces, Config Types, RAII Utilities"
+version: "1.0"
+date_created: "2025-01-15"
+last_updated: "2025-07-17"
+owner: "VMS Engine Team"
+status: "Planned"
+tags: [core, interfaces, config-types, raii, logger, c++17, deepstream]
+---
+
 # Plan 02 — Core Layer (Interfaces, Config Types, Utilities)
 
-> Build the `core/` layer from scratch for vms-engine.
-> This is the foundation — **zero implementations**, only interfaces + config types + utils.
-> All config types match the canonical YAML: [`docs/configs/deepstream_default.yml`](../../configs/deepstream_default.yml).
+![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+
+Build the `core/` layer from scratch for vms-engine.
+This is the foundation — **zero implementations**, only interfaces + config types + utils.
+All config types match the canonical YAML: [`docs/configs/deepstream_default.yml`](../../configs/deepstream_default.yml).
 
 ---
 
-## Prerequisites
+## 1. Requirements & Constraints
 
-- Plan 01 completed (scaffold builds with placeholder sources)
-- Build verification inside `vms-engine-dev` container
-
-## Deliverables
-
-- [ ] Config types in `core/include/engine/core/config/config_types.hpp`
-- [ ] All `I*` interfaces under `core/include/engine/core/`
-- [ ] RAII helpers in `core/include/engine/core/utils/gst_utils.hpp`
-- [ ] Logger macros in `core/include/engine/core/utils/logger.hpp`
-- [ ] `core/CMakeLists.txt` updated with all sources
-- [ ] `vms_engine_core` library compiles independently
+- **REQ-001**: Define all `I*` interfaces under `core/include/engine/core/` before any implementation in other layers.
+- **REQ-002**: Define all config structs in a single `config_types.hpp` matching the canonical YAML schema.
+- **REQ-003**: Provide RAII helpers for GStreamer objects in `gst_utils.hpp` (header-only).
+- **REQ-004**: Provide logger macros in `logger.hpp` wrapping spdlog (`LOG_T` through `LOG_C`).
+- **REQ-005**: `vms_engine_core` library must compile independently with zero implementation code.
+- **REQ-006**: All headers use `engine::core::*` namespace — no `lantana::` references.
+- **CON-001**: Core must NOT include pipeline, domain, or infrastructure headers (dependency rule: core → ∅).
+- **CON-002**: No DeepStream SDK-specific code in core — only GStreamer forward-declares and `<gst/gst.h>`.
+- **CON-003**: No `std::variant` for backend selection — vms-engine is DeepStream-native.
+- **GUD-001**: Use `has_queue` boolean + `QueueConfig` struct instead of `std::optional<QueueConfig>` for simpler builder logic.
+- **GUD-002**: Single `config_types.hpp` over separate per-element config headers to avoid circular dependencies.
+- **PAT-001**: Interface-first pattern — define in core, implement in pipeline/domain/infrastructure layers.
 
 ---
 
-## Tasks
+## 2. Implementation Steps
 
-### 2.1 — Config Types (`config_types.hpp`)
+### Phase 1 — Config Types (Single Header)
 
-Single header with all config structs matching the canonical YAML schema.
-No separate files per element type — everything in one place.
+**GOAL-001**: Define all config structs in `core/include/engine/core/config/config_types.hpp`.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-001 | Create `config_types.hpp` with all structs matching canonical YAML | ☐ | |
+| TASK-002 | Define `QueueConfig` (shared — queue_defaults + inline queue overrides) | ☐ | |
+| TASK-003 | Define `PipelineMetaConfig` (id, name, log_level, gst_log_level, dot_file_dir, log_file) | ☐ | |
+| TASK-004 | Define `SourcesConfig` with `CameraConfig`, smart record flat properties, 3 property groups | ☐ | |
+| TASK-005 | Define `ProcessingElementConfig` + `ProcessingConfig` (nvinfer, nvtracker, nvdsanalytics) | ☐ | |
+| TASK-006 | Define `VisualsElementConfig` + `VisualsConfig` (tiler, osd) | ☐ | |
+| TASK-007 | Define `OutputElementConfig` + `OutputConfig` (encoders, sinks, msgconv, msgbroker) | ☐ | |
+| TASK-008 | Define `EventHandlerConfig` with `BrokerConfig` + `CleanupConfig` (pad probe callbacks) | ☐ | |
+| TASK-009 | Define root `PipelineConfig` aggregating all sub-configs | ☐ | |
 
 **File:** `core/include/engine/core/config/config_types.hpp`
 
@@ -116,7 +140,6 @@ struct SourcesConfig {
     int smart_rec_default_duration = 20;
     int smart_rec_mode         = 0;          ///< 0=audio+video, 1=video, 2=audio
     int smart_rec_container    = 0;          ///< 0=mp4, 1=mkv
-    // NO output_queue — queue is per-element (queue: {} inline on each element)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -147,9 +170,6 @@ struct ProcessingElementConfig {
     bool display_tracking_id   = true;
     int user_meta_pool_size    = 512;
 
-    // nvdsanalytics properties
-    // (config_file shared with nvinfer — same field)
-
     // Inline queue
     bool has_queue             = false;      ///< true if queue: {} present in YAML
     QueueConfig queue;
@@ -157,7 +177,6 @@ struct ProcessingElementConfig {
 
 struct ProcessingConfig {
     std::vector<ProcessingElementConfig> elements;
-    // NO output_queue — queue is per-element (queue: {} inline)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -190,7 +209,6 @@ struct VisualsElementConfig {
 struct VisualsConfig {
     bool enable                = true;
     std::vector<VisualsElementConfig> elements;
-    // NO output_queue — queue is per-element (queue: {} inline)
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -201,9 +219,6 @@ struct OutputElementConfig {
     std::string id;
     std::string type;                        ///< GStreamer factory name
 
-    // Common GStreamer properties (flat — parsed from YAML key-value)
-    // Each element type has different properties; store as key-value pairs
-    // for flexibility. Builders extract what they need.
     std::string caps;                        ///< for capsfilter
     std::string nvbuf_memory_type;           ///< for nvvideoconvert
     int bitrate                = 0;          ///< for encoder (bps)
@@ -284,7 +299,14 @@ struct PipelineConfig {
 } // namespace engine::core::config
 ```
 
-### 2.2 — Config Interfaces
+### Phase 2 — Config Interfaces
+
+**GOAL-002**: Define parser and validator interfaces for config loading/validation.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-010 | Create `IConfigParser` interface (`core/include/engine/core/config/iconfig_parser.hpp`) | ☐ | |
+| TASK-011 | Create `IConfigValidator` interface with `ValidationResult` struct | ☐ | |
 
 **File:** `core/include/engine/core/config/iconfig_parser.hpp`
 
@@ -335,7 +357,15 @@ public:
 } // namespace engine::core::config
 ```
 
-### 2.3 — Builder Interfaces
+### Phase 3 — Builder Interfaces
+
+**GOAL-003**: Define element builder, pipeline builder, and builder factory interfaces.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-012 | Create `IElementBuilder` interface (takes full `PipelineConfig` + index) | ☐ | |
+| TASK-013 | Create `IPipelineBuilder` interface (build + get_pipeline) | ☐ | |
+| TASK-014 | Create `IBuilderFactory` interface (creates builders by GStreamer type name) | ☐ | |
 
 **File:** `core/include/engine/core/builders/ielement_builder.hpp`
 
@@ -408,7 +438,14 @@ public:
 } // namespace engine::core::builders
 ```
 
-### 2.4 — Pipeline Interfaces
+### Phase 4 — Pipeline Interfaces
+
+**GOAL-004**: Define pipeline state enum and lifecycle manager interface.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-015 | Create `PipelineState` enum (Uninitialized, Ready, Playing, Paused, Stopped, Error) | ☐ | |
+| TASK-016 | Create `IPipelineManager` interface (initialize, start, stop, pause, resume, get_state) | ☐ | |
 
 **File:** `core/include/engine/core/pipeline/pipeline_state.hpp`
 
@@ -456,7 +493,14 @@ public:
 } // namespace engine::core::pipeline
 ```
 
-### 2.5 — Handler & Eventing Interfaces
+### Phase 5 — Handler & Eventing Interfaces
+
+**GOAL-005**: Define event handler base interface and event type constants.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-017 | Create `IHandler` base interface (no static members, no infrastructure types) | ☐ | |
+| TASK-018 | Create `event_types.hpp` constants (ON_EOS, ON_DETECT, ON_STATE_CHANGE, ON_ERROR) | ☐ | |
 
 **File:** `core/include/engine/core/handlers/ihandler.hpp`
 
@@ -507,7 +551,16 @@ inline constexpr std::string_view ON_ERROR = "on_error";
 } // namespace engine::core::eventing
 ```
 
-### 2.6 — Messaging Interface
+### Phase 6 — Messaging, Storage, Recording, Runtime Interfaces
+
+**GOAL-006**: Define interfaces for external services and runtime control.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-019 | Create `IMessageProducer` interface (connect, publish, disconnect) | ☐ | |
+| TASK-020 | Create `IStorageManager` interface (initialize, save, save_file, remove) | ☐ | |
+| TASK-021 | Create `ISmartRecordController` interface (start_recording, stop_recording) | ☐ | |
+| TASK-022 | Create `IRuntimeParamManager` interface (set_param, get_param) | ☐ | |
 
 **File:** `core/include/engine/core/messaging/imessage_producer.hpp`
 
@@ -537,8 +590,6 @@ public:
 } // namespace engine::core::messaging
 ```
 
-### 2.7 — Storage Interface
-
 **File:** `core/include/engine/core/storage/istorage_manager.hpp`
 
 ```cpp
@@ -565,8 +616,6 @@ public:
 } // namespace engine::core::storage
 ```
 
-### 2.8 — Recording Interface
-
 **File:** `core/include/engine/core/recording/ismart_record_controller.hpp`
 
 ```cpp
@@ -587,8 +636,6 @@ public:
 
 } // namespace engine::core::recording
 ```
-
-### 2.9 — Runtime Interfaces
 
 **File:** `core/include/engine/core/runtime/iruntime_param_manager.hpp`
 
@@ -614,11 +661,17 @@ public:
 } // namespace engine::core::runtime
 ```
 
-### 2.10 — Utility Headers
+### Phase 7 — Utility Headers + Source
+
+**GOAL-007**: Provide RAII helpers for GStreamer objects and logger infrastructure.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-023 | Create `gst_utils.hpp` with RAII type aliases (GstElementPtr, GstCapsPtr, etc.) | ☐ | |
+| TASK-024 | Create `logger.hpp` with LOG_* macros wrapping spdlog | ☐ | |
+| TASK-025 | Create `spdlog_logger.hpp` + `spdlog_logger.cpp` (initialize_logger function) | ☐ | |
 
 **File:** `core/include/engine/core/utils/gst_utils.hpp`
-
-RAII helpers for GStreamer objects — header-only, no `.cpp` needed.
 
 ```cpp
 #pragma once
@@ -680,8 +733,6 @@ void initialize_logger(const std::string& log_level = "INFO",
 } // namespace engine::core::utils
 ```
 
-### 2.11 — Source Files
-
 **File:** `core/src/utils/spdlog_logger.cpp`
 
 ```cpp
@@ -722,7 +773,13 @@ void initialize_logger(const std::string& log_level,
 } // namespace engine::core::utils
 ```
 
-### 2.12 — CMakeLists.txt Update
+### Phase 8 — CMakeLists.txt
+
+**GOAL-008**: Update `core/CMakeLists.txt` to compile `vms_engine_core` independently.
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-026 | Update `core/CMakeLists.txt` with spdlog_logger.cpp source and public includes | ☐ | |
 
 ```cmake
 # core/CMakeLists.txt
@@ -752,23 +809,11 @@ set_target_properties(vms_engine_core PROPERTIES
 
 ### Why single `config_types.hpp` instead of separate files?
 
-In lantanav2, config was split across 10+ headers (`source_config.hpp`, `muxer_config.hpp`, `inference_config.hpp`, `tracker_config.hpp`, `tiler_config.hpp`, `osd_config.hpp`, `sink_config.hpp`, `encoding_config.hpp`, ...) with `std::variant` wrappers to support multiple backends. This created:
-
-- Circular dependency chains
-- Excessive header coupling
-- Hard-to-understand config flow
-
-vms-engine is **DeepStream-native** — no backend variants. All structs are plain, flat, and directly map to the YAML schema. One header keeps everything discoverable and eliminates cross-file dependencies.
+In lantanav2, config was split across 10+ headers (`source_config.hpp`, `muxer_config.hpp`, `inference_config.hpp`, `tracker_config.hpp`, etc.) with `std::variant` wrappers to support multiple backends. This created circular dependency chains and excessive header coupling. vms-engine is DeepStream-native — no backend variants. All structs are plain, flat, and directly map to the YAML schema. One header keeps everything discoverable and eliminates cross-file dependencies.
 
 ### Why `has_queue` + `QueueConfig` instead of `std::optional<QueueConfig>`?
 
-The YAML uses three patterns:
-
-- `queue: {}` → insert queue with defaults
-- `queue: { max_size_buffers: 20 }` → insert queue with overrides
-- _(no queue key)_ → no queue before this element
-
-Using `has_queue` boolean + a `QueueConfig` struct (always populated with defaults) simplifies the builder logic:
+The YAML uses three patterns: `queue: {}` (defaults), `queue: { max_size_buffers: 20 }` (overrides), or no queue key (skip). Using `has_queue` boolean + always-populated `QueueConfig` simplifies builder logic:
 
 ```cpp
 if (elem_cfg.has_queue) {
@@ -776,58 +821,79 @@ if (elem_cfg.has_queue) {
 }
 ```
 
-### Where do individual element configs go?
+---
 
-nvinfer model configuration (`.txt` / `.yml` files) is separate from the pipeline YAML — it's referenced via `config_file` path. The YAML only contains GStreamer element properties.
+## 3. Alternatives
+
+- **ALT-001**: Separate config headers per element type (rejected — causes circular dependencies, as seen in lantanav2).
+- **ALT-002**: Use `std::optional<QueueConfig>` for inline queues (rejected — `has_queue` boolean is simpler for builder conditionals).
+- **ALT-003**: Include DeepStream SDK headers in core (rejected — violates layering; core only uses `<gst/gst.h>` forward-declares).
 
 ---
 
-## Verification
+## 4. Dependencies
 
-```bash
-# Inside container: docker compose exec app bash
-cd /opt/vms_engine
-
-# 1. Configure
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream -G Ninja
-
-# 2. Build core only
-cmake --build build --target vms_engine_core -- -j5
-
-# 3. Build all
-cmake --build build -- -j5
-
-# 4. Run stub
-./build/bin/vms_engine
-
-# 5. Check no backend dependencies in core
-grep -r "backends\|deepstream\|dlstreamer" core/include/ core/src/ && echo "FAIL" || echo "PASS"
-
-# 6. Check no lantana references
-grep -r "lantana" core/include/ core/src/ && echo "FAIL" || echo "PASS"
-
-# 7. Check all headers have engine:: namespace
-grep -rL "engine::" core/include/engine/ | head -20
-```
+- **DEP-001**: Plan 01 completed — project scaffold and CMake build system in place.
+- **DEP-002**: spdlog v1.14.1 — fetched via FetchContent in root `CMakeLists.txt`.
+- **DEP-003**: GStreamer 1.0 — provided by DeepStream SDK container.
+- **DEP-004**: GLib 2.0 — provided by DeepStream SDK container.
+- **DEP-005**: `docs/configs/deepstream_default.yml` — canonical YAML schema for config struct design.
 
 ---
 
-## Checklist
+## 5. Files
 
-- [ ] `config_types.hpp` with all structs matching canonical YAML
-- [ ] Config interfaces: `IConfigParser`, `IConfigValidator`
-- [ ] Builder interfaces: `IElementBuilder`, `IPipelineBuilder`, `IBuilderFactory`
-- [ ] Pipeline interfaces: `IPipelineManager`, `PipelineState`
-- [ ] Handler interface: `IHandler` (no static members, no Redis coupling)
-- [ ] Eventing: `event_types.hpp` constants
-- [ ] Messaging: `IMessageProducer`
-- [ ] Storage: `IStorageManager`
-- [ ] Recording: `ISmartRecordController`
-- [ ] Runtime: `IRuntimeParamManager`
-- [ ] Utils: `gst_utils.hpp` (RAII), `logger.hpp` (macros), `spdlog_logger.hpp/.cpp`
-- [ ] `core/CMakeLists.txt` updated
-- [ ] `vms_engine_core` compiles independently
-- [ ] Zero `lantana` references in core/
-- [ ] Zero backend-specific includes in core/
+| ID | File Path | Description |
+|----|-----------|-------------|
+| FILE-001 | `core/include/engine/core/config/config_types.hpp` | All config structs (single header) |
+| FILE-002 | `core/include/engine/core/config/iconfig_parser.hpp` | IConfigParser interface |
+| FILE-003 | `core/include/engine/core/config/iconfig_validator.hpp` | IConfigValidator + ValidationResult |
+| FILE-004 | `core/include/engine/core/builders/ielement_builder.hpp` | IElementBuilder interface |
+| FILE-005 | `core/include/engine/core/builders/ipipeline_builder.hpp` | IPipelineBuilder interface |
+| FILE-006 | `core/include/engine/core/builders/ibuilder_factory.hpp` | IBuilderFactory interface |
+| FILE-007 | `core/include/engine/core/pipeline/pipeline_state.hpp` | PipelineState enum |
+| FILE-008 | `core/include/engine/core/pipeline/ipipeline_manager.hpp` | IPipelineManager interface |
+| FILE-009 | `core/include/engine/core/handlers/ihandler.hpp` | IHandler base interface |
+| FILE-010 | `core/include/engine/core/eventing/event_types.hpp` | Event type constants |
+| FILE-011 | `core/include/engine/core/messaging/imessage_producer.hpp` | IMessageProducer interface |
+| FILE-012 | `core/include/engine/core/storage/istorage_manager.hpp` | IStorageManager interface |
+| FILE-013 | `core/include/engine/core/recording/ismart_record_controller.hpp` | ISmartRecordController interface |
+| FILE-014 | `core/include/engine/core/runtime/iruntime_param_manager.hpp` | IRuntimeParamManager interface |
+| FILE-015 | `core/include/engine/core/utils/gst_utils.hpp` | RAII helpers (header-only) |
+| FILE-016 | `core/include/engine/core/utils/logger.hpp` | LOG_* macros |
+| FILE-017 | `core/include/engine/core/utils/spdlog_logger.hpp` | initialize_logger declaration |
+| FILE-018 | `core/src/utils/spdlog_logger.cpp` | initialize_logger implementation |
+| FILE-019 | `core/CMakeLists.txt` | Build config for vms_engine_core |
+
+---
+
+## 6. Testing & Verification
+
+- **TEST-001**: Compile `vms_engine_core` independently — `cmake --build build --target vms_engine_core -- -j5`.
+- **TEST-002**: Full build succeeds — `cmake --build build -- -j5`.
+- **TEST-003**: Run stub binary — `./build/bin/vms_engine`.
+- **TEST-004**: No backend dependencies in core — `grep -r "backends\|deepstream\|dlstreamer" core/include/ core/src/ && echo "FAIL" || echo "PASS"`.
+- **TEST-005**: No lantana references — `grep -r "lantana" core/include/ core/src/ && echo "FAIL" || echo "PASS"`.
+- **TEST-006**: All headers have `engine::` namespace — `grep -rL "engine::" core/include/engine/ | head -20`.
+- **TEST-007**: Full cmake configuration — configure, build core only, then build all.
+
+---
+
+## 7. Risks & Assumptions
+
+- **RISK-001**: Adding new DeepStream element types later may require extending `ProcessingElementConfig` or `OutputElementConfig` with additional flat fields; mitigated by keeping structs open to extension.
+- **RISK-002**: Single `config_types.hpp` may grow large; mitigated by clear section separators and struct naming conventions.
+- **ASSUMPTION-001**: DeepStream SDK 8.0 is the only pipeline backend — no multi-backend variant support needed.
+- **ASSUMPTION-002**: `<gst/gst.h>` is the only framework header allowed in core interfaces.
+- **ASSUMPTION-003**: All config struct defaults match `docs/configs/deepstream_default.yml` values.
+
+---
+
+## 8. Related Specifications
+
+- [Plan 01 — Project Scaffold](01_project_scaffold.md)
+- [Plan 03 — Pipeline Layer](03_pipeline_layer.md)
+- [Canonical YAML Schema](../../configs/deepstream_default.yml)
+- [RAII Guide](../../docs/architecture/RAII.md)
+- [Core Interfaces Doc](../../docs/architecture/deepstream/02_core_interfaces.md)
+- [AGENTS.md](../../AGENTS.md)

@@ -1,48 +1,61 @@
+---
+goal: "Plan 01 — Project scaffold, directory tree, CMake build system, Docker setup"
+version: "1.0"
+date_created: "2025-01-15"
+last_updated: "2025-07-17"
+owner: "VMS Engine Team"
+status: "Planned"
+tags: [cmake, scaffold, build-system, docker, c++17]
+---
+
 # Plan 01 — Project Scaffold & Build System
 
-> Create the vms-engine directory tree, root CMakeLists.txt, sub-module CMake files,
-> and initial placeholder files. **No C++ source code yet** — just the skeleton that compiles.
+![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
 
----
+Create the vms-engine directory tree, root CMakeLists.txt, sub-module CMake files, and initial placeholder files. **No C++ source code yet** — just the skeleton that compiles.
 
-## Prerequisites
+## 1. Requirements & Constraints
 
-- Docker image `vms-engine-dev:latest` built from `Dockerfile` (DeepStream 8.0 base)
-- Container running via `docker compose up -d`, source mounted at `/opt/vms_engine`
-- All work done inside container: `docker compose exec app bash`
+- **REQ-001**: Root `CMakeLists.txt` with all dependencies (FetchContent + system)
+- **REQ-002**: Subdirectory `CMakeLists.txt` for each layer (6 files)
+- **REQ-003**: Directory structure matching Clean Architecture layers
+- **REQ-004**: Build succeeds inside container (empty libraries + stub main.cpp)
+- **CON-001**: Docker image `vms-engine-dev:latest` built from `Dockerfile` (DeepStream 8.0 base)
+- **CON-002**: Container running via `docker compose up -d`, source mounted at `/opt/vms_engine`
+- **CON-003**: All work done inside container: `docker compose exec app bash`
+- **GUD-001**: `.clang-format` configured for consistent code style
+- **GUD-002**: `configs/default.yml` symlinked to canonical config
 
-## Deliverables
+## 2. Implementation Steps
 
-- [ ] Root `CMakeLists.txt` with all dependencies (FetchContent + system)
-- [ ] Subdirectory `CMakeLists.txt` for each layer (6 files)
-- [ ] Directory structure with placeholder `.gitkeep` files
-- [ ] `configs/default.yml` → symlink or copy of `docs/configs/deepstream_default.yml`
-- [ ] `.clang-format` configured
-- [ ] Build succeeds inside container (empty libraries + stub main.cpp)
+### Phase 1: Directory Structure
 
----
+- GOAL-001: Create the complete directory tree for all 5 layers
 
-## Tasks
-
-### 1.1 Create Directory Structure
+| Task     | Description                                    | Completed | Date |
+| -------- | ---------------------------------------------- | --------- | ---- |
+| TASK-001 | Create core layer directories                  |           |      |
+| TASK-002 | Create pipeline layer directories              |           |      |
+| TASK-003 | Create domain layer directories                |           |      |
+| TASK-004 | Create infrastructure layer directories        |           |      |
+| TASK-005 | Create app and runtime data directories        |           |      |
 
 ```bash
-# Run inside container: docker compose exec app bash
 cd /opt/vms_engine
 
-# ── Core Layer ──────────────────────────────────────────────────────
+# Core Layer
 mkdir -p core/include/engine/core/{builders,config,pipeline,eventing,handlers,messaging,storage,recording,runtime,utils}
 mkdir -p core/src/utils
 
-# ── Pipeline Layer (DeepStream element builders + linking) ──────────
+# Pipeline Layer
 mkdir -p pipeline/include/engine/pipeline/{block_builders,builders,linking,probes,event_handlers}
 mkdir -p pipeline/src/{block_builders,builders,linking,probes,event_handlers}
 
-# ── Domain Layer (business logic — thin for now) ────────────────────
+# Domain Layer
 mkdir -p domain/include/engine/domain
 mkdir -p domain/src
 
-# ── Infrastructure Layer (config parser, messaging, storage) ────────
+# Infrastructure Layer
 mkdir -p infrastructure/config_parser/include/engine/infrastructure/config_parser
 mkdir -p infrastructure/config_parser/src
 mkdir -p infrastructure/messaging/include/engine/infrastructure/messaging
@@ -50,16 +63,24 @@ mkdir -p infrastructure/messaging/src
 mkdir -p infrastructure/storage/include/engine/infrastructure/storage
 mkdir -p infrastructure/storage/src
 
-# ── Application entry point ─────────────────────────────────────────
+# Application + runtime
 mkdir -p app
-
-# ── Runtime data directories ────────────────────────────────────────
 mkdir -p configs/components
 mkdir -p models
 mkdir -p scripts
 ```
 
-### 1.2 Root CMakeLists.txt
+### Phase 2: Root CMakeLists.txt
+
+- GOAL-002: Create top-level CMake build configuration with all dependencies
+
+| Task     | Description                                           | Completed | Date |
+| -------- | ----------------------------------------------------- | --------- | ---- |
+| TASK-006 | Define C++17 standard and output directories          |           |      |
+| TASK-007 | Configure system dependencies (PkgConfig, CUDA, GST)  |           |      |
+| TASK-008 | Configure DeepStream SDK 8.0 discovery                |           |      |
+| TASK-009 | Configure FetchContent (spdlog, yaml-cpp, hiredis, json) |           |      |
+| TASK-010 | Add subdirectory targets and clang-format target      |           |      |
 
 ```cmake
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
@@ -102,7 +123,6 @@ set(DEEPSTREAM_INCLUDE_DIRS
     ${DEEPSTREAM_DIR}/sources/includes/nvdsinfer
 )
 
-# DeepStream libraries
 set(DEEPSTREAM_SDK_LIBS "")
 foreach(_lib nvds_meta nvdsgst_meta nvds_utils nvdsgst_helper
              nvbufsurface nvbufsurftransform nvds_infer nvds_batch_utils)
@@ -160,13 +180,23 @@ if(CLANG_FORMAT)
 endif()
 ```
 
-### 1.3 Sub-Module CMakeLists.txt Files
+### Phase 3: Sub-Module CMakeLists.txt
+
+- GOAL-003: Create per-layer CMake files with correct dependency chains
+
+| Task     | Description                       | Completed | Date |
+| -------- | --------------------------------- | --------- | ---- |
+| TASK-011 | Create core/CMakeLists.txt        |           |      |
+| TASK-012 | Create pipeline/CMakeLists.txt    |           |      |
+| TASK-013 | Create domain/CMakeLists.txt      |           |      |
+| TASK-014 | Create infrastructure/CMakeLists.txt |           |      |
+| TASK-015 | Create app/CMakeLists.txt         |           |      |
 
 #### core/CMakeLists.txt
 
 ```cmake
 add_library(vms_engine_core STATIC
-    src/utils/placeholder.cpp   # Will be replaced in Plan 02
+    src/utils/placeholder.cpp
 )
 
 target_include_directories(vms_engine_core
@@ -270,7 +300,6 @@ target_link_libraries(vms_engine
     PRIVATE Threads::Threads
 )
 
-# Copy config to build output
 add_custom_command(TARGET vms_engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E create_symlink
             ${CMAKE_SOURCE_DIR}/configs
@@ -278,97 +307,72 @@ add_custom_command(TARGET vms_engine POST_BUILD
     COMMENT "Linking configs/ → build/bin/configs/")
 ```
 
-### 1.4 Create Placeholder Source Files
+### Phase 4: Placeholder Sources
 
-Each CMake STATIC library needs at least one source file. Create minimal placeholders:
+- GOAL-004: Create minimal placeholder files so each CMake target compiles
+
+| Task     | Description                          | Completed | Date |
+| -------- | ------------------------------------ | --------- | ---- |
+| TASK-016 | Create placeholder .cpp for each layer |           |      |
+| TASK-017 | Verify full build succeeds           |           |      |
 
 ```bash
-# core
 echo '// placeholder — replaced in Plan 02' > core/src/utils/placeholder.cpp
-
-# pipeline
 echo '// placeholder — replaced in Plan 03' > pipeline/src/placeholder.cpp
-
-# domain
 echo '// placeholder — replaced in Plan 04' > domain/src/placeholder.cpp
-
-# infrastructure
 echo '// placeholder — replaced in Plan 05' > infrastructure/config_parser/src/placeholder.cpp
 echo '// placeholder — replaced in Plan 05' > infrastructure/messaging/src/placeholder.cpp
 echo '// placeholder — replaced in Plan 05' > infrastructure/storage/src/placeholder.cpp
 ```
 
-### 1.5 Create Minimal main.cpp Stub
+## 3. Alternatives
 
-```cpp
-// app/main.cpp
-#include <iostream>
+- **ALT-001**: Single CMakeLists.txt for everything (rejected — per-layer CMake enables independent compilation and clearer dependency enforcement)
+- **ALT-002**: Meson or Bazel instead of CMake (rejected — CMake is standard for DeepStream projects and familiar to team)
+- **ALT-003**: vcpkg/Conan for dependency management (rejected — FetchContent is simpler for pinned versions in container environment)
 
-int main(int argc, char* argv[]) {
-    std::cout << "vms_engine v1.0.0 — scaffold build OK" << std::endl;
-    return 0;
-}
-```
+## 4. Dependencies
 
-### 1.6 Config Files
+- **DEP-001**: Docker image `vms-engine-dev:latest` built from `Dockerfile`
+- **DEP-002**: DeepStream 8.0 container base (`nvcr.io/nvidia/deepstream:8.0-gc-triton-devel`)
+- **DEP-003**: No prior plan dependencies — this is the first plan
 
-The canonical config already exists at `docs/configs/deepstream_default.yml`.
-Create a working default config:
+## 5. Files
 
-```bash
-cp docs/configs/deepstream_default.yml configs/default.yml
-```
+- **FILE-001**: `CMakeLists.txt` — Root CMake configuration
+- **FILE-002**: `core/CMakeLists.txt` — Core layer target
+- **FILE-003**: `pipeline/CMakeLists.txt` — Pipeline layer target
+- **FILE-004**: `domain/CMakeLists.txt` — Domain layer target
+- **FILE-005**: `infrastructure/CMakeLists.txt` — Infrastructure layer target
+- **FILE-006**: `app/CMakeLists.txt` — Application executable target
+- **FILE-007**: `core/src/utils/placeholder.cpp` — Placeholder source
+- **FILE-008**: `pipeline/src/placeholder.cpp` — Placeholder source
+- **FILE-009**: `domain/src/placeholder.cpp` — Placeholder source
+- **FILE-010**: `infrastructure/config_parser/src/placeholder.cpp` — Placeholder source
+- **FILE-011**: `infrastructure/messaging/src/placeholder.cpp` — Placeholder source
+- **FILE-012**: `infrastructure/storage/src/placeholder.cpp` — Placeholder source
+- **FILE-013**: `configs/default.yml` — Default pipeline config (symlink)
+- **FILE-014**: `.clang-format` — Code formatting rules
 
-### 1.7 Copy .clang-format
+## 6. Testing
 
-Copy from lantanav2 (or create a standard one):
+- **TEST-001**: Verify CMake configure succeeds — `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -G Ninja`
+- **TEST-002**: Verify full build succeeds — `cmake --build build -- -j5`
+- **TEST-003**: Verify binary exists — `ls build/bin/vms_engine`
+- **TEST-004**: Verify configs symlink — `ls build/bin/configs/`
+- **TEST-005**: Verify clang-format target — `cmake --build build --target format`
 
-```bash
-# From lantanav2 if available:
-cp /path/to/lantanav2/.clang-format .clang-format
-```
+## 7. Risks & Assumptions
 
----
+- **RISK-001**: FetchContent download fails in container — **Mitigation**: Pre-cache dependencies or use local mirrors
+- **RISK-002**: DeepStream SDK path mismatch — **Mitigation**: Validate `DEEPSTREAM_DIR` in CMake with explicit warnings
+- **ASSUMPTION-001**: Docker container has internet access for FetchContent downloads
+- **ASSUMPTION-002**: DeepStream SDK is installed at `/opt/nvidia/deepstream/deepstream`
+- **ASSUMPTION-003**: Ninja generator is available in the container
 
-## Build & Verification (Inside Container)
+## 8. Related Specifications / Further Reading
 
-```bash
-# 1. Start container (from host)
-docker compose up -d
-
-# 2. Attach shell
-docker compose exec app bash
-
-# 3. Configure (inside container, /opt/vms_engine)
-cmake -S . -B build \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DDEEPSTREAM_DIR=/opt/nvidia/deepstream/deepstream \
-    -G Ninja
-
-# 4. Build
-cmake --build build -- -j5
-
-# 5. Run
-./build/bin/vms_engine
-# Expected: "vms_engine v1.0.0 — scaffold build OK"
-
-# 6. Verify no lantana references in source
-grep -r "lantana" CMakeLists.txt app/ core/ pipeline/ domain/ \
-    infrastructure/ services/ 2>/dev/null || echo "PASS: No lantana references"
-```
-
----
-
-## Checklist
-
-- [ ] Directory tree created per Section 1.1
-- [ ] Root `CMakeLists.txt` with DeepStream 8.0, FetchContent (spdlog 1.14.1, yaml-cpp 0.8.0, hiredis 1.3.0, nlohmann_json 3.11.3)
-- [ ] 6 sub-module `CMakeLists.txt` files (core, pipeline, domain, infrastructure, services, app)
-- [ ] Placeholder `.cpp` files for each library target
-- [ ] Stub `main.cpp` compiles and runs
-- [ ] `configs/default.yml` exists (copy of canonical config)
-- [ ] `.clang-format` in place
-- [ ] `cmake configure` succeeds inside container
-- [ ] `cmake build` succeeds inside container
-- [ ] No `lantana` string in any project source file (except docs/)
+- [00_overview.md](00_overview.md) — Phase 1 Master Plan
+- [docs/architecture/CMAKE.md](../../architecture/CMAKE.md) — Build system reference
+- [AGENTS.md](../../../AGENTS.md) — Project overview and conventions
+- [Dockerfile](../../../Dockerfile) — Dev container definition
