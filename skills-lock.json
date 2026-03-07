@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "skills": {
+    "architecture-blueprint-generator": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "9b20f13d1d96ba1c2550e1ce535f932e943c42939d3fae906a9e0d6c1bfb471a"
+    },
+    "create-agentsmd": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "bfbdbb76b17cca970d1d624e36ce72b6847860d740581c8865da796c1fef8552"
+    },
+    "create-implementation-plan": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "4764bacd34af8e5c27a85ca01a90197afcf1f1ed1785975ba91d9b80dff60e2d"
+    },
+    "create-readme": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "d0ece1b2164ce1376e4ab6e98d6ac079df3a2a94f5f02224362b6a1ce2516ae9"
+    },
+    "create-specification": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "45b9ef98b0fb82ba0e1aee65dfb464fa1f8494a14a557b9788d73aae87e9e618"
+    },
+    "create-technical-spike": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "e711706b4aebacac01bcc025e19bcf0e88bf784cbe6419ddf07c2be67c501f33"
+    },
+    "excalidraw-diagram-generator": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "e24e3c4cab4b5a07bc1d1801db14868f3a1cd184f7f28f5dd2c4a2b234bf2f2d"
+    },
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "computedHash": "6412eb4eb3b91595ebab937f0c69501240e7ba761b3d82510b5cf506ec5c7adc"
+    },
+    "multi-stage-dockerfile": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "698bf93a84dae18fd7bd0b1d35c21427307fde78fbdf4624be9726f5f98189ca"
+    },
+    "prd": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "1f3e1f005fc40fda85d250ae906c8ee4f7e8e833e23adfeca6542c19609fd7cd"
+    },
+    "prompt-builder": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "1591d452ec2ba6d70faaa96b481f7c8261a280df838fee9c5295804fa28acbd3"
+    },
+    "readme-blueprint-generator": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "e2c7dabf2e455794260f1516e2ceda6a82dc92a409578cc184fcb0f45bddca54"
+    },
+    "refactor": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "87789a786b96f99ba0680e89345a975106e10e7db1071c7cdc2e76d507c449d6"
+    },
+    "refactor-method-complexity-reduce": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "a09a18f7b370e105c20480f9c772169948262fa07fdf5fbd4c5d45b2def958e0"
+    },
+    "refactor-plan": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "e4b09e28e20bcfcd1c48b7a2504fb3cdab4c36b455f2d7689574470c76ea5c2c"
+    },
+    "review-and-refactor": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "9236d06a1500089ddb46975b866e9a63478e502afe7095b1980c618678a7c7fe"
+    },
+    "update-implementation-plan": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "b2f2a6bf2544b416b9145e805c0f534ad078e7135c1ce26e73af1b0cd99cb692"
+    }
+  }
+}
