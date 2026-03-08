@@ -33,15 +33,15 @@
 
 ### Design Goals
 
-| Goal | Mô tả |
-|---|---|
-| **Clean Architecture** | Business logic (domain) độc lập với infrastructure |
-| **Interface-First** | Core layer define contracts; implementations ở layer riêng |
-| **Config-Driven** | Pipeline topology 100% YAML — zero code changes cho deployments mới |
-| **DeepStream-Native** | Single backend, không abstraction layer thừa cho multi-backend |
-| **Builder Pattern** | Sequential pipeline construction với composable phases |
-| **Extensible** | Plugin system cho custom event handlers, probes, external processing |
-| **Observable** | Structured logging (spdlog), DOT graph export, GStreamer bus monitoring |
+| Goal                   | Mô tả                                                                   |
+| ---------------------- | ----------------------------------------------------------------------- |
+| **Clean Architecture** | Business logic (domain) độc lập với infrastructure                      |
+| **Interface-First**    | Core layer define contracts; implementations ở layer riêng              |
+| **Config-Driven**      | Pipeline topology 100% YAML — zero code changes cho deployments mới     |
+| **DeepStream-Native**  | Single backend, không abstraction layer thừa cho multi-backend          |
+| **Builder Pattern**    | Sequential pipeline construction với composable phases                  |
+| **Extensible**         | Plugin system cho custom event handlers, probes, external processing    |
+| **Observable**         | Structured logging (spdlog), DOT graph export, GStreamer bus monitoring |
 
 ### High-Level Architecture
 
@@ -116,11 +116,11 @@ graph TB
 
 ### 2.2 Interface-First (Ports & Adapters)
 
-| Loại | Ví dụ | Vai trò |
-|---|---|---|
-| **Ports** (Interfaces) | `IPipelineManager`, `IBuilderFactory`, `IElementBuilder`, `IProbeHandler`, `IStorageManager`, `IMessageProducer` | Contracts giữa layers |
-| **Driving Adapters** (Input) | `main.cpp`, REST API, CLI args | Push commands vào system |
-| **Driven Adapters** (Output) | Redis, Kafka, S3, Local FS | System pushes data ra |
+| Loại                         | Ví dụ                                                                                                            | Vai trò                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| **Ports** (Interfaces)       | `IPipelineManager`, `IBuilderFactory`, `IElementBuilder`, `IProbeHandler`, `IStorageManager`, `IMessageProducer` | Contracts giữa layers    |
+| **Driving Adapters** (Input) | `main.cpp`, REST API, CLI args                                                                                   | Push commands vào system |
+| **Driven Adapters** (Output) | Redis, Kafka, S3, Local FS                                                                                       | System pushes data ra    |
 
 ### 2.3 Single Backend — No Unnecessary Abstraction
 
@@ -129,6 +129,7 @@ graph TB
 ### 2.4 Config-Driven Pipeline
 
 Pipeline topology 100% YAML. Zero code changes khi:
+
 - Thêm/bớt cameras
 - Đổi inference models
 - Bật/tắt analytics
@@ -139,18 +140,18 @@ Pipeline topology 100% YAML. Zero code changes khi:
 
 ## 3. Technology Stack
 
-| Component | Technology | Purpose |
-|---|---|---|
-| **Language** | C++17 | Performance-critical video processing |
-| **Build** | CMake 3.16+ + vcpkg | Cross-platform build + pkg management |
-| **Video** | GStreamer 1.0 | Pipeline-based multimedia framework |
-| **AI** | NVIDIA DeepStream SDK 8.0 | GPU-accelerated video analytics |
-| **Inference** | TensorRT, CUDA | Model optimization & GPU execution |
-| **Config** | YAML (yaml-cpp) | Human-readable pipeline config |
-| **Logging** | spdlog + fmt | Structured, leveled logging |
-| **Messaging** | Redis Streams, Kafka | Event publishing |
-| **Storage** | Local FS, S3 (MinIO) | Snapshot/recording persistence |
-| **REST API** | Pistache | Runtime control & monitoring |
+| Component     | Technology                | Purpose                               |
+| ------------- | ------------------------- | ------------------------------------- |
+| **Language**  | C++17                     | Performance-critical video processing |
+| **Build**     | CMake 3.16+ + vcpkg       | Cross-platform build + pkg management |
+| **Video**     | GStreamer 1.0             | Pipeline-based multimedia framework   |
+| **AI**        | NVIDIA DeepStream SDK 8.0 | GPU-accelerated video analytics       |
+| **Inference** | TensorRT, CUDA            | Model optimization & GPU execution    |
+| **Config**    | YAML (yaml-cpp)           | Human-readable pipeline config        |
+| **Logging**   | spdlog + fmt              | Structured, leveled logging           |
+| **Messaging** | Redis Streams, Kafka      | Event publishing                      |
+| **Storage**   | Local FS, S3 (MinIO)      | Snapshot/recording persistence        |
+| **REST API**  | Pistache                  | Runtime control & monitoring          |
 
 ---
 
@@ -185,14 +186,14 @@ vms-engine/
 
 ### Layer Dependency Rules
 
-| Layer | Can Depend On | Cannot Depend On |
-|---|---|---|
-| **app/** | core, pipeline, infrastructure, domain | ∅ |
-| **core/** | ∅ (std lib + GStreamer fwd-declares only) | pipeline, infra, domain |
-| **pipeline/** | core | infra, domain |
-| **domain/** | core | pipeline, infra |
-| **infrastructure/** | core | pipeline, domain |
-| **plugins/** | core | pipeline (linked at runtime) |
+| Layer               | Can Depend On                             | Cannot Depend On             |
+| ------------------- | ----------------------------------------- | ---------------------------- |
+| **app/**            | core, pipeline, infrastructure, domain    | ∅                            |
+| **core/**           | ∅ (std lib + GStreamer fwd-declares only) | pipeline, infra, domain      |
+| **pipeline/**       | core                                      | infra, domain                |
+| **domain/**         | core                                      | pipeline, infra              |
+| **infrastructure/** | core                                      | pipeline, domain             |
+| **plugins/**        | core                                      | pipeline (linked at runtime) |
 
 > 📋 **Chi tiết directory structure** → [01_directory_structure.md](deepstream/01_directory_structure.md)
 
@@ -351,7 +352,7 @@ Map theo dõi **last GstBin** của mỗi phase, cho phase tiếp theo biết co
 std::map<std::string, GstElement*> tails_;
 
 // Sau SourceBlockBuilder:     tails_["src"] = sources_bin
-// Sau ProcessingBlockBuilder: tails_["src"] = processing_bin  
+// Sau ProcessingBlockBuilder: tails_["src"] = processing_bin
 // Sau VisualsBlockBuilder:    tails_["src"] = visuals_bin
 // Mỗi bin expose ghost "src" pad → gst_element_link(bin_a, bin_b) works naturally
 ```
@@ -373,6 +374,7 @@ class SourceBuilder : public IElementBuilder {
 ```
 
 **Rules:**
+
 - `config` luôn là `const PipelineConfig&` — read-only
 - `index = 0` cho single-instance builders (sources, visuals blocks)
 - `index > 0` meaningful cho repeated sections (outputs, processing.elements)
@@ -411,24 +413,25 @@ Schema mirror GStreamer pipeline topology — đọc top-to-bottom = pipeline le
 
 ```yaml
 version: "1.0.0"
-pipeline:        # Metadata — id, name, log settings
-queue_defaults:  # Default GstQueue params; mọi queue: {} kế thừa từ đây
-sources:         # Single block → nvmultiurisrcbin (cameras[], smart_record)
-processing:      # elements: [] — nvinfer, nvtracker, nvstreamdemux
-visuals:         # elements: [] — nvmultistreamtiler, nvdsosd
-outputs:         # [] output sinks (rtsp_client, filesink, appsink)
-event_handlers:  # [] probe/signal callbacks (smart_record, crop_object)
+pipeline: # Metadata — id, name, log settings
+queue_defaults: # Default GstQueue params; mọi queue: {} kế thừa từ đây
+sources: # Single block → nvmultiurisrcbin (cameras[], smart_record)
+processing: # elements: [] — nvinfer, nvtracker, nvstreamdemux
+visuals: # elements: [] — nvmultistreamtiler, nvdsosd
+outputs: # [] output sinks (rtsp_client, filesink, appsink)
+event_handlers: # [] probe/signal callbacks (smart_record, crop_object)
 ```
 
 ### Queue Semantics
 
-| `queue:` value | Hành vi |
-|---|---|
-| `queue: {}` | Insert GstQueue, inherit toàn bộ từ `queue_defaults` |
-| `queue: { max_size_buffers: 20, ... }` | Insert GstQueue, override fields chỉ định |
-| *(không có field queue)* | Không insert GstQueue trước element này |
+| `queue:` value                         | Hành vi                                              |
+| -------------------------------------- | ---------------------------------------------------- |
+| `queue: {}`                            | Insert GstQueue, inherit toàn bộ từ `queue_defaults` |
+| `queue: { max_size_buffers: 20, ... }` | Insert GstQueue, override fields chỉ định            |
+| _(không có field queue)_               | Không insert GstQueue trước element này              |
 
 > ⚠️ **Leaky semantics cho live streams:**
+>
 > - `leaky: 2` (downstream) — drop OLDEST buffer khi full → newest frame luôn vào ← **USE THIS cho realtime/AI**
 > - `leaky: 1` (upstream) — drop NEWEST buffer khi full → giữ frame cũ, mất frame mới
 > - `leaky: 0` (none) — block upstream → gây pipeline stall/latency spike trên live streams
@@ -471,12 +474,12 @@ struct PipelineConfig {
 
 Single block (không phải array). YAML properties chia thành 3 groups matching GStreamer property ownership:
 
-| Group | Scope | Ví dụ properties |
-|---|---|---|
-| 1 | nvmultiurisrcbin direct | `max_batch_size`, `mode`, `rest_api_port` |
-| 2 | nvurisrcbin pass-through | `gpu_id`, `cudadec_memtype`, `select_rtp_protocol`, `rtsp_reconnect_*`, `latency` |
-| 3 | nvstreammux pass-through | `width`, `height`, `batched_push_timeout`, `live_source` |
-| Smart Record | nvmultiurisrcbin | `smart_record` (int enum), `smart_rec_dir_path`, `smart_rec_cache`, `smart_rec_default_duration` |
+| Group        | Scope                    | Ví dụ properties                                                                                 |
+| ------------ | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| 1            | nvmultiurisrcbin direct  | `max_batch_size`, `mode`, `rest_api_port`                                                        |
+| 2            | nvurisrcbin pass-through | `gpu_id`, `cudadec_memtype`, `select_rtp_protocol`, `rtsp_reconnect_*`, `latency`                |
+| 3            | nvstreammux pass-through | `width`, `height`, `batched_push_timeout`, `live_source`                                         |
+| Smart Record | nvmultiurisrcbin         | `smart_record` (int enum), `smart_rec_dir_path`, `smart_rec_cache`, `smart_rec_default_duration` |
 
 > ⚠️ **DS8 SIGSEGV**: `ip_address` property trên nvmultiurisrcbin **TUYỆT ĐỐI KHÔNG SET** qua `g_object_set` — crash ngay lập tức trong DeepStream 8.0.
 
@@ -487,10 +490,10 @@ processing:
   elements:
     - id: pgie_detection
       type: nvinfer
-      role: primary_inference   # primary_inference | secondary_inference
-      unique_id: 1              # gie-unique-id
+      role: primary_inference # primary_inference | secondary_inference
+      unique_id: 1 # gie-unique-id
       config_file: "/path/to/config.pbtxt"
-      process_mode: 1           # 1=Primary(full-frame) 2=Secondary(per-object)
+      process_mode: 1 # 1=Primary(full-frame) 2=Secondary(per-object)
       batch_size: 4
       queue: {}
 
@@ -499,7 +502,7 @@ processing:
       ll_lib_file: "/opt/.../libnvds_nvmultiobjecttracker.so"
       tracker_width: 640
       tracker_height: 640
-      compute_hw: 1             # 0=default 1=GPU 2=VIC(Jetson)
+      compute_hw: 1 # 0=default 1=GPU 2=VIC(Jetson)
       queue: {}
 
     - id: demuxer
@@ -559,10 +562,10 @@ graph LR
 
 Khi chạy nhiều detectors có `class_id` trùng, 2 probes bảo vệ tracker:
 
-| Phase | Pad | Action |
-|---|---|---|
+| Phase          | Pad      | Action                                       |
+| -------------- | -------- | -------------------------------------------- |
 | Before tracker | sink pad | Offset `class_id` bằng `unique_component_id` |
-| After tracker | src pad | Restore `class_id` về giá trị gốc |
+| After tracker  | src pad  | Restore `class_id` về giá trị gốc            |
 
 > Prevents label flickering trên OSD khi multiple inference engines produce overlapping class IDs.
 
@@ -577,10 +580,10 @@ Khi chạy nhiều detectors có `class_id` trùng, 2 probes bảo vệ tracker:
 
 ### Messaging
 
-| Adapter | Protocol | Interface | Use Case |
-|---|---|---|---|
+| Adapter               | Protocol      | Interface          | Use Case                   |
+| --------------------- | ------------- | ------------------ | -------------------------- |
 | `RedisStreamProducer` | Redis Streams | `IMessageProducer` | Real-time event publishing |
-| `KafkaAdapter` | Apache Kafka | `IMessageProducer` | High-throughput event log |
+| `KafkaProducer`       | Apache Kafka  | `IMessageProducer` | High-throughput event log  |
 
 ```yaml
 broker_configurations:
@@ -593,20 +596,20 @@ broker_configurations:
 
 ### Storage
 
-| Adapter | Backend | Interface | Use Case |
-|---|---|---|---|
-| `LocalStorageManager` | Local FS | `IStorageManager` | Dev, edge deployment |
-| `S3StorageManager` | S3 / MinIO | `IStorageManager` | Cloud, shared storage |
+| Adapter               | Backend    | Interface         | Use Case              |
+| --------------------- | ---------- | ----------------- | --------------------- |
+| `LocalStorageManager` | Local FS   | `IStorageManager` | Dev, edge deployment  |
+| `S3StorageManager`    | S3 / MinIO | `IStorageManager` | Cloud, shared storage |
 
 ### REST API — Runtime Control
 
-| Endpoint | Action |
-|---|---|
-| `POST /api/v1/pipeline/start` | `PipelineManager::start()` |
-| `POST /api/v1/pipeline/stop` | `PipelineManager::stop()` |
-| `POST /api/v1/pipeline/pause` | `PipelineManager::pause()` |
-| `GET /api/v1/pipeline/status` | `PipelineManager::get_info()` |
-| `POST /api/v1/streams/add` | `RuntimeStreamManager::add_stream()` |
+| Endpoint                      | Action                                  |
+| ----------------------------- | --------------------------------------- |
+| `POST /api/v1/pipeline/start` | `PipelineManager::start()`              |
+| `POST /api/v1/pipeline/stop`  | `PipelineManager::stop()`               |
+| `POST /api/v1/pipeline/pause` | `PipelineManager::pause()`              |
+| `GET /api/v1/pipeline/status` | `PipelineManager::get_info()`           |
+| `POST /api/v1/streams/add`    | `RuntimeStreamManager::add_stream()`    |
 | `POST /api/v1/streams/remove` | `RuntimeStreamManager::remove_stream()` |
 
 > 📋 **DeepStream REST API (CivetWeb)** → [10_rest_api.md](deepstream/10_rest_api.md)
@@ -664,12 +667,12 @@ gst_deinit();
 
 ### GstBus Message Handling
 
-| Message Type | Action |
-|---|---|
-| `GST_MESSAGE_EOS` | Log, emit event, optionally restart pipeline |
-| `GST_MESSAGE_ERROR` | Log error, transition to ERROR, quit loop |
-| `GST_MESSAGE_WARNING` | Log warning |
-| `GST_MESSAGE_STATE_CHANGED` | Log state transitions, export DOT file |
+| Message Type                | Action                                       |
+| --------------------------- | -------------------------------------------- |
+| `GST_MESSAGE_EOS`           | Log, emit event, optionally restart pipeline |
+| `GST_MESSAGE_ERROR`         | Log error, transition to ERROR, quit loop    |
+| `GST_MESSAGE_WARNING`       | Log warning                                  |
+| `GST_MESSAGE_STATE_CHANGED` | Log state transitions, export DOT file       |
 
 > 📋 **Chi tiết lifecycle** → [06_runtime_lifecycle.md](deepstream/06_runtime_lifecycle.md)
 
@@ -679,12 +682,12 @@ gst_deinit();
 
 ### Output Types
 
-| Type | GstElement | Use Case |
-|---|---|---|
-| **Display** | `nveglglessink` / `nvdrmvideosink` | Local monitor display |
-| **RTSP** | `nvv4l2h264enc → rtspclientsink` | Remote streaming |
-| **File** | `nvv4l2h264enc → mux → filesink` | Recording to disk |
-| **Fake** | `fakesink` | Headless processing (events only) |
+| Type        | GstElement                         | Use Case                          |
+| ----------- | ---------------------------------- | --------------------------------- |
+| **Display** | `nveglglessink` / `nvdrmvideosink` | Local monitor display             |
+| **RTSP**    | `nvv4l2h264enc → rtspclientsink`   | Remote streaming                  |
+| **File**    | `nvv4l2h264enc → mux → filesink`   | Recording to disk                 |
+| **Fake**    | `fakesink`                         | Headless processing (events only) |
 
 ### Smart Recording
 
@@ -699,9 +702,9 @@ graph LR
 
 ```yaml
 sources:
-  smart_record: 2          # 0=disable 1=cloud-only 2=multi
+  smart_record: 2 # 0=disable 1=cloud-only 2=multi
   smart_rec_dir_path: "/opt/engine/data/rec"
-  smart_rec_cache: 10      # pre-event buffer seconds
+  smart_rec_cache: 10 # pre-event buffer seconds
   smart_rec_default_duration: 20
 ```
 
@@ -711,20 +714,20 @@ sources:
 
 ## 12. Design Patterns
 
-| Pattern | Ở đâu | Mục đích |
-|---|---|---|
-| **Builder** | `block_builders/`, `builders/` | Sequential pipeline construction từ config |
-| **Abstract Factory** | `IBuilderFactory` / `BuilderFactory` | Create typed element builders (no config slice) |
-| **Full Config** | All `IElementBuilder::build()` | Mỗi builder đọc section cần từ full config |
-| **Strategy** | `IProbeHandler` | Interchangeable probe processing |
-| **Observer** | GstBus watch, `pad-added` signals | Async event notification |
-| **Chain of Responsibility** | `ProcessingBuilder` flow | Sequential processing stages |
-| **Template Method** | `BaseBuilder.build()` | Common build flow, customizable steps |
-| **Facade** | `PipelineManager` | Single entry point cho pipeline lifecycle |
-| **Adapter** | `RedisStreamProducer`, `S3StorageManager` | External system integration |
-| **Singleton** | Logger (`spdlog`) | Global logging instance |
-| **Plugin** | `plugins/` + `HandlerRegistry` | Runtime-loadable handlers (.so) |
-| **Composite** | `GstBin` containing `GstElement`s | Treat groups of elements as single unit |
+| Pattern                     | Ở đâu                                     | Mục đích                                        |
+| --------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| **Builder**                 | `block_builders/`, `builders/`            | Sequential pipeline construction từ config      |
+| **Abstract Factory**        | `IBuilderFactory` / `BuilderFactory`      | Create typed element builders (no config slice) |
+| **Full Config**             | All `IElementBuilder::build()`            | Mỗi builder đọc section cần từ full config      |
+| **Strategy**                | `IProbeHandler`                           | Interchangeable probe processing                |
+| **Observer**                | GstBus watch, `pad-added` signals         | Async event notification                        |
+| **Chain of Responsibility** | `ProcessingBuilder` flow                  | Sequential processing stages                    |
+| **Template Method**         | `BaseBuilder.build()`                     | Common build flow, customizable steps           |
+| **Facade**                  | `PipelineManager`                         | Single entry point cho pipeline lifecycle       |
+| **Adapter**                 | `RedisStreamProducer`, `S3StorageManager` | External system integration                     |
+| **Singleton**               | Logger (`spdlog`)                         | Global logging instance                         |
+| **Plugin**                  | `plugins/` + `HandlerRegistry`            | Runtime-loadable handlers (.so)                 |
+| **Composite**               | `GstBin` containing `GstElement`s         | Treat groups of elements as single unit         |
 
 ---
 
@@ -735,18 +738,18 @@ sources:
 
 ### GStreamer Ownership Rules
 
-| Object | Obtained via | Release via | Notes |
-|---|---|---|---|
-| `GstElement*` (not in bin) | `gst_element_factory_make()` | `gst_object_unref()` | Caller owns until `gst_bin_add()` |
-| `GstElement*` in bin | `gst_bin_add(bin, elem)` | _(bin owns)_ | **DO NOT unref after add** |
-| `GstPad*` | `gst_element_get_static_pad()` | `gst_object_unref()` | Unref even read-only |
-| `GstCaps*` | `gst_caps_new_*()` | `gst_caps_unref()` | Reference-counted |
-| `GstBus*` | `gst_pipeline_get_bus()` | `gst_object_unref()` | |
-| `GMainLoop*` | `g_main_loop_new()` | `g_main_loop_unref()` | |
-| `gchar*` | `g_object_get()`, `g_strdup()` | `g_free()` | GLib heap allocation |
-| `NvDsBatchMeta*` | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE** | Pipeline owns |
-| `NvDsFrameMeta*` | iterated from `batch_meta` | **DO NOT FREE** | |
-| `NvDsObjectMeta*` | iterated from `frame_meta` | **DO NOT FREE** | |
+| Object                     | Obtained via                       | Release via           | Notes                             |
+| -------------------------- | ---------------------------------- | --------------------- | --------------------------------- |
+| `GstElement*` (not in bin) | `gst_element_factory_make()`       | `gst_object_unref()`  | Caller owns until `gst_bin_add()` |
+| `GstElement*` in bin       | `gst_bin_add(bin, elem)`           | _(bin owns)_          | **DO NOT unref after add**        |
+| `GstPad*`                  | `gst_element_get_static_pad()`     | `gst_object_unref()`  | Unref even read-only              |
+| `GstCaps*`                 | `gst_caps_new_*()`                 | `gst_caps_unref()`    | Reference-counted                 |
+| `GstBus*`                  | `gst_pipeline_get_bus()`           | `gst_object_unref()`  |                                   |
+| `GMainLoop*`               | `g_main_loop_new()`                | `g_main_loop_unref()` |                                   |
+| `gchar*`                   | `g_object_get()`, `g_strdup()`     | `g_free()`            | GLib heap allocation              |
+| `NvDsBatchMeta*`           | `gst_buffer_get_nvds_batch_meta()` | **DO NOT FREE**       | Pipeline owns                     |
+| `NvDsFrameMeta*`           | iterated from `batch_meta`         | **DO NOT FREE**       |                                   |
+| `NvDsObjectMeta*`          | iterated from `frame_meta`         | **DO NOT FREE**       |                                   |
 
 ### RAII Strategy — gst_utils.hpp
 
@@ -790,41 +793,41 @@ GstElement* SourceBuilder::build(const PipelineConfig& config, int index) {
 
 ### Root Namespace: `engine::`
 
-| Namespace | Maps To |
-|---|---|
-| `engine::core::pipeline` | `core/include/engine/core/pipeline/` |
-| `engine::core::builders` | `core/include/engine/core/builders/` |
-| `engine::core::config` | `core/include/engine/core/config/` |
-| `engine::core::events` | `core/include/engine/core/eventing/` |
-| `engine::core::probes` | `core/include/engine/core/probes/` |
-| `engine::core::messaging` | `core/include/engine/core/messaging/` |
-| `engine::core::storage` | `core/include/engine/core/storage/` |
-| `engine::core::runtime` | `core/include/engine/core/runtime/` |
-| `engine::core::utils` | `core/include/engine/core/utils/` |
-| `engine::pipeline` | `pipeline/include/engine/pipeline/` |
-| `engine::pipeline::block_builders` | `pipeline/.../block_builders/` |
-| `engine::pipeline::builders` | `pipeline/.../builders/` |
-| `engine::pipeline::linking` | `pipeline/.../linking/` |
-| `engine::pipeline::probes` | `pipeline/.../probes/` |
-| `engine::domain` | `domain/include/engine/domain/` |
-| `engine::infrastructure::config_parser` | `infrastructure/config_parser/` |
-| `engine::infrastructure::messaging` | `infrastructure/messaging/` |
-| `engine::infrastructure::storage` | `infrastructure/storage/` |
-| `engine::infrastructure::rest_api` | `infrastructure/rest_api/` |
+| Namespace                               | Maps To                               |
+| --------------------------------------- | ------------------------------------- |
+| `engine::core::pipeline`                | `core/include/engine/core/pipeline/`  |
+| `engine::core::builders`                | `core/include/engine/core/builders/`  |
+| `engine::core::config`                  | `core/include/engine/core/config/`    |
+| `engine::core::events`                  | `core/include/engine/core/eventing/`  |
+| `engine::core::probes`                  | `core/include/engine/core/probes/`    |
+| `engine::core::messaging`               | `core/include/engine/core/messaging/` |
+| `engine::core::storage`                 | `core/include/engine/core/storage/`   |
+| `engine::core::runtime`                 | `core/include/engine/core/runtime/`   |
+| `engine::core::utils`                   | `core/include/engine/core/utils/`     |
+| `engine::pipeline`                      | `pipeline/include/engine/pipeline/`   |
+| `engine::pipeline::block_builders`      | `pipeline/.../block_builders/`        |
+| `engine::pipeline::builders`            | `pipeline/.../builders/`              |
+| `engine::pipeline::linking`             | `pipeline/.../linking/`               |
+| `engine::pipeline::probes`              | `pipeline/.../probes/`                |
+| `engine::domain`                        | `domain/include/engine/domain/`       |
+| `engine::infrastructure::config_parser` | `infrastructure/config_parser/`       |
+| `engine::infrastructure::messaging`     | `infrastructure/messaging/`           |
+| `engine::infrastructure::storage`       | `infrastructure/storage/`             |
+| `engine::infrastructure::rest_api`      | `infrastructure/rest_api/`            |
 
 ### Naming Conventions
 
-| Element | Convention | Ví dụ |
-|---|---|---|
-| Namespaces | `snake_case` | `engine::core::pipeline` |
-| Classes | `PascalCase` | `PipelineManager`, `BuilderFactory` |
-| Interfaces | `IPascalCase` | `IPipelineManager`, `IProbeHandler` |
-| Methods | `snake_case` | `build_pipeline()`, `get_state()` |
-| Member vars | `snake_case_` | `pipeline_`, `config_`, `tails_` |
-| Constants | `UPPER_SNAKE_CASE` | `DEFAULT_MBROKER_PORT` |
-| Enum values | `PascalCase` | `PipelineState::Playing` |
-| Files | `snake_case.hpp/.cpp` | `pipeline_manager.hpp` |
-| Config IDs | `snake_case` (YAML) | `"pgie_detector"`, `"tracker_main"` |
+| Element     | Convention            | Ví dụ                               |
+| ----------- | --------------------- | ----------------------------------- |
+| Namespaces  | `snake_case`          | `engine::core::pipeline`            |
+| Classes     | `PascalCase`          | `PipelineManager`, `BuilderFactory` |
+| Interfaces  | `IPascalCase`         | `IPipelineManager`, `IProbeHandler` |
+| Methods     | `snake_case`          | `build_pipeline()`, `get_state()`   |
+| Member vars | `snake_case_`         | `pipeline_`, `config_`, `tails_`    |
+| Constants   | `UPPER_SNAKE_CASE`    | `DEFAULT_MBROKER_PORT`              |
+| Enum values | `PascalCase`          | `PipelineState::Playing`            |
+| Files       | `snake_case.hpp/.cpp` | `pipeline_manager.hpp`              |
+| Config IDs  | `snake_case` (YAML)   | `"pgie_detector"`, `"tracker_main"` |
 
 > ❌ **NEVER** dùng `lantana::` namespace — đó là project cũ. Luôn dùng `engine::`.
 
@@ -890,30 +893,30 @@ cmake --build build -- -j$(nproc)
 
 ### Key Changes
 
-| Aspect | lantanav2 (OLD) | vms-engine (NEW) |
-|---|---|---|
-| **Project name** | `lantana` | `vms_engine` |
-| **Root namespace** | `lantana::` | `engine::` |
-| **Include prefix** | `lantana/core/`, `lantana/backends/deepstream/` | `engine/core/`, `engine/pipeline/` |
-| **Backend structure** | `backends/deepstream/` + `backends/dlstreamer/` | `pipeline/` (single, flat) |
-| **Backend config** | `std::variant<DeepStream, DLStreamer>` | Direct DeepStream types |
-| **Builder factory** | `DsBuilderFactory` (passes config slices) | `BuilderFactory` (no config at creation) |
-| **Builder signature** | `build(const SpecificConfig& slice, int idx)` | `build(const PipelineConfig& cfg, int idx)` |
-| **Element builders** | `ds_source_builder.hpp` | `source_builder.hpp` |
-| **Executable** | `lantana` | `vms_engine` |
-| **Library names** | `liblantana_*.so` | `libvms_engine_*.a` |
-| **YAML sources** | `sources[].backend_options.deepstream.*` | `sources.cameras[]` + flat fields |
-| **YAML queue** | Implicit / QueueManager heuristics | Explicit `queue: {}` inline per element |
+| Aspect                | lantanav2 (OLD)                                 | vms-engine (NEW)                            |
+| --------------------- | ----------------------------------------------- | ------------------------------------------- |
+| **Project name**      | `lantana`                                       | `vms_engine`                                |
+| **Root namespace**    | `lantana::`                                     | `engine::`                                  |
+| **Include prefix**    | `lantana/core/`, `lantana/backends/deepstream/` | `engine/core/`, `engine/pipeline/`          |
+| **Backend structure** | `backends/deepstream/` + `backends/dlstreamer/` | `pipeline/` (single, flat)                  |
+| **Backend config**    | `std::variant<DeepStream, DLStreamer>`          | Direct DeepStream types                     |
+| **Builder factory**   | `DsBuilderFactory` (passes config slices)       | `BuilderFactory` (no config at creation)    |
+| **Builder signature** | `build(const SpecificConfig& slice, int idx)`   | `build(const PipelineConfig& cfg, int idx)` |
+| **Element builders**  | `ds_source_builder.hpp`                         | `source_builder.hpp`                        |
+| **Executable**        | `lantana`                                       | `vms_engine`                                |
+| **Library names**     | `liblantana_*.so`                               | `libvms_engine_*.a`                         |
+| **YAML sources**      | `sources[].backend_options.deepstream.*`        | `sources.cameras[]` + flat fields           |
+| **YAML queue**        | Implicit / QueueManager heuristics              | Explicit `queue: {}` inline per element     |
 
 ### File Mapping (Key Files)
 
-| lantanav2 | vms-engine |
-|---|---|
+| lantanav2                                              | vms-engine                                            |
+| ------------------------------------------------------ | ----------------------------------------------------- |
 | `core/.../lantana/core/pipeline/ipipeline_manager.hpp` | `core/.../engine/core/pipeline/ipipeline_manager.hpp` |
-| `backends/deepstream/.../ds_pipeline_manager.hpp` | `pipeline/.../engine/pipeline/pipeline_manager.hpp` |
-| `backends/deepstream/.../ds_builder_factory.hpp` | `pipeline/.../engine/pipeline/builder_factory.hpp` |
-| `backends/deepstream/.../builders/ds_*.hpp` | `pipeline/.../engine/pipeline/builders/*.hpp` |
-| `backends/deepstream/.../probes/*.hpp` | `pipeline/.../engine/pipeline/probes/*.hpp` |
+| `backends/deepstream/.../ds_pipeline_manager.hpp`      | `pipeline/.../engine/pipeline/pipeline_manager.hpp`   |
+| `backends/deepstream/.../ds_builder_factory.hpp`       | `pipeline/.../engine/pipeline/builder_factory.hpp`    |
+| `backends/deepstream/.../builders/ds_*.hpp`            | `pipeline/.../engine/pipeline/builders/*.hpp`         |
+| `backends/deepstream/.../probes/*.hpp`                 | `pipeline/.../engine/pipeline/probes/*.hpp`           |
 
 ### Migration Checklist
 
@@ -932,16 +935,16 @@ cmake --build build -- -j$(nproc)
 
 ### Common Operations
 
-| Task | Command / Action |
-|---|---|
-| Build (debug) | `cmake --build build -- -j$(nproc)` |
-| Run | `./build/bin/vms_engine -c configs/default.yml` |
-| Export DOT graph | Set `dot_file_dir` in YAML; auto-exported |
-| View DOT graph | `dot -Tpng graph.dot -o graph.png` |
-| Add element builder | Create in `pipeline/builders/`, register in `BuilderFactory` |
-| Add probe handler | Implement `IProbeHandler`, register in `ProbeHandlerManager` |
-| Add messaging adapter | Implement `IMessageProducer` in `infrastructure/messaging/` |
-| Add storage backend | Implement `IStorageManager` in `infrastructure/storage/` |
+| Task                  | Command / Action                                             |
+| --------------------- | ------------------------------------------------------------ |
+| Build (debug)         | `cmake --build build -- -j$(nproc)`                          |
+| Run                   | `./build/bin/vms_engine -c configs/default.yml`              |
+| Export DOT graph      | Set `dot_file_dir` in YAML; auto-exported                    |
+| View DOT graph        | `dot -Tpng graph.dot -o graph.png`                           |
+| Add element builder   | Create in `pipeline/builders/`, register in `BuilderFactory` |
+| Add probe handler     | Implement `IProbeHandler`, register in `ProbeHandlerManager` |
+| Add messaging adapter | Implement `IMessageProducer` in `infrastructure/messaging/`  |
+| Add storage backend   | Implement `IStorageManager` in `infrastructure/storage/`     |
 
 ### Logging Macros
 
@@ -960,12 +963,12 @@ LOG_C("Critical: Pipeline initialization failed");
 
 ## Cross-References
 
-| Document | Chủ đề |
-|---|---|
-| [deepstream/README.md](deepstream/README.md) | Index & reading order cho DeepStream docs |
-| [RAII.md](RAII.md) | GStreamer/CUDA memory management & RAII patterns |
-| [CMAKE.md](CMAKE.md) | Build system reference (CMake + vcpkg + FetchContent) |
-| [AGENTS.md](../../AGENTS.md) | AI agent context cho code generation |
+| Document                                     | Chủ đề                                                |
+| -------------------------------------------- | ----------------------------------------------------- |
+| [deepstream/README.md](deepstream/README.md) | Index & reading order cho DeepStream docs             |
+| [RAII.md](RAII.md)                           | GStreamer/CUDA memory management & RAII patterns      |
+| [CMAKE.md](CMAKE.md)                         | Build system reference (CMake + vcpkg + FetchContent) |
+| [AGENTS.md](../../AGENTS.md)                 | AI agent context cho code generation                  |
 
 ---
 

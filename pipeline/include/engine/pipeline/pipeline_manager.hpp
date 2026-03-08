@@ -2,15 +2,23 @@
 #include "engine/core/pipeline/ipipeline_manager.hpp"
 #include "engine/core/builders/ipipeline_builder.hpp"
 #include "engine/core/config/config_types.hpp"
+
+#include <atomic>
 #include <gst/gst.h>
 #include <memory>
 #include <thread>
 
 namespace engine::core::messaging {
 class IMessageProducer;
-}
+class IMessageConsumer;
+}  // namespace engine::core::messaging
 
 namespace engine::pipeline {
+
+namespace evidence {
+class FrameEvidenceCache;
+class EvidenceRequestService;
+}  // namespace evidence
 
 namespace probes {
 class ProbeHandlerManager;
@@ -46,11 +54,24 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager {
      */
     void set_message_producer(engine::core::messaging::IMessageProducer* producer);
 
+    /**
+     * @brief Set optional message consumer for evidence_request intake.
+     *
+     * Call before initialize(). If not set (or set to nullptr), evidence
+     * request consumption is disabled even if `evidence:` exists in config.
+     *
+     * @param consumer Borrowed pointer — caller retains ownership.
+     */
+    void set_message_consumer(engine::core::messaging::IMessageConsumer* consumer);
+
    private:
     std::unique_ptr<engine::core::builders::IPipelineBuilder> builder_;
+    engine::core::config::PipelineConfig config_;
     GstElement* pipeline_ = nullptr;
     GMainLoop* loop_ = nullptr;
     std::thread loop_thread_;
+    std::thread evidence_thread_;
+    std::atomic<bool> stop_evidence_{false};
 
     engine::core::pipeline::PipelineState state_{
         engine::core::pipeline::PipelineState::Uninitialized};
@@ -61,9 +82,17 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager {
     /// Optional message producer for probe handlers (borrowed, not owned)
     engine::core::messaging::IMessageProducer* producer_ = nullptr;
 
+    /// Optional message consumer for evidence_request messages (borrowed, not owned)
+    engine::core::messaging::IMessageConsumer* consumer_ = nullptr;
+
+    std::unique_ptr<evidence::FrameEvidenceCache> frame_evidence_cache_;
+    std::unique_ptr<evidence::EvidenceRequestService> evidence_request_service_;
+
     static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer data);
     void handle_eos();
     void handle_error(GError* err, const gchar* debug);
+    void evidence_loop();
+    void stop_evidence_loop();
     void cleanup();
 };
 

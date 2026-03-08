@@ -10,6 +10,10 @@ namespace engine::core::messaging {
 class IMessageProducer;
 }
 
+namespace engine::pipeline::evidence {
+class FrameEvidenceCache;
+}
+
 namespace engine::pipeline::probes {
 
 /**
@@ -21,6 +25,7 @@ namespace engine::pipeline::probes {
  *   - `"crop_objects"` → CropObjectHandler
  *   - `"class_id_offset"` → ClassIdNamespaceHandler (Offset mode)
  *   - `"class_id_restore"` → ClassIdNamespaceHandler (Restore mode)
+ *   - `"frame_events"` → FrameEventsProbeHandler
  *
  * Ownership of each handler is transferred to GStreamer via GDestroyNotify;
  * no additional lifecycle management is required by the caller.
@@ -44,7 +49,8 @@ class ProbeHandlerManager {
      * @return true if every enabled probe was attached successfully.
      */
     bool attach_probes(const engine::core::config::PipelineConfig& config,
-                       engine::core::messaging::IMessageProducer* producer);
+                       engine::core::messaging::IMessageProducer* producer,
+                       engine::pipeline::evidence::FrameEvidenceCache* cache);
 
     /**
      * @brief Remove all attached probes (call before pipeline teardown).

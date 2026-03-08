@@ -62,6 +62,23 @@ messaging:
   host: "192.168.1.99"
   port: 6319
 
+# -----------------------------------------------------------------------------
+# Evidence workflow — downstream-driven request/completion flow
+# Python publishes evidence_request; engine consumes it, encodes from cached
+# frame snapshots, then emits evidence_ready for media service to consume.
+# -----------------------------------------------------------------------------
+evidence:
+  enable: true
+  request_channel: worker_lsr_evidence_request
+  ready_channel: worker_lsr_evidence_ready
+  save_dir: "/opt/vms_engine/dev/rec/frames"
+  frame_cache_ttl_ms: 10000
+  max_frame_gap_ms: 250
+  overview_jpeg_quality: 80
+  cache_on_frame_events: true
+  cache_backend: nvbufsurface_copy
+  max_frames_per_source: 16
+
 # =============================================================================
 # STAGE 1 — Sources Block  (→ sources_bin)
 # Element: nvmultiurisrcbin
@@ -294,7 +311,7 @@ event_handlers:
   # nvmultiurisrcbin (referenced by source_element).
   # ---------------------------------------------------------------------------
   - id: smart_record
-    enable: true
+    enable: false
     type: on_detect
     probe_element: tracker # attach pad probe to tracker's src pad
     source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
@@ -306,11 +323,34 @@ event_handlers:
     min_interval_sec: 2 # minimum gap between recordings per camera
 
   # ---------------------------------------------------------------------------
+  # Canonical primary detection feed for downstream business-event generation.
+  # Emits one message per source-frame after tracker using state change + heartbeat.
+  # ---------------------------------------------------------------------------
+  - id: frame_events
+    enable: true
+    type: on_detect
+    probe_element: tracker
+    pad_name: src
+    trigger: frame_events
+    channel: worker_lsr_frame_events
+    label_filter: [bike, bus, car, person, truck]
+    frame_events:
+      heartbeat_interval_ms: 1000
+      min_emit_gap_ms: 250
+      motion_iou_threshold: 0.85
+      center_shift_ratio_threshold: 0.05
+      emit_on_first_frame: true
+      emit_on_object_set_change: true
+      emit_on_label_change: true
+      emit_on_parent_change: true
+      emit_empty_frames: false
+
+  # ---------------------------------------------------------------------------
   # Object crop + optional external processing (e.g. face recognition)
   # Probe on tracker src pad → crop object ROI from NvBufSurface → save JPEG.
   # ---------------------------------------------------------------------------
   - id: crop_objects
-    enable: true
+    enable: false
     type: on_detect
     probe_element: tracker
     trigger: crop_objects

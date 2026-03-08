@@ -2,7 +2,9 @@
 
 > **Scope**: GPU-accelerated object cropping (NvDsObjEnc), publish decision system (first_seen / bypass / heartbeat / exit), batch-accumulate-then-publish pattern.
 >
-> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [ext_proc_svc.md](ext_proc_svc.md)
+> **Vai trò hiện tại**: `CropObjectHandler` là **sidecar media probe** cho crop JPEG, full-frame snapshot, ext processor, và workflow media-centric legacy. Nó **không còn là canonical primary feed** cho downstream business-event generation; vai trò đó đã chuyển sang `FrameEventsProbeHandler` + `evidence_request/evidence_ready`.
+>
+> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [frame_events_probe_handler.md](frame_events_probe_handler.md) · [ext_proc_svc.md](ext_proc_svc.md)
 
 ---
 
@@ -26,6 +28,13 @@
 ## 1. Tổng quan
 
 `CropObjectHandler` là pad probe cắt (crop) detected objects từ GPU frame thành ảnh JPEG, sử dụng **NvDsObjEnc** CUDA-accelerated encoder. Publish metadata qua `IMessageProducer` (Redis Streams / Kafka).
+
+Sau khi `frame_events` được đưa vào kiến trúc chuẩn, cần hiểu rõ vị trí của handler này:
+
+- Dùng khi pipeline cần eager crop hoặc full-frame JPEG cho workflow media legacy.
+- Dùng khi cần `ext_processor` dạng HTTP AI enrichment gắn với ảnh crop.
+- Không dùng làm nguồn detection semantics chuẩn cho intrusion, fire/smoke, PPE, hoặc leave-zone.
+- Không phải default path để trả lời `evidence_request`.
 
 ```mermaid
 flowchart TB
@@ -61,19 +70,19 @@ event_handlers:
   - id: crop_objects
     enable: true
     type: on_detect
-    probe_element: tracker          # Element ID để gắn probe
-    trigger: crop_objects           # pad_name default "src"
+    probe_element: tracker # Element ID để gắn probe
+    trigger: crop_objects # pad_name default "src"
     label_filter: [bike, bus, car, person, truck]
     save_dir: "/opt/vms_engine/dev/rec/objects"
-    capture_interval_sec: 5         # PTS-based throttle
-    image_quality: 85               # JPEG quality 1-100
+    capture_interval_sec: 5 # PTS-based throttle
+    image_quality: 85 # JPEG quality 1-100
     save_full_frame: true
-    channel: worker_lsr_snap        # Redis/Kafka topic (rỗng = không publish)
+    channel: worker_lsr_snap # Redis/Kafka topic (rỗng = không publish)
     cleanup:
       stale_object_timeout_min: 5
       check_interval_batches: 30
-      old_dirs_max_days: 7          # 0 = tắt
-    ext_processor:                  # → xem ext_proc_svc.md
+      old_dirs_max_days: 7 # 0 = tắt
+    ext_processor: # → xem ext_proc_svc.md
       enable: true
       min_interval_sec: 1
       rules:
@@ -83,18 +92,18 @@ event_handlers:
           display_path: "match.face_name"
 ```
 
-| Field                          | Type     | Default | Mô tả                                          |
-| ------------------------------ | -------- | ------- | ----------------------------------------------- |
-| `probe_element`                | string   | —       | Element ID gắn probe (thường `tracker`)         |
-| `label_filter`                 | string[] | `[]`    | Label filter; rỗng = tất cả                     |
-| `save_dir`                     | string   | —       | Thư mục gốc lưu crop                            |
-| `capture_interval_sec`         | int      | `5`     | PTS-based throttle giữa 2 captures cùng object  |
-| `image_quality`                | int      | `85`    | JPEG quality 1–100                               |
-| `save_full_frame`              | bool     | `true`  | Lưu full-frame cùng crop                        |
-| `channel`                      | string   | `""`    | Publish channel; rỗng = tắt                     |
-| `cleanup.stale_object_timeout_min` | int  | `5`     | Xóa state nếu không thấy object sau N phút     |
-| `cleanup.check_interval_batches`   | int  | `30`    | Chạy cleanup mỗi N batches                      |
-| `cleanup.old_dirs_max_days`        | int  | `7`     | Xóa daily dirs cũ hơn N ngày; 0=tắt            |
+| Field                              | Type     | Default | Mô tả                                          |
+| ---------------------------------- | -------- | ------- | ---------------------------------------------- |
+| `probe_element`                    | string   | —       | Element ID gắn probe (thường `tracker`)        |
+| `label_filter`                     | string[] | `[]`    | Label filter; rỗng = tất cả                    |
+| `save_dir`                         | string   | —       | Thư mục gốc lưu crop                           |
+| `capture_interval_sec`             | int      | `5`     | PTS-based throttle giữa 2 captures cùng object |
+| `image_quality`                    | int      | `85`    | JPEG quality 1–100                             |
+| `save_full_frame`                  | bool     | `true`  | Lưu full-frame cùng crop                       |
+| `channel`                          | string   | `""`    | Publish channel; rỗng = tắt                    |
+| `cleanup.stale_object_timeout_min` | int      | `5`     | Xóa state nếu không thấy object sau N phút     |
+| `cleanup.check_interval_batches`   | int      | `30`    | Chạy cleanup mỗi N batches                     |
+| `cleanup.old_dirs_max_days`        | int      | `7`     | Xóa daily dirs cũ hơn N ngày; 0=tắt            |
 
 ---
 
@@ -138,14 +147,14 @@ flowchart TD
 
 Bypass fires **chỉ khi** SGIE label string thay đổi so với `last_sgie_labels` baseline.
 
-| Thông số             | Giá trị  | Mô tả                                              |
-| -------------------- | -------- | --------------------------------------------------- |
-| `BURST_MAX`          | 3        | Max tokens per object                               |
-| `TOKEN_REFILL_NS`    | 5s       | Refill 1 token mỗi 5s (PTS-based)                  |
-| `BYPASS_MIN_GAP_NS`  | 1s       | Debounce tối thiểu giữa 2 bypass                   |
-| `K_ON_FRAMES`        | 5        | Object phải ổn định 5 frames trước publish          |
-| `K_OFF_FRAMES`       | 2        | Cho phép gap 2 frames khi tính ON hysteresis        |
-| `K_LABEL_FRAMES`     | 5        | Label change phải ổn định 5 frames mới bypass       |
+| Thông số            | Giá trị | Mô tả                                         |
+| ------------------- | ------- | --------------------------------------------- |
+| `BURST_MAX`         | 3       | Max tokens per object                         |
+| `TOKEN_REFILL_NS`   | 5s      | Refill 1 token mỗi 5s (PTS-based)             |
+| `BYPASS_MIN_GAP_NS` | 1s      | Debounce tối thiểu giữa 2 bypass              |
+| `K_ON_FRAMES`       | 5       | Object phải ổn định 5 frames trước publish    |
+| `K_OFF_FRAMES`      | 2       | Cho phép gap 2 frames khi tính ON hysteresis  |
+| `K_LABEL_FRAMES`    | 5       | Label change phải ổn định 5 frames mới bypass |
 
 > 📋 `group_sgie_signature` = parent SGIE labels + aggregated child SGIE labels → quyết định first_seen/bypass/heartbeat cho group. Khi publish, `labels` field chỉ chứa classifier labels của chính object đó.
 
@@ -170,13 +179,13 @@ struct ObjectPubState {
 
 ### 4.2 State Maps
 
-| Map                       | Key                                    | Mô tả                                     |
-| ------------------------- | -------------------------------------- | ------------------------------------------ |
-| `object_keys_`            | `compose_key(source_id, tracker_id)`   | Persistent UUIDv7 per tracker              |
-| `object_last_seen_`       | same                                   | PTS lần cuối thấy object                   |
-| `last_capture_pts_`       | same                                   | PTS lần cuối capture                       |
-| `pub_state_`              | same                                   | Publish state (hash, seq, tokens)          |
-| `child_parent_oid_cache_` | `compose_key(src, child_tid)`          | Fallback parent lookup khi obj->parent null |
+| Map                       | Key                                  | Mô tả                                       |
+| ------------------------- | ------------------------------------ | ------------------------------------------- |
+| `object_keys_`            | `compose_key(source_id, tracker_id)` | Persistent UUIDv7 per tracker               |
+| `object_last_seen_`       | same                                 | PTS lần cuối thấy object                    |
+| `last_capture_pts_`       | same                                 | PTS lần cuối capture                        |
+| `pub_state_`              | same                                 | Publish state (hash, seq, tokens)           |
+| `child_parent_oid_cache_` | `compose_key(src, child_tid)`        | Fallback parent lookup khi obj->parent null |
 
 ### 4.3 Payload Hash Dedup
 
@@ -208,6 +217,7 @@ sequenceDiagram
 ```
 
 **Tại sao batch-accumulate:**
+
 1. `nvds_obj_enc_finish()` block cho đến khi tất cả JPEG ghi xong
 2. Publish SAU finish → consumer nhận message khi file đã tồn tại
 3. Giảm thời gian giữ mutex — accumulate nhanh, publish một lần
@@ -246,31 +256,47 @@ nvds_obj_enc_finish(enc_ctx_);
 {
   "event": "crop_bb",
   "pid": "pipeline_01",
-  "sid": 0, "sname": "camera-01",
+  "sid": 0,
+  "sname": "camera-01",
   "instance_key": "019785f3-...",
-  "oid": 42, "object_key": "019785f2-...",
-  "parent_object_key": "", "parent": "", "parent_instance_key": "",
-  "class": "car", "conf": 0.92, "class_id": 2,
+  "oid": 42,
+  "object_key": "019785f2-...",
+  "parent_object_key": "",
+  "parent": "",
+  "parent_instance_key": "",
+  "class": "car",
+  "conf": 0.92,
+  "class_id": 2,
   "labels": "sport_car:0:0.87|sedan:1:0.11",
-  "top": 200.3, "left": 120.5, "w": 80.0, "h": 60.0,
-  "s_w_ff": 1920, "s_h_ff": 1080, "w_ff": 1920, "h_ff": 1080,
+  "top": 200.3,
+  "left": 120.5,
+  "w": 80.0,
+  "h": 60.0,
+  "s_w_ff": 1920,
+  "s_h_ff": 1080,
+  "w_ff": 1920,
+  "h_ff": 1080,
   "fname": "20250711/s0_RT20250711_143022_456_car_id42.jpg",
   "fname_ff": "20250711/s0_RT20250711_143022_456_frame_ff.jpg",
   "event_ts": "1720700000000",
-  "mid": "019785f3-...", "prev_mid": "",
-  "pub_type": "first_seen", "pub_reason": "New object detected",
-  "hb_seq": 0, "frame_num": 1234, "tracker_id": 42
+  "mid": "019785f3-...",
+  "prev_mid": "",
+  "pub_type": "first_seen",
+  "pub_reason": "New object detected",
+  "hb_seq": 0,
+  "frame_num": 1234,
+  "tracker_id": 42
 }
 ```
 
 ### 7.2 pub_type Values
 
-| pub_type     | Trigger                              | Image | hb_seq    |
-| ------------ | ------------------------------------ | ----- | --------- |
-| `first_seen` | Tracker ID mới                       | Có    | 0         |
-| `bypass`     | SGIE label change + token available  | Có    | Giữ nguyên|
-| `heartbeat`  | Periodic sau capture_interval_sec    | Có    | +1        |
-| `exit`       | Stale timeout cleanup                | Không | Giữ nguyên|
+| pub_type     | Trigger                             | Image | hb_seq     |
+| ------------ | ----------------------------------- | ----- | ---------- |
+| `first_seen` | Tracker ID mới                      | Có    | 0          |
+| `bypass`     | SGIE label change + token available | Có    | Giữ nguyên |
+| `heartbeat`  | Periodic sau capture_interval_sec   | Có    | +1         |
+| `exit`       | Stale timeout cleanup               | Không | Giữ nguyên |
 
 ### 7.3 Message Chain Example
 
@@ -300,16 +326,17 @@ save_dir/
        └── s1_RT20250711_143025_789_truck_id15.jpg
 ```
 
-| File Type  | Format                                                 |
-| ---------- | ------------------------------------------------------ |
-| Crop       | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_{label}_id{oid}.jpg`  |
-| Full-frame | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_frame_ff.jpg`         |
+| File Type  | Format                                               |
+| ---------- | ---------------------------------------------------- |
+| Crop       | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_{label}_id{oid}.jpg` |
+| Full-frame | `s{sid}_RT{YYYYMMDD_HHMMSS_mmm}_frame_ff.jpg`        |
 
 > 📋 Flat directory — không có `src_N/` subdir (aligned lantanav2). `fname`/`fname_ff` là **relative paths** từ `save_dir`.
 
 ### 8.2 Stale Object Cleanup
 
 Mỗi `check_interval_batches` batch:
+
 1. Tìm entries `(current_pts - last_seen) > timeout_ns`
 2. Tạo Exit `PendingMessage` (metadata-only)
 3. Xóa đồng bộ: `object_keys_`, `object_last_seen_`, `last_capture_pts_`, `pub_state_`, `child_parent_oid_cache_`
@@ -343,15 +370,15 @@ CropObjectHandler::~CropObjectHandler() {
 
 ### 9.1 Cải thiện
 
-| Cải thiện                   | lantanav2                                   | vms-engine                                     |
-| --------------------------- | ------------------------------------------- | ---------------------------------------------- |
-| Redis publish               | `data` wrapper (consumer parse 2 lần)       | Flat fields (consumer đọc trực tiếp)           |
-| Config                      | Semicolon string (dễ lỗi)                   | Typed C++ structs từ YAML                      |
-| Transport                   | `RedisStreamProducer` (coupled)             | `IMessageProducer` (Redis/Kafka abstract)      |
-| JSON types                  | All string (`std::to_string`)               | Native float/int                                |
-| Heartbeat dedup             | Track hash nhưng không suppress             | Suppress duplicate (object đứng yên)           |
-| Memory safety               | Không có limit                              | `MAX_TRACKED_OBJECTS=5000` + memory stats log  |
-| Source dims                 | `frame_meta->source_frame_width`            | `NvBufSurface` (actual GPU buffer)             |
+| Cải thiện       | lantanav2                             | vms-engine                                    |
+| --------------- | ------------------------------------- | --------------------------------------------- |
+| Redis publish   | `data` wrapper (consumer parse 2 lần) | Flat fields (consumer đọc trực tiếp)          |
+| Config          | Semicolon string (dễ lỗi)             | Typed C++ structs từ YAML                     |
+| Transport       | `RedisStreamProducer` (coupled)       | `IMessageProducer` (Redis/Kafka abstract)     |
+| JSON types      | All string (`std::to_string`)         | Native float/int                              |
+| Heartbeat dedup | Track hash nhưng không suppress       | Suppress duplicate (object đứng yên)          |
+| Memory safety   | Không có limit                        | `MAX_TRACKED_OBJECTS=5000` + memory stats log |
+| Source dims     | `frame_meta->source_frame_width`      | `NvBufSurface` (actual GPU buffer)            |
 
 ### 9.2 Giữ nguyên
 
@@ -359,12 +386,12 @@ Event name `"crop_bb"` · File naming `s{sid}_RT...` · Flat `YYYYMMDD/` dirs ·
 
 ### 9.3 Không port
 
-| Feature                       | Lý do                                            |
-| ----------------------------- | ------------------------------------------------ |
-| `ChildPresenceStateV2` hysteresis | vms-engine dùng PTS-based + parent-link fallback |
-| WSL GPU detect                | Container-native, không cần                      |
-| Redis per-message `is_connected()` | Fire-and-forget + LOG_W                      |
-| hb_seq conditional push       | Luôn include trong mọi pub_type                  |
+| Feature                            | Lý do                                            |
+| ---------------------------------- | ------------------------------------------------ |
+| `ChildPresenceStateV2` hysteresis  | vms-engine dùng PTS-based + parent-link fallback |
+| WSL GPU detect                     | Container-native, không cần                      |
+| Redis per-message `is_connected()` | Fire-and-forget + LOG_W                          |
+| hb_seq conditional push            | Luôn include trong mọi pub_type                  |
 
 ---
 
@@ -386,23 +413,24 @@ Chi tiết → [ext_proc_svc.md](ext_proc_svc.md)
 
 ## 11. Troubleshooting
 
-| Vấn đề                      | Nguyên nhân                            | Fix                                          |
-| ---------------------------- | -------------------------------------- | -------------------------------------------- |
-| JPEG mờ/corrupted           | `cudaDeviceSynchronize()` fail/skip    | Kiểm tra GPU load, CUDA driver               |
-| Không tạo file JPEG          | Encoder context null                   | Kiểm tra GPU ID, DeepStream encoder libs     |
-| Memory tăng không ngừng      | Tracker ID churn (crowded scene)       | Giảm `stale_object_timeout_min`, tracker config |
-| Publish thất bại             | Redis connection issue                 | Kiểm tra broker host/port                    |
-| Heartbeat bị suppress nhiều  | Object đứng yên (dedup đúng behavior) | Tắt dedup hoặc set `capture_interval_sec=0`  |
+| Vấn đề                      | Nguyên nhân                           | Fix                                             |
+| --------------------------- | ------------------------------------- | ----------------------------------------------- |
+| JPEG mờ/corrupted           | `cudaDeviceSynchronize()` fail/skip   | Kiểm tra GPU load, CUDA driver                  |
+| Không tạo file JPEG         | Encoder context null                  | Kiểm tra GPU ID, DeepStream encoder libs        |
+| Memory tăng không ngừng     | Tracker ID churn (crowded scene)      | Giảm `stale_object_timeout_min`, tracker config |
+| Publish thất bại            | Redis connection issue                | Kiểm tra broker host/port                       |
+| Heartbeat bị suppress nhiều | Object đứng yên (dedup đúng behavior) | Tắt dedup hoặc set `capture_interval_sec=0`     |
 
 ---
 
 ## 12. Cross-references
 
-| Topic                     | Document                                                        |
-| ------------------------- | --------------------------------------------------------------- |
-| Probe system overview     | [07 — Event Handlers](../deepstream/07_event_handlers_probes.md)|
-| External Processor detail | [ext_proc_svc.md](ext_proc_svc.md)                             |
-| SmartRecord probe         | [smart_record_probe_handler.md](smart_record_probe_handler.md)  |
+| Topic                     | Document                                                           |
+| ------------------------- | ------------------------------------------------------------------ |
+| Probe system overview     | [07 — Event Handlers](../deepstream/07_event_handlers_probes.md)   |
+| Semantic primary feed     | [frame_events_probe_handler.md](frame_events_probe_handler.md)     |
+| External Processor detail | [ext_proc_svc.md](ext_proc_svc.md)                                 |
+| SmartRecord probe         | [smart_record_probe_handler.md](smart_record_probe_handler.md)     |
 | Class ID namespacing      | [class_id_namespacing_handler.md](class_id_namespacing_handler.md) |
-| RAII for encoder contexts | [RAII Guide](../RAII.md)                                        |
-| Pipeline building         | [03 — Pipeline Building](../deepstream/03_pipeline_building.md) |
+| RAII for encoder contexts | [RAII Guide](../RAII.md)                                           |
+| Pipeline building         | [03 — Pipeline Building](../deepstream/03_pipeline_building.md)    |

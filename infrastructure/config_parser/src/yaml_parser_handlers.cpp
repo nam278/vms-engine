@@ -92,6 +92,24 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             handler.ext_processor = ext;
         }
 
+        // Frame events sub-section
+        if (h["frame_events"] && h["frame_events"].IsMap()) {
+            engine::core::config::FrameEventsConfig frame_events;
+            const auto& fe = h["frame_events"];
+            frame_events.heartbeat_interval_ms = yaml_int(fe, "heartbeat_interval_ms", 1000);
+            frame_events.min_emit_gap_ms = yaml_int(fe, "min_emit_gap_ms", 250);
+            frame_events.motion_iou_threshold = yaml_double(fe, "motion_iou_threshold", 0.85);
+            frame_events.center_shift_ratio_threshold =
+                yaml_double(fe, "center_shift_ratio_threshold", 0.05);
+            frame_events.emit_on_first_frame = yaml_bool(fe, "emit_on_first_frame", true);
+            frame_events.emit_on_object_set_change =
+                yaml_bool(fe, "emit_on_object_set_change", true);
+            frame_events.emit_on_label_change = yaml_bool(fe, "emit_on_label_change", true);
+            frame_events.emit_on_parent_change = yaml_bool(fe, "emit_on_parent_change", true);
+            frame_events.emit_empty_frames = yaml_bool(fe, "emit_empty_frames", false);
+            handler.frame_events = frame_events;
+        }
+
         out.push_back(std::move(handler));
     }
 

@@ -1,6 +1,6 @@
 # 07. Pad Probes & Event Handlers
 
-> **Scope**: GStreamer pad probe architecture — `ProbeHandlerManager` dispatch, 4 built-in handlers, YAML schema, callback rules.
+> **Scope**: GStreamer pad probe architecture — `ProbeHandlerManager` dispatch, 5 built-in handlers, YAML schema, callback rules.
 >
 > **Đọc trước**: [03 — Pipeline Building](03_pipeline_building.md) · [06 — Runtime Lifecycle](06_runtime_lifecycle.md)
 
@@ -11,10 +11,11 @@
 - [1. Tổng quan](#1-tổng-quan)
 - [2. ProbeHandlerManager](#2-probehandlermanager)
 - [3. Built-in Probe Handlers](#3-built-in-probe-handlers)
-  - [3.1 SmartRecordProbeHandler](#31-smartrecordprobehandler)
-  - [3.2 CropObjectHandler](#32-cropobjecthandler)
-  - [3.3 ExternalProcessorService](#33-externalprocessorservice)
-  - [3.4 ClassIdNamespaceHandler](#34-classidnamespacehandler)
+- [3.1 SmartRecordProbeHandler](#31-smartrecordprobehandler)
+- [3.2 FrameEventsProbeHandler](#32-frameeventsprobehandler)
+- [3.3 CropObjectHandler](#33-cropobjecthandler)
+- [3.4 ExternalProcessorService](#34-externalprocessorservice)
+- [3.5 ClassIdNamespaceHandler](#35-classidnamespacehandler)
 - [4. EventHandlerConfig — YAML Schema](#4-eventhandlerconfig--yaml-schema)
 - [5. Probe Ordering — GStreamer FIFO](#5-probe-ordering--gstreamer-fifo)
 - [6. Adding a New Probe Handler](#6-adding-a-new-probe-handler)
@@ -51,27 +52,34 @@ flowchart LR
 flowchart TD
     YAML["event_handlers:<br/>YAML config"] --> PHM["ProbeHandlerManager"]
     PHM -->|trigger: smart_record| SR["SmartRecordProbeHandler"]
+    PHM -->|trigger: frame_events| FE["FrameEventsProbeHandler"]
     PHM -->|trigger: crop_objects| CROP["CropObjectHandler"]
     PHM -->|trigger: class_id_offset| CID_OFF["ClassIdNamespaceHandler<br/>(Offset mode)"]
     PHM -->|trigger: class_id_restore| CID_RES["ClassIdNamespaceHandler<br/>(Restore mode)"]
 
     CROP -.->|sub-service| EXT["ExternalProcessorService"]
+    FE -.->|emitted frame snapshots| EVC["FrameEvidenceCache"]
+    EVC -.->|request-driven encode| ERS["EvidenceRequestService"]
 
     style PHM fill:#4af,stroke:#333,color:#fff
     style SR fill:#f96,stroke:#333
+    style FE fill:#4a9eff,stroke:#333,color:#fff
     style CROP fill:#f96,stroke:#333
     style CID_OFF fill:#9c6,stroke:#333
     style CID_RES fill:#9c6,stroke:#333
     style EXT fill:#ff9,stroke:#333
+    style EVC fill:#00b894,stroke:#333,color:#fff
+    style ERS fill:#ff9f43,stroke:#333,color:#fff
 ```
 
-| Handler                      | Trigger             | Pad     | Mục đích                                              |
-| ---------------------------- | ------------------- | ------- | ----------------------------------------------------- |
-| `SmartRecordProbeHandler`    | `smart_record`      | `src`   | Trigger recording khi phát hiện object khớp label      |
-| `CropObjectHandler`          | `crop_objects`      | `src`   | Crop object → JPEG, publish JSON metadata              |
-| `ExternalProcessorService`   | _(sub của crop)_    | —       | HTTP AI enrichment (face-rec, plate lookup…)           |
-| `ClassIdNamespaceHandler`    | `class_id_offset`   | `sink`  | Remap class_id tránh collision multi-detector          |
-| `ClassIdNamespaceHandler`    | `class_id_restore`  | `src`   | Phục hồi class_id gốc                                 |
+| Handler                    | Trigger            | Pad    | Mục đích                                          |
+| -------------------------- | ------------------ | ------ | ------------------------------------------------- |
+| `SmartRecordProbeHandler`  | `smart_record`     | `src`  | Trigger recording khi phát hiện object khớp label |
+| `FrameEventsProbeHandler`  | `frame_events`     | `src`  | Canonical semantic feed theo camera-frame         |
+| `CropObjectHandler`        | `crop_objects`     | `src`  | Crop object → JPEG, publish JSON metadata         |
+| `ExternalProcessorService` | _(sub của crop)_   | —      | HTTP AI enrichment (face-rec, plate lookup…)      |
+| `ClassIdNamespaceHandler`  | `class_id_offset`  | `sink` | Remap class_id tránh collision multi-detector     |
+| `ClassIdNamespaceHandler`  | `class_id_restore` | `src`  | Phục hồi class_id gốc                             |
 
 ---
 
@@ -89,7 +97,9 @@ public:
 
     /// Attach probes từ event_handler configs.
     bool attach_probes(
-        const std::vector<engine::core::config::EventHandlerConfig>& configs);
+        const engine::core::config::PipelineConfig& config,
+        engine::core::messaging::IMessageProducer* producer,
+        engine::pipeline::evidence::FrameEvidenceCache* cache);
 
     /// Remove tất cả probes (gọi trước pipeline teardown).
     void detach_all();
@@ -115,6 +125,13 @@ if (cfg.trigger == "smart_record") {
     gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
         CropObjectHandler::on_buffer, handler,
         [](gpointer ud) { delete static_cast<CropObjectHandler*>(ud); });
+
+} else if (cfg.trigger == "frame_events") {
+    auto* handler = new FrameEventsProbeHandler();
+    handler->configure(config, cfg, producer, cache);
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER,
+        FrameEventsProbeHandler::on_buffer, handler,
+        [](gpointer ud) { delete static_cast<FrameEventsProbeHandler*>(ud); });
 
 } else if (cfg.trigger == "class_id_offset") {
     auto* handler = new ClassIdNamespaceHandler();
@@ -202,7 +219,36 @@ struct SourceRecordingState {
 
 ---
 
-### 3.2 CropObjectHandler
+### 3.2 FrameEventsProbeHandler
+
+`FrameEventsProbeHandler` publish đúng một semantic message cho mỗi source frame được chọn phát, rồi handoff frame snapshot sang `FrameEvidenceCache` để phục vụ `evidence_request` về sau.
+
+```mermaid
+flowchart LR
+    BUF["GstBuffer / batch_meta"] --> COLLECT["collect_frame_objects()"]
+    COLLECT --> DECIDE["should_emit_message()"]
+    DECIDE -->|emit| PUB["publish frame_events"]
+    DECIDE -->|emit| CACHE["store emitted frame snapshot"]
+    PUB --> PY["Python downstream"]
+    PY --> REQ["evidence_request"]
+    REQ --> ERS["EvidenceRequestService"]
+    CACHE --> ERS
+    ERS --> READY["evidence_ready"]
+```
+
+| Chủ đề                  | `FrameEventsProbeHandler` |
+| ----------------------- | ------------------------- |
+| Publish unit            | One camera-frame          |
+| Semantic payload        | Có                        |
+| JPEG encode trong probe | Không                     |
+| Cache emitted frame     | Có                        |
+| Evidence workflow       | Request-driven            |
+
+> 📖 **Deep-dive**: [probes/frame_events_probe_handler.md](../probes/frame_events_probe_handler.md)
+
+---
+
+### 3.3 CropObjectHandler
 
 Crop detected objects từ GPU frame thành ảnh JPEG sử dụng **NvDsObjEnc** CUDA-accelerated encoder. Publish metadata JSON đến Redis Streams.
 
@@ -241,31 +287,31 @@ struct ObjectPubState {
 
 **State maps (4 tổng cộng):**
 
-| Map                 | Key        | Value           | Mục đích                       |
-| ------------------- | ---------- | --------------- | ------------------------------ |
-| `object_keys_`      | tracker_id | UUIDv7 string   | Persistent ID cho mỗi object   |
-| `object_last_seen_` | tracker_id | GstClockTime    | Stale detection                |
-| `last_capture_pts_` | tracker_id | GstClockTime    | PTS throttle per object        |
-| `pub_state_`        | tracker_id | ObjectPubState  | Dedup + message chain          |
+| Map                 | Key        | Value          | Mục đích                     |
+| ------------------- | ---------- | -------------- | ---------------------------- |
+| `object_keys_`      | tracker_id | UUIDv7 string  | Persistent ID cho mỗi object |
+| `object_last_seen_` | tracker_id | GstClockTime   | Stale detection              |
+| `last_capture_pts_` | tracker_id | GstClockTime   | PTS throttle per object      |
+| `pub_state_`        | tracker_id | ObjectPubState | Dedup + message chain        |
 
 **Cải tiến v1 → v2:**
 
-| Feature             | v1                      | v2 (hiện tại)                                    |
-| ------------------- | ----------------------- | ------------------------------------------------ |
-| Publish decision    | Capture = publish       | `PubDecisionType` (FirstSeen/Heartbeat/None)     |
-| Heartbeat dedup     | không có                | Payload hash — suppress duplicate heartbeat      |
-| Publish timing      | Ngay khi encode         | Batch-accumulate → `finish()` → publish          |
-| Message ID chain    | không có                | `mid` + `prev_mid` cho event correlation         |
-| Stale cleanup       | 3 maps                  | 4 maps (thêm `pub_state_`)                       |
-| Emergency limit     | 10000                   | 5000 (stricter)                                  |
-| File naming         | `crop_{tid}_{uuid8}`    | `crop_{label}_{tid}_{uuid8}` (sanitized label)   |
-| ext_processor       | không parse             | `ExtProcessorConfig` → `ExternalProcessorService`|
+| Feature          | v1                   | v2 (hiện tại)                                     |
+| ---------------- | -------------------- | ------------------------------------------------- |
+| Publish decision | Capture = publish    | `PubDecisionType` (FirstSeen/Heartbeat/None)      |
+| Heartbeat dedup  | không có             | Payload hash — suppress duplicate heartbeat       |
+| Publish timing   | Ngay khi encode      | Batch-accumulate → `finish()` → publish           |
+| Message ID chain | không có             | `mid` + `prev_mid` cho event correlation          |
+| Stale cleanup    | 3 maps               | 4 maps (thêm `pub_state_`)                        |
+| Emergency limit  | 10000                | 5000 (stricter)                                   |
+| File naming      | `crop_{tid}_{uuid8}` | `crop_{label}_{tid}_{uuid8}` (sanitized label)    |
+| ext_processor    | không parse          | `ExtProcessorConfig` → `ExternalProcessorService` |
 
 > 📖 **Deep-dive**: [probes/crop_object_handler.md](../probes/crop_object_handler.md)
 
 ---
 
-### 3.3 ExternalProcessorService
+### 3.4 ExternalProcessorService
 
 Sub-service tích hợp bên trong `CropObjectHandler` — thực hiện **HTTP-based AI enrichment** cho từng detected object.
 
@@ -280,19 +326,19 @@ flowchart LR
     style PUB fill:#9cf,stroke:#333
 ```
 
-| Feature             | Detail                                                           |
-| ------------------- | ---------------------------------------------------------------- |
-| Thread model        | **Detached thread** — không block GStreamer streaming thread     |
-| Throttle            | Per `(source_id, tracker_id, label)` key                        |
-| JPEG encoding       | NvDsObjEnc riêng (engine context), `saveImg=FALSE`              |
-| Config location     | Sub-block `ext_processor:` trong `event_handlers` entry          |
-| Publish channel     | `event: ext_proc` đến Redis Stream                               |
+| Feature         | Detail                                                       |
+| --------------- | ------------------------------------------------------------ |
+| Thread model    | **Detached thread** — không block GStreamer streaming thread |
+| Throttle        | Per `(source_id, tracker_id, label)` key                     |
+| JPEG encoding   | NvDsObjEnc riêng (engine context), `saveImg=FALSE`           |
+| Config location | Sub-block `ext_processor:` trong `event_handlers` entry      |
+| Publish channel | `event: ext_proc` đến Redis Stream                           |
 
 > 📖 **Deep-dive**: [probes/ext_proc_svc.md](../probes/ext_proc_svc.md)
 
 ---
 
-### 3.4 ClassIdNamespaceHandler
+### 3.5 ClassIdNamespaceHandler
 
 Giải quyết **class_id collision** trong multi-detector pipelines (PGIE + nhiều SGIE). Hai chế độ hoạt động:
 
@@ -314,10 +360,10 @@ flowchart LR
     style B3 fill:#cfc,stroke:#333
 ```
 
-| Mode      | Trigger YAML       | Pad    | Mục đích                                              |
-| --------- | ------------------ | ------ | ------------------------------------------------------ |
-| `Offset`  | `class_id_offset`  | `sink` | Remap `class_id → (gie_unique_id × 1000) + class_id`  |
-| `Restore` | `class_id_restore` | `src`  | Phục hồi `class_id` gốc từ `misc_obj_info[]`          |
+| Mode      | Trigger YAML       | Pad    | Mục đích                                             |
+| --------- | ------------------ | ------ | ---------------------------------------------------- |
+| `Offset`  | `class_id_offset`  | `sink` | Remap `class_id → (gie_unique_id × 1000) + class_id` |
+| `Restore` | `class_id_restore` | `src`  | Phục hồi `class_id` gốc từ `misc_obj_info[]`         |
 
 > 📋 **Magic marker**: Giá trị gốc được lưu trong `misc_obj_info[0..2]` của `NvDsObjectMeta` với magic `0x4C4E5441` ("LNTA") để xác nhận data integrity khi restore.
 
@@ -358,6 +404,26 @@ event_handlers:
     max_concurrent_recordings: 2
     channel: vms:events:smart_record
 
+    # ── Frame Events ──
+    - id: frame_events
+        enable: true
+        type: on_detect
+        probe_element: tracker
+        pad_name: src
+        trigger: frame_events
+        channel: worker_lsr_frame_events
+        label_filter: [person, car, truck, helmet, head, hands, foot, smoke, flame]
+        frame_events:
+            heartbeat_interval_ms: 1000
+            min_emit_gap_ms: 250
+            motion_iou_threshold: 0.85
+            center_shift_ratio_threshold: 0.05
+            emit_on_first_frame: true
+            emit_on_object_set_change: true
+            emit_on_label_change: true
+            emit_on_parent_change: true
+            emit_empty_frames: false
+
   # ── Crop Objects ──
   - id: crop_objects
     enable: true
@@ -390,46 +456,60 @@ event_handlers:
 
 **Common fields (tất cả handlers):**
 
-| Field            | Type     | Required | Notes                                            |
-| ---------------- | -------- | -------- | ------------------------------------------------ |
-| `id`             | string   | ✅       | Unique across all handlers                       |
-| `enable`         | bool     | ✅       | `false` = handler bị skip hoàn toàn              |
-| `type`           | string   | ✅       | Event category, e.g. `on_detect`                 |
-| `probe_element`  | string   | ✅       | Element name trong pipeline để attach probe      |
-| `pad_name`       | string   | —        | `"src"` (default) hoặc `"sink"`                  |
-| `trigger`        | string   | ✅       | `smart_record` / `crop_objects` / `class_id_*`   |
-| `label_filter`   | string[] | —        | Empty = tất cả labels match                      |
-| `channel`        | string   | —        | Redis Stream / Kafka topic; empty = không publish|
+| Field           | Type     | Required | Notes                                                           |
+| --------------- | -------- | -------- | --------------------------------------------------------------- |
+| `id`            | string   | ✅       | Unique across all handlers                                      |
+| `enable`        | bool     | ✅       | `false` = handler bị skip hoàn toàn                             |
+| `type`          | string   | ✅       | Event category, e.g. `on_detect`                                |
+| `probe_element` | string   | ✅       | Element name trong pipeline để attach probe                     |
+| `pad_name`      | string   | —        | `"src"` (default) hoặc `"sink"`                                 |
+| `trigger`       | string   | ✅       | `smart_record` / `frame_events` / `crop_objects` / `class_id_*` |
+| `label_filter`  | string[] | —        | Empty = tất cả labels match                                     |
+| `channel`       | string   | —        | Redis Stream / Kafka topic; empty = không publish               |
 
 **SmartRecord-specific:**
 
-| Field                       | Type   | Default | Notes                                    |
-| --------------------------- | ------ | ------- | ---------------------------------------- |
-| `source_element`            | string | —       | ✅ Required — tên `nvmultiurisrcbin`     |
-| `pre_event_sec`             | int    | 2       | Buffer pre-event (giây)                  |
-| `post_event_sec`            | int    | 20      | Thời gian record sau trigger             |
-| `min_interval_sec`          | int    | 2       | Min giây giữa recordings per source      |
-| `max_concurrent_recordings` | int    | 0       | 0 = unlimited                            |
+| Field                       | Type   | Default | Notes                                |
+| --------------------------- | ------ | ------- | ------------------------------------ |
+| `source_element`            | string | —       | ✅ Required — tên `nvmultiurisrcbin` |
+| `pre_event_sec`             | int    | 2       | Buffer pre-event (giây)              |
+| `post_event_sec`            | int    | 20      | Thời gian record sau trigger         |
+| `min_interval_sec`          | int    | 2       | Min giây giữa recordings per source  |
+| `max_concurrent_recordings` | int    | 0       | 0 = unlimited                        |
+
+**FrameEvents-specific:**
+
+| Field                                       | Type   | Default | Notes                                    |
+| ------------------------------------------- | ------ | ------- | ---------------------------------------- |
+| `frame_events.heartbeat_interval_ms`        | int    | 1000    | Heartbeat semantic khi scene ổn định     |
+| `frame_events.min_emit_gap_ms`              | int    | 250     | Chặn burst do jitter                     |
+| `frame_events.motion_iou_threshold`         | double | 0.85    | Ngưỡng `motion_change` theo IoU          |
+| `frame_events.center_shift_ratio_threshold` | double | 0.05    | Ngưỡng `motion_change` theo center shift |
+| `frame_events.emit_on_first_frame`          | bool   | true    | Emit ngay frame đầu tiên có detection    |
+| `frame_events.emit_on_object_set_change`    | bool   | true    | Emit khi tập object đổi                  |
+| `frame_events.emit_on_label_change`         | bool   | true    | Emit khi label hoặc class đổi            |
+| `frame_events.emit_on_parent_change`        | bool   | true    | Emit khi parent-child đổi                |
+| `frame_events.emit_empty_frames`            | bool   | false   | Mặc định không phát frame rỗng           |
 
 **CropObjects-specific:**
 
-| Field                              | Type   | Default | Notes                                    |
-| ---------------------------------- | ------ | ------- | ---------------------------------------- |
-| `save_dir`                         | string | —       | Thư mục output cho crop images           |
-| `capture_interval_sec`             | int    | 5       | PTS-based throttle per object            |
-| `image_quality`                    | int    | 85      | JPEG quality 1–100                       |
-| `save_full_frame`                  | bool   | true    | Lưu full-frame kèm crop                 |
-| `cleanup.stale_object_timeout_min` | int    | 5       | Xóa state object sau N phút unseen      |
-| `cleanup.check_interval_batches`   | int    | 30      | Chạy cleanup mỗi N batches              |
-| `cleanup.old_dirs_max_days`        | int    | 7       | Xóa daily dirs cũ hơn N ngày; 0 = off   |
+| Field                              | Type   | Default | Notes                                 |
+| ---------------------------------- | ------ | ------- | ------------------------------------- |
+| `save_dir`                         | string | —       | Thư mục output cho crop images        |
+| `capture_interval_sec`             | int    | 5       | PTS-based throttle per object         |
+| `image_quality`                    | int    | 85      | JPEG quality 1–100                    |
+| `save_full_frame`                  | bool   | true    | Lưu full-frame kèm crop               |
+| `cleanup.stale_object_timeout_min` | int    | 5       | Xóa state object sau N phút unseen    |
+| `cleanup.check_interval_batches`   | int    | 30      | Chạy cleanup mỗi N batches            |
+| `cleanup.old_dirs_max_days`        | int    | 7       | Xóa daily dirs cũ hơn N ngày; 0 = off |
 
 **ExtProcessor sub-block:**
 
-| Field                   | Type     | Default | Notes                                  |
-| ----------------------- | -------- | ------- | -------------------------------------- |
-| `ext_processor.enable`  | bool     | false   | Enable external processor              |
-| `ext_processor.min_interval_sec` | int | 1    | Min giây giữa ext processor calls      |
-| `ext_processor.rules[]` | object[] | —       | label, endpoint, result_path, display_path, params |
+| Field                            | Type     | Default | Notes                                              |
+| -------------------------------- | -------- | ------- | -------------------------------------------------- |
+| `ext_processor.enable`           | bool     | false   | Enable external processor                          |
+| `ext_processor.min_interval_sec` | int      | 1       | Min giây giữa ext processor calls                  |
+| `ext_processor.rules[]`          | object[] | —       | label, endpoint, result_path, display_path, params |
 
 ---
 
@@ -442,13 +522,14 @@ flowchart LR
     subgraph "tracker:src pad (FIFO order)"
         direction TB
         P1["① class_id_restore<br/>Phục hồi class_ids gốc"]
-        P2["② smart_record<br/>Thấy class_ids đã restore ✅"]
-        P3["③ crop_objects<br/>Thấy class_ids đã restore ✅"]
-        P1 --> P2 --> P3
+        P2["② frame_events<br/>Semantic feed ✅"]
+        P3["③ smart_record<br/>Thấy class_ids đã restore ✅"]
+        P4["④ crop_objects<br/>Thấy class_ids đã restore ✅"]
+        P1 --> P2 --> P3 --> P4
     end
 ```
 
-> ⚠️ **Critical**: Nếu `class_id_restore` đứng **sau** `smart_record`/`crop_objects`, các handler sẽ thấy class_ids bị offset → `label_filter` **KHÔNG khớp** → không trigger được.
+> ⚠️ **Critical**: Nếu `class_id_restore` đứng **sau** `frame_events`/`smart_record`/`crop_objects`, các handler sẽ thấy class_ids bị offset → `label_filter` **KHÔNG khớp** → không trigger được.
 
 > 📋 **Rule**: `class_id_offset` attach trên `sink` pad (trước tracker xử lý). `class_id_restore` + các handler khác attach trên `src` pad (sau tracker xử lý). Restore **PHẢI** đứng đầu trong list các probes cùng pad.
 
@@ -540,25 +621,25 @@ static GstPadProbeReturn on_buffer(
 }
 ```
 
-| Rule | Detail |
-| ---- | ------ |
-| ✅ Return `GST_PAD_PROBE_OK` | Trừ khi intentionally dropping buffer |
-| ✅ `GST_PAD_PROBE_INFO_BUFFER(info)` | Lấy buffer — **KHÔNG** take ownership |
-| ✅ `NvDsBatchMeta` / `FrameMeta` / `ObjectMeta` | **DO NOT FREE** — pipeline owns |
-| ❌ Blocking I/O | Không file write, HTTP, mutex wait trên callback — offload sang worker thread |
-| ❌ `gst_buffer_ref()` | Không ref buffer trừ khi có matching `unref()` |
+| Rule                                            | Detail                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| ✅ Return `GST_PAD_PROBE_OK`                    | Trừ khi intentionally dropping buffer                                         |
+| ✅ `GST_PAD_PROBE_INFO_BUFFER(info)`            | Lấy buffer — **KHÔNG** take ownership                                         |
+| ✅ `NvDsBatchMeta` / `FrameMeta` / `ObjectMeta` | **DO NOT FREE** — pipeline owns                                               |
+| ❌ Blocking I/O                                 | Không file write, HTTP, mutex wait trên callback — offload sang worker thread |
+| ❌ `gst_buffer_ref()`                           | Không ref buffer trừ khi có matching `unref()`                                |
 
 ---
 
 ## 8. Cross-references
 
-| Topic                        | Document                                                                           |
-| ---------------------------- | ---------------------------------------------------------------------------------- |
-| SmartRecord probe deep-dive  | [probes/smart_record_probe_handler.md](../probes/smart_record_probe_handler.md)    |
-| CropObject probe deep-dive   | [probes/crop_object_handler.md](../probes/crop_object_handler.md)                  |
-| ClassId namespacing deep-dive| [probes/class_id_namespacing_handler.md](../probes/class_id_namespacing_handler.md)|
-| ExternalProcessor deep-dive  | [probes/ext_proc_svc.md](../probes/ext_proc_svc.md)                               |
-| Pipeline building (5 phases) | [03 — Pipeline Building](03_pipeline_building.md)                                  |
-| Runtime lifecycle & bus       | [06 — Runtime Lifecycle](06_runtime_lifecycle.md)                                  |
-| NvDs metadata ownership      | [RAII Guide](../RAII.md)                                                           |
-| YAML config full schema       | [05 — Configuration](05_configuration.md)                                          |
+| Topic                         | Document                                                                            |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| SmartRecord probe deep-dive   | [probes/smart_record_probe_handler.md](../probes/smart_record_probe_handler.md)     |
+| CropObject probe deep-dive    | [probes/crop_object_handler.md](../probes/crop_object_handler.md)                   |
+| ClassId namespacing deep-dive | [probes/class_id_namespacing_handler.md](../probes/class_id_namespacing_handler.md) |
+| ExternalProcessor deep-dive   | [probes/ext_proc_svc.md](../probes/ext_proc_svc.md)                                 |
+| Pipeline building (5 phases)  | [03 — Pipeline Building](03_pipeline_building.md)                                   |
+| Runtime lifecycle & bus       | [06 — Runtime Lifecycle](06_runtime_lifecycle.md)                                   |
+| NvDs metadata ownership       | [RAII Guide](../RAII.md)                                                            |
+| YAML config full schema       | [05 — Configuration](05_configuration.md)                                           |

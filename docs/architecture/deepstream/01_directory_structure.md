@@ -164,18 +164,18 @@ core/
 
 ### Tổng hợp sub-directories trong core
 
-| Sub-directory | Vai trò | Key interfaces |
-|---------------|---------|----------------|
-| `builders/` | Builder system contracts | `IBuilderFactory`, `IElementBuilder`, `IPipelineBuilder` |
-| `config/` | Config types (pure data) | `PipelineConfig`, `IConfigParser`, `IConfigValidator` |
-| `pipeline/` | Pipeline lifecycle | `IPipelineManager`, `PipelineState` |
-| `eventing/` | Event handling | `IEventHandler`, `IEventManager`, `IEventListener` |
-| `probes/` | Pad probe contract | `IProbeHandler` |
-| `handlers/` | Plugin handler | `IHandler`, `HandlerRegistry` |
-| `messaging/` | Message broker | `IMessageProducer`, `IMessageConsumer` |
-| `storage/` | Storage abstraction | `IStorageManager` |
-| `runtime/` | Runtime control | `IRuntimeParamManager`, `IRuntimeStreamManager` |
-| `utils/` | Utilities | `LOG_*` macros, UUIDv7, thread-safe queue |
+| Sub-directory | Vai trò                  | Key interfaces                                           |
+| ------------- | ------------------------ | -------------------------------------------------------- |
+| `builders/`   | Builder system contracts | `IBuilderFactory`, `IElementBuilder`, `IPipelineBuilder` |
+| `config/`     | Config types (pure data) | `PipelineConfig`, `IConfigParser`, `IConfigValidator`    |
+| `pipeline/`   | Pipeline lifecycle       | `IPipelineManager`, `PipelineState`                      |
+| `eventing/`   | Event handling           | `IEventHandler`, `IEventManager`, `IEventListener`       |
+| `probes/`     | Pad probe contract       | `IProbeHandler`                                          |
+| `handlers/`   | Plugin handler           | `IHandler`, `HandlerRegistry`                            |
+| `messaging/`  | Message broker           | `IMessageProducer`, `IMessageConsumer`                   |
+| `storage/`    | Storage abstraction      | `IStorageManager`                                        |
+| `runtime/`    | Runtime control          | `IRuntimeParamManager`, `IRuntimeStreamManager`          |
+| `utils/`      | Utilities                | `LOG_*` macros, UUIDv7, thread-safe queue                |
 
 ---
 
@@ -246,10 +246,10 @@ pipeline/
 
 ### Phân biệt `block_builders/` vs `builders/`
 
-| Loại | Thư mục | Vai trò | Ví dụ |
-|------|---------|---------|-------|
-| **Block builder** | `block_builders/` | Điều phối 1 phase — gọi nhiều element builders | `SourceBuilder`, `ProcessingBuilder` |
-| **Element builder** | `builders/` | Build 1 GstElement cụ thể | `InferBuilder`, `TrackerBuilder` |
+| Loại                | Thư mục           | Vai trò                                        | Ví dụ                                |
+| ------------------- | ----------------- | ---------------------------------------------- | ------------------------------------ |
+| **Block builder**   | `block_builders/` | Điều phối 1 phase — gọi nhiều element builders | `SourceBuilder`, `ProcessingBuilder` |
+| **Element builder** | `builders/`       | Build 1 GstElement cụ thể                      | `InferBuilder`, `TrackerBuilder`     |
 
 ---
 
@@ -289,7 +289,7 @@ infrastructure/
 ├── messaging/
 │   ├── include/engine/infrastructure/messaging/
 │   │   ├── redis_stream_producer.hpp   # RedisStreamProducer : IMessageProducer
-│   │   └── kafka_adapter.hpp           # KafkaAdapter : IMessageProducer
+│   │   └── kafka_producer.hpp          # KafkaProducer : IMessageProducer
 │   └── src/
 │
 ├── storage/
@@ -306,14 +306,14 @@ infrastructure/
 
 ### Tổng hợp Infrastructure adapters
 
-| Adapter | Interface | Protocol | Use case |
-|---------|-----------|----------|----------|
-| `YamlConfigParser` | `IConfigParser` | YAML (yaml-cpp) | Đọc config file |
-| `RedisStreamProducer` | `IMessageProducer` | Redis Streams (hiredis) | Real-time event publishing |
-| `KafkaAdapter` | `IMessageProducer` | Apache Kafka (librdkafka) | High-throughput event log |
-| `LocalStorageManager` | `IStorageManager` | Local FS | Dev, edge deployment |
-| `S3StorageManager` | `IStorageManager` | S3 / MinIO | Cloud, shared storage |
-| `PistacheServer` | — | HTTP REST (Pistache) | Runtime control API |
+| Adapter               | Interface          | Protocol                  | Use case                   |
+| --------------------- | ------------------ | ------------------------- | -------------------------- |
+| `YamlConfigParser`    | `IConfigParser`    | YAML (yaml-cpp)           | Đọc config file            |
+| `RedisStreamProducer` | `IMessageProducer` | Redis Streams (hiredis)   | Real-time event publishing |
+| `KafkaProducer`       | `IMessageProducer` | Apache Kafka (librdkafka) | High-throughput event log  |
+| `LocalStorageManager` | `IStorageManager`  | Local FS                  | Dev, edge deployment       |
+| `S3StorageManager`    | `IStorageManager`  | S3 / MinIO                | Cloud, shared storage      |
+| `PistacheServer`      | —                  | HTTP REST (Pistache)      | Runtime control API        |
 
 ---
 
@@ -434,10 +434,10 @@ graph TB
 
 ## Tài liệu liên quan
 
-| Tài liệu | Mô tả |
-|-----------|-------|
-| [00_project_overview.md](00_project_overview.md) | Tổng quan dự án, tech stack |
-| [02_core_interfaces.md](02_core_interfaces.md) | Chi tiết từng interface trong `core/` |
-| [03_pipeline_building.md](03_pipeline_building.md) | Quy trình build 5 phases |
-| [../CMAKE.md](../CMAKE.md) | CMake build system chi tiết |
-| [../ARCHITECTURE_BLUEPRINT.md](../ARCHITECTURE_BLUEPRINT.md) | Blueprint kiến trúc tổng thể |
+| Tài liệu                                                     | Mô tả                                 |
+| ------------------------------------------------------------ | ------------------------------------- |
+| [00_project_overview.md](00_project_overview.md)             | Tổng quan dự án, tech stack           |
+| [02_core_interfaces.md](02_core_interfaces.md)               | Chi tiết từng interface trong `core/` |
+| [03_pipeline_building.md](03_pipeline_building.md)           | Quy trình build 5 phases              |
+| [../CMAKE.md](../CMAKE.md)                                   | CMake build system chi tiết           |
+| [../ARCHITECTURE_BLUEPRINT.md](../ARCHITECTURE_BLUEPRINT.md) | Blueprint kiến trúc tổng thể          |

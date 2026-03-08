@@ -30,6 +30,7 @@ bool YamlConfigParser::parse(const std::string& file_path,
         YAML::Node outputs_node = root["outputs"];
         YAML::Node handlers_node = root["event_handlers"];
         YAML::Node messaging_node = root["messaging"];
+        YAML::Node evidence_node = root["evidence"];
 
         // ── pipeline meta ──
         if (pipeline_node) {
@@ -75,6 +76,12 @@ bool YamlConfigParser::parse(const std::string& file_path,
         if (messaging_node) {
             config.messaging = engine::core::config::MessagingConfig{};
             parse_messaging(static_cast<const void*>(&messaging_node), *config.messaging);
+        }
+
+        // ── evidence (optional) ──
+        if (evidence_node) {
+            config.evidence = engine::core::config::EvidenceConfig{};
+            parse_evidence(static_cast<const void*>(&evidence_node), *config.evidence);
         }
 
         LOG_I("Config parsed successfully: version={} pipeline.id={}", config.version,

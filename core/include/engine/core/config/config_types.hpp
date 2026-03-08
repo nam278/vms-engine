@@ -210,8 +210,11 @@ struct MessagingConfig {
 };
 
 struct CleanupConfig {
+    ///< Drop stale per-object state after N unseen minutes.
     int stale_object_timeout_min = 5;
+    ///< Run cleanup every N processed batches instead of every frame.
     int check_interval_batches = 30;
+    ///< Delete output directories older than N days; 0 disables directory cleanup.
     int old_dirs_max_days = 7;
 };
 
@@ -229,6 +232,61 @@ struct ExtProcessorConfig {
     bool enable = false;
     int min_interval_sec = 1;
     std::vector<ExtProcessorRule> rules;
+};
+
+/**
+ * @brief Semantic emit policy for `trigger: frame_events`.
+ *
+ * These knobs control when a source-frame is important enough to publish to the
+ * downstream business-event layer. They do not affect evidence encoding.
+ */
+struct FrameEventsConfig {
+    ///< Heartbeat cadence while the scene stays semantically stable.
+    int heartbeat_interval_ms = 1000;
+    ///< Minimum spacing between two emitted messages from the same source.
+    int min_emit_gap_ms = 250;
+    ///< Lower IoU means the object moved enough to count as `motion_change`.
+    double motion_iou_threshold = 0.85;
+    ///< Center shift threshold, relative to the previous bbox diagonal.
+    double center_shift_ratio_threshold = 0.05;
+    ///< Emit immediately when a source transitions from no detections to detections.
+    bool emit_on_first_frame = true;
+    ///< Emit when the tracked object membership for the frame changes.
+    bool emit_on_object_set_change = true;
+    ///< Emit when class_id or object_type changes for an existing tracked object.
+    bool emit_on_label_change = true;
+    ///< Emit when a child object is re-parented to a different parent track.
+    bool emit_on_parent_change = true;
+    ///< If true, allow empty semantic frames to be published.
+    bool emit_empty_frames = false;
+};
+
+/**
+ * @brief Top-level request-driven evidence workflow configuration.
+ *
+ * `frame_events` stays semantic-only. This block controls the short-lived cache
+ * and the completion stream used after downstream publishes `evidence_request`.
+ */
+struct EvidenceConfig {
+    bool enable = false;
+    ///< Stream/topic consumed by the engine for evidence materialization requests.
+    std::string request_channel;
+    ///< Stream/topic published by the engine after evidence encode completes.
+    std::string ready_channel;
+    ///< Base directory used to materialize overview/crop images on disk.
+    std::string save_dir = "/opt/vms_engine/dev/rec/frames";
+    ///< TTL for cached emitted frames.
+    int frame_cache_ttl_ms = 10000;
+    ///< Maximum timestamp delta accepted when exact frame_key lookup misses.
+    int max_frame_gap_ms = 250;
+    ///< JPEG quality currently shared by overview and crop outputs.
+    int overview_jpeg_quality = 80;
+    ///< If false, semantic emits do not populate the evidence cache.
+    bool cache_on_frame_events = true;
+    ///< Snapshot backend name; currently `nvbufsurface_copy`.
+    std::string cache_backend = "nvbufsurface_copy";
+    ///< Hard bound per `(pipeline_id, source_name, source_id)` cache queue.
+    int max_frames_per_source = 16;
 };
 
 struct EventHandlerConfig {
@@ -264,6 +322,9 @@ struct EventHandlerConfig {
 
     // External processing (e.g., face recognition via HTTP)
     std::optional<ExtProcessorConfig> ext_processor;
+
+    // Frame-events specific
+    std::optional<FrameEventsConfig> frame_events;
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -283,6 +344,9 @@ struct PipelineConfig {
 
     /** @brief Optional top-level message broker (producer). Absent = no publishing. */
     std::optional<MessagingConfig> messaging;
+
+    /** @brief Optional top-level evidence request/completion workflow configuration. */
+    std::optional<EvidenceConfig> evidence;
 };
 
 }  // namespace engine::core::config

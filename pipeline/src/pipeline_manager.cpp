@@ -1,5 +1,8 @@
 #include "engine/pipeline/pipeline_manager.hpp"
+#include "engine/pipeline/evidence/evidence_request_service.hpp"
+#include "engine/pipeline/evidence/frame_evidence_cache.hpp"
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
+#include "engine/core/messaging/imessage_consumer.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/gst_utils.hpp"
 
@@ -16,11 +19,17 @@ void PipelineManager::set_message_producer(engine::core::messaging::IMessageProd
     producer_ = producer;
 }
 
+void PipelineManager::set_message_consumer(engine::core::messaging::IMessageConsumer* consumer) {
+    consumer_ = consumer;
+}
+
 bool PipelineManager::initialize(const engine::core::config::PipelineConfig& config) {
     if (state_ != engine::core::pipeline::PipelineState::Uninitialized) {
         LOG_W("PipelineManager already initialized");
         return false;
     }
+
+    config_ = config;
 
     // Create GMainLoop
     loop_ = g_main_loop_new(nullptr, FALSE);
@@ -52,10 +61,23 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         gst_bus_add_watch(bus.get(), on_bus_message, this);
     }
 
+    if (config.evidence && config.evidence->enable && producer_ && consumer_) {
+        frame_evidence_cache_ = std::make_unique<evidence::FrameEvidenceCache>(*config.evidence);
+        evidence_request_service_ = std::make_unique<evidence::EvidenceRequestService>(
+            *config.evidence, producer_, frame_evidence_cache_.get());
+        LOG_I(
+            "PipelineManager: evidence subsystem initialized (request='{}' ready='{}' "
+            "save_dir='{}')",
+            config.evidence->request_channel, config.evidence->ready_channel,
+            config.evidence->save_dir);
+    } else if (config.evidence && config.evidence->enable) {
+        LOG_W("PipelineManager: evidence enabled in config but producer/consumer not fully wired");
+    }
+
     // Attach pad probes from event_handlers config
     if (!config.event_handlers.empty()) {
         probe_manager_ = std::make_unique<probes::ProbeHandlerManager>(pipeline_);
-        if (!probe_manager_->attach_probes(config, producer_)) {
+        if (!probe_manager_->attach_probes(config, producer_, frame_evidence_cache_.get())) {
             LOG_E("Failed to attach one or more pad probes");
             // Non-fatal — continue with reduced functionality
         }
@@ -86,6 +108,22 @@ bool PipelineManager::start() {
         loop_thread_ = std::thread([this] { g_main_loop_run(loop_); });
     }
 
+    if (evidence_request_service_ && consumer_ && config_.evidence) {
+        if (!config_.evidence->request_channel.empty() &&
+            consumer_->subscribe(config_.evidence->request_channel)) {
+            evidence_request_service_->start();
+            stop_evidence_.store(false);
+            if (!evidence_thread_.joinable()) {
+                evidence_thread_ = std::thread(&PipelineManager::evidence_loop, this);
+            }
+            LOG_I("PipelineManager: evidence loop started on '{}'",
+                  config_.evidence->request_channel);
+        } else {
+            LOG_W("PipelineManager: evidence request channel subscription failed for '{}'",
+                  config_.evidence->request_channel);
+        }
+    }
+
     state_ = engine::core::pipeline::PipelineState::Playing;
     LOG_I("Pipeline set to PLAYING");
     return true;
@@ -96,6 +134,8 @@ bool PipelineManager::stop() {
         state_ == engine::core::pipeline::PipelineState::Uninitialized) {
         return true;
     }
+
+    stop_evidence_loop();
 
     if (loop_ && g_main_loop_is_running(loop_)) {
         g_main_loop_quit(loop_);
@@ -197,8 +237,37 @@ void PipelineManager::handle_eos() {
 void PipelineManager::handle_error(GError* err, const gchar* debug) {
     LOG_E("GStreamer error: {} ({})", err->message, debug ? debug : "");
     state_ = engine::core::pipeline::PipelineState::Error;
+    stop_evidence_loop();
     if (loop_ && g_main_loop_is_running(loop_)) {
         g_main_loop_quit(loop_);
+    }
+}
+
+void PipelineManager::evidence_loop() {
+    while (!stop_evidence_.load()) {
+        if (!consumer_ || !evidence_request_service_) {
+            break;
+        }
+
+        engine::core::messaging::ConsumedMessage message;
+        if (!consumer_->poll(250, message)) {
+            continue;
+        }
+
+        if (!message.payload.empty()) {
+            evidence_request_service_->enqueue_request(message.payload);
+        }
+        consumer_->ack(message);
+    }
+}
+
+void PipelineManager::stop_evidence_loop() {
+    stop_evidence_.store(true);
+    if (evidence_request_service_) {
+        evidence_request_service_->stop();
+    }
+    if (evidence_thread_.joinable()) {
+        evidence_thread_.join();
     }
 }
 
@@ -209,7 +278,12 @@ void PipelineManager::cleanup() {
         probe_manager_.reset();
     }
 
+    stop_evidence_loop();
+
     stop();
+
+    evidence_request_service_.reset();
+    frame_evidence_cache_.reset();
 
     if (pipeline_) {
         // Remove bus watch before unref

@@ -16,6 +16,7 @@
 // ─── Core headers ────────────────────────────────────────────────────────────
 #include "engine/core/config/config_types.hpp"
 #include "engine/core/config/iconfig_parser.hpp"
+#include "engine/core/messaging/imessage_consumer.hpp"
 #include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/pipeline/ipipeline_manager.hpp"
 #include "engine/core/pipeline/pipeline_state.hpp"
@@ -24,8 +25,10 @@
 
 // ─── Infrastructure ───────────────────────────────────────────────────────────
 #include "engine/infrastructure/config_parser/yaml_config_parser.hpp"
+#include "engine/infrastructure/messaging/kafka_consumer.hpp"
 #include "engine/infrastructure/messaging/redis_stream_producer.hpp"
-#include "engine/infrastructure/messaging/kafka_adapter.hpp"
+#include "engine/infrastructure/messaging/redis_stream_consumer.hpp"
+#include "engine/infrastructure/messaging/kafka_producer.hpp"
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 #include "engine/pipeline/pipeline_manager.hpp"
@@ -180,7 +183,7 @@ std::unique_ptr<engine::core::messaging::IMessageProducer> create_message_produc
 
     if (m.type == "kafka") {
         LOG_I("Messaging: creating Kafka producer ({}:{})", m.host, m.port);
-        auto p = std::make_unique<engine::infrastructure::messaging::KafkaAdapter>();
+        auto p = std::make_unique<engine::infrastructure::messaging::KafkaProducer>();
         if (!p->connect(m.host, m.port)) {
             LOG_W("Messaging: Kafka connection failed ({}:{}) — continuing without producer",
                   m.host, m.port);
@@ -196,6 +199,47 @@ std::unique_ptr<engine::core::messaging::IMessageProducer> create_message_produc
               m.port);
     }
     return p;
+}
+
+/**
+ * @brief Create and connect a message consumer for evidence_request intake.
+ *
+ * Returns nullptr if evidence or messaging is disabled.
+ */
+std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consumer(
+    const engine::core::config::PipelineConfig& config) {
+    if (!config.messaging || !config.evidence || !config.evidence->enable) {
+        return nullptr;
+    }
+
+    const auto& messaging = *config.messaging;
+    const auto& evidence = *config.evidence;
+    if (evidence.request_channel.empty()) {
+        LOG_W("Messaging: evidence enabled but request_channel is empty");
+        return nullptr;
+    }
+
+    if (messaging.type == "kafka") {
+        LOG_I("Messaging: creating Kafka consumer ({}:{}) topic='{}'", messaging.host,
+              messaging.port, evidence.request_channel);
+        auto consumer = std::make_unique<engine::infrastructure::messaging::KafkaConsumer>();
+        if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel)) {
+            LOG_W("Messaging: Kafka consumer connection failed ({}:{})", messaging.host,
+                  messaging.port);
+            return nullptr;
+        }
+        return consumer;
+    }
+
+    LOG_I("Messaging: creating Redis consumer ({}:{}) stream='{}'", messaging.host, messaging.port,
+          evidence.request_channel);
+    auto consumer = std::make_unique<engine::infrastructure::messaging::RedisStreamConsumer>();
+    if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel)) {
+        LOG_W("Messaging: Redis consumer connection failed ({}:{})", messaging.host,
+              messaging.port);
+        return nullptr;
+    }
+    return consumer;
 }
 
 // ─── Pipeline factory ─────────────────────────────────────────────────────────
@@ -221,6 +265,8 @@ int main(int argc, char* argv[]) {
     std::shared_ptr<engine::core::pipeline::IPipelineManager> pipeline_manager;
     // Producer lifetime must cover the entire pipeline run
     std::unique_ptr<engine::core::messaging::IMessageProducer> message_producer;
+    // Consumer lifetime must cover the entire pipeline run
+    std::unique_ptr<engine::core::messaging::IMessageConsumer> message_consumer;
 
     try {
         // ── 1. Parse arguments ────────────────────────────────────────────────
@@ -273,6 +319,13 @@ int main(int argc, char* argv[]) {
         } else {
             LOG_I("  Messaging  : disabled");
         }
+        if (config.evidence) {
+            LOG_I("  Evidence   : {} request='{}' ready='{}'",
+                  config.evidence->enable ? "enabled" : "disabled",
+                  config.evidence->request_channel, config.evidence->ready_channel);
+        } else {
+            LOG_I("  Evidence   : disabled");
+        }
         LOG_I("══════════════════════════════════════════════════");
 
         // ── 6. Create pipeline manager ────────────────────────────────────────
@@ -292,6 +345,21 @@ int main(int argc, char* argv[]) {
             }
         } else {
             LOG_I("Messaging: disabled (no 'messaging:' block in config)");
+        }
+
+        // ── 6b. Wire message consumer (if evidence configured) ───────────────
+        message_consumer = create_message_consumer(config);
+        if (message_consumer) {
+            auto* concrete =
+                dynamic_cast<engine::pipeline::PipelineManager*>(pipeline_manager.get());
+            if (concrete) {
+                concrete->set_message_consumer(message_consumer.get());
+                LOG_I("Messaging: consumer wired for evidence_request");
+            } else {
+                LOG_W("Messaging: could not wire consumer — PipelineManager cast failed");
+            }
+        } else if (config.evidence && config.evidence->enable) {
+            LOG_W("Messaging: evidence enabled but consumer is not available");
         }
 
         // ── 7. Initialize pipeline ────────────────────────────────────────────

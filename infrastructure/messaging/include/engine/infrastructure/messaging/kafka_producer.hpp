@@ -1,6 +1,6 @@
 #pragma once
 /**
- * @file kafka_adapter.hpp
+ * @file kafka_producer.hpp
  * @brief Kafka producer implementing IMessageProducer via librdkafka C++ API.
  *
  * Uses PIMPL to avoid leaking librdkafka headers into consumers.
@@ -9,15 +9,16 @@
  * ------------------
  * librdkafka manages broker-level reconnects internally for an existing
  * producer handle.  If the broker goes down and comes back, librdkafka will
- * transparently reconnect and drain its internal retry queue — no application-
+ * transparently reconnect and drain its internal retry queue -- no application-
  * level reconnect thread is needed.
  *
  * publish() failures (e.g. invalid topic) are logged and dropped; messages
  * that fail at the broker level are reported via the delivery-report callback.
  *
- * Thread safety: NOT thread-safe — callers must synchronise or use separate instances.
+ * Thread safety: NOT thread-safe -- callers must synchronise or use separate instances.
  */
 #include "engine/core/messaging/imessage_producer.hpp"
+
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,14 +32,14 @@ namespace engine::infrastructure::messaging {
  * Publish flow  : produce() + poll(0); QUEUE_FULL triggers a 500 ms poll+retry.
  * Disconnect flow: flush(10 s) + delete producer.
  */
-class KafkaAdapter : public engine::core::messaging::IMessageProducer {
+class KafkaProducer : public engine::core::messaging::IMessageProducer {
    public:
-    KafkaAdapter();
-    ~KafkaAdapter() override;
+    KafkaProducer();
+    ~KafkaProducer() override;
 
     // Non-copyable, non-movable
-    KafkaAdapter(const KafkaAdapter&) = delete;
-    KafkaAdapter& operator=(const KafkaAdapter&) = delete;
+    KafkaProducer(const KafkaProducer&) = delete;
+    KafkaProducer& operator=(const KafkaProducer&) = delete;
 
     /**
      * @brief Create the Kafka producer handle.

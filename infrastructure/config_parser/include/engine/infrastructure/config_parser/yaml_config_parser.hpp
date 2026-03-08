@@ -57,6 +57,9 @@ class YamlConfigParser : public engine::core::config::IConfigParser {
 
     /** @brief Parse `messaging:` section (optional top-level producer config). */
     void parse_messaging(const void* node, engine::core::config::MessagingConfig& out);
+
+    /** @brief Parse `evidence:` section (optional top-level evidence workflow config). */
+    void parse_evidence(const void* node, engine::core::config::EvidenceConfig& out);
 };
 
 }  // namespace engine::infrastructure::config_parser
