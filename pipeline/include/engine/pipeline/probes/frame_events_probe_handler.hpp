@@ -124,6 +124,8 @@ class FrameEventsProbeHandler {
     std::vector<std::string> label_filter_;
     std::unordered_map<int, std::string> source_id_to_name_;
     std::unordered_map<int, PerSourceEmitState> emit_state_;
+    int source_width_ = 0;
+    int source_height_ = 0;
     engine::core::messaging::IMessageProducer* producer_ = nullptr;
     engine::pipeline::evidence::FrameEvidenceCache* cache_ = nullptr;
 };

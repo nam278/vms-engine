@@ -499,7 +499,9 @@ Trong đó:
         "left": 412.0,
         "top": 126.0,
         "width": 188.0,
-        "height": 421.0
+        "height": 421.0,
+        "frame_width": 1920,
+        "frame_height": 1080
       },
       "parent_object_key": "",
       "parent_instance_key": "",
@@ -514,6 +516,7 @@ Ghi chú cho object payload:
 - `object_type` là label của primary detector (`NvDsObjectMeta::obj_label`).
 - `labels[]` là stable SGIE classifier results theo format `result_label:label_id:result_prob`, khớp với contract đang dùng trong `CropObjectHandler`.
 - Majority vote chỉ dùng `result_label` để build signature; `label_id` và `result_prob` vẫn được giữ lại từ sample thắng vote gần nhất.
+- `bbox.frame_width` và `bbox.frame_height` dùng trực tiếp `sources.width` / `sources.height` trong config, tức canvas mà downstream đang vẽ full-frame snapshot và overlay. Không cần dùng source decode size gốc kiểu `s_w_ff` / `s_h_ff` cho `frame_events`.
 - Nếu object đã có classifier metadata nhưng chưa đủ `label_vote_window_frames`, payload vẫn giữ provisional labels từ frame đầu tiên của object. `labels[]` chỉ rỗng khi object thực sự không có classifier metadata.
 
 #### Ví dụ object mới: giữ labels của frame đầu rồi ổn định sau 5 frame
@@ -614,7 +617,9 @@ frame=1238 object=42 raw_label_signature='helmet|vest' vote_window=5/5 provision
         "left": 412.0,
         "top": 126.0,
         "width": 188.0,
-        "height": 421.0
+        "height": 421.0,
+        "frame_width": 1920,
+        "frame_height": 1080
       }
     }
   ]

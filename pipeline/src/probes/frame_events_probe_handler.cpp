@@ -154,6 +154,8 @@ void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConf
                                         engine::core::messaging::IMessageProducer* producer,
                                         engine::pipeline::evidence::FrameEvidenceCache* cache) {
     pipeline_id_ = config.pipeline.id;
+    source_width_ = config.sources.width;
+    source_height_ = config.sources.height;
     broker_channel_ = handler.channel;
     label_filter_ = handler.label_filter;
     producer_ = producer;
@@ -451,6 +453,8 @@ void FrameEventsProbeHandler::publish_frame_message(
     message["object_count"] = objects.size();
 
     json object_list = json::array();
+    const int frame_width = source_width_ > 0 ? source_width_ : meta.width;
+    const int frame_height = source_height_ > 0 ? source_height_ : meta.height;
     for (const auto& object : objects) {
         json item = json::object();
         item["object_key"] = object.object_key;
@@ -462,10 +466,9 @@ void FrameEventsProbeHandler::publish_frame_message(
         item["confidence"] = object.confidence;
         item["labels"] = object.labels;
         item["crop_ref"] = object.crop_ref;
-        item["bbox"] = {{"left", object.left},
-                        {"top", object.top},
-                        {"width", object.width},
-                        {"height", object.height}};
+        item["bbox"] = {{"left", object.left},        {"top", object.top},
+                        {"width", object.width},      {"height", object.height},
+                        {"frame_width", frame_width}, {"frame_height", frame_height}};
         item["parent_object_key"] = object.parent_object_key;
         item["parent_instance_key"] = object.parent_instance_key;
         item["parent_object_id"] = object.parent_object_id;
