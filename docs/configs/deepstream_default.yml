@@ -339,6 +339,7 @@ event_handlers:
       min_emit_gap_ms: 250
       motion_iou_threshold: 0.85
       center_shift_ratio_threshold: 0.05
+      emit_on_motion_change: true
       emit_on_first_frame: true
       emit_on_object_set_change: true
       emit_on_label_change: true

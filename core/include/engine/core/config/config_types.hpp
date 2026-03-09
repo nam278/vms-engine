@@ -246,9 +246,13 @@ struct FrameEventsConfig {
     ///< Minimum spacing between two emitted messages from the same source.
     int min_emit_gap_ms = 250;
     ///< Lower IoU means the object moved enough to count as `motion_change`.
+    ///< Only used when `emit_on_motion_change` is enabled.
     double motion_iou_threshold = 0.85;
     ///< Center shift threshold, relative to the previous bbox diagonal.
+    ///< Only used when `emit_on_motion_change` is enabled.
     double center_shift_ratio_threshold = 0.05;
+    ///< Emit when an existing tracked object moves enough to cross geometry thresholds.
+    bool emit_on_motion_change = false;
     ///< Emit immediately when a source transitions from no detections to detections.
     bool emit_on_first_frame = true;
     ///< Emit when the tracked object membership for the frame changes.

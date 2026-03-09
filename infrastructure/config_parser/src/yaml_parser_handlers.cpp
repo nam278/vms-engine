@@ -101,6 +101,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             frame_events.motion_iou_threshold = yaml_double(fe, "motion_iou_threshold", 0.85);
             frame_events.center_shift_ratio_threshold =
                 yaml_double(fe, "center_shift_ratio_threshold", 0.05);
+            frame_events.emit_on_motion_change = yaml_bool(fe, "emit_on_motion_change", false);
             frame_events.emit_on_first_frame = yaml_bool(fe, "emit_on_first_frame", true);
             frame_events.emit_on_object_set_change =
                 yaml_bool(fe, "emit_on_object_set_change", true);

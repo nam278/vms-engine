@@ -110,9 +110,9 @@ void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConf
 
     LOG_I(
         "FrameEventsProbeHandler: configured channel='{}' heartbeat_ms={} min_gap_ms={} "
-        "emit_empty_frames={} filters={}",
+        "emit_on_motion_change={} emit_empty_frames={} filters={}",
         broker_channel_, config_.heartbeat_interval_ms, config_.min_emit_gap_ms,
-        config_.emit_empty_frames, label_filter_.size());
+        config_.emit_on_motion_change, config_.emit_empty_frames, label_filter_.size());
 }
 
 GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProbeInfo* info,
@@ -304,20 +304,22 @@ bool FrameEventsProbeHandler::should_emit_message(int source_id,
         if (config_.emit_on_parent_change && previous.parent_object_id != object.parent_object_id) {
             has_parent_change = true;
         }
-        if (compute_iou(previous, object) < config_.motion_iou_threshold) {
-            has_motion_change = true;
-        } else {
-            // IoU alone misses small translations of similarly sized boxes, so we also
-            // compare center displacement relative to the previous bbox diagonal.
-            const double previous_center_x = previous.left + (previous.width / 2.0);
-            const double previous_center_y = previous.top + (previous.height / 2.0);
-            const double current_center_x = object.left + (object.width / 2.0);
-            const double current_center_y = object.top + (object.height / 2.0);
-            const double shift = std::hypot(current_center_x - previous_center_x,
-                                            current_center_y - previous_center_y);
-            const double diag = std::hypot(previous.width, previous.height);
-            if (diag > 0.0 && (shift / diag) >= config_.center_shift_ratio_threshold) {
+        if (config_.emit_on_motion_change) {
+            if (compute_iou(previous, object) < config_.motion_iou_threshold) {
                 has_motion_change = true;
+            } else {
+                // IoU alone misses small translations of similarly sized boxes, so we also
+                // compare center displacement relative to the previous bbox diagonal.
+                const double previous_center_x = previous.left + (previous.width / 2.0);
+                const double previous_center_y = previous.top + (previous.height / 2.0);
+                const double current_center_x = object.left + (object.width / 2.0);
+                const double current_center_y = object.top + (object.height / 2.0);
+                const double shift = std::hypot(current_center_x - previous_center_x,
+                                                current_center_y - previous_center_y);
+                const double diag = std::hypot(previous.width, previous.height);
+                if (diag > 0.0 && (shift / diag) >= config_.center_shift_ratio_threshold) {
+                    has_motion_change = true;
+                }
             }
         }
     }
@@ -328,7 +330,7 @@ bool FrameEventsProbeHandler::should_emit_message(int source_id,
     if (has_parent_change) {
         out_reasons.push_back("parent_change");
     }
-    if (has_motion_change) {
+    if (config_.emit_on_motion_change && has_motion_change) {
         out_reasons.push_back("motion_change");
     }
     if (out_reasons.empty() && elapsed_ms >= config_.heartbeat_interval_ms) {
