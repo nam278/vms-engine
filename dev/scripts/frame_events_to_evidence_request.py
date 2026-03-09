@@ -59,7 +59,6 @@ def parse_frame_event(msg_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Parse a frame_events message and convert to evidence_request format."""
     try:
         # Extract core fields
-        schema_version = msg_data.get("schema_version", "1.0")
         pipeline_id = msg_data.get("pipeline_id", "")
         source_name = msg_data.get("source_name", "")
         source_id = msg_data.get("source_id", "0")
@@ -77,7 +76,6 @@ def parse_frame_event(msg_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Create evidence request
         request_id = str(uuid.uuid4())
         evidence_request = {
-            "schema_version": schema_version,
             "request_id": request_id,
             "pipeline_id": pipeline_id,
             "source_name": source_name,

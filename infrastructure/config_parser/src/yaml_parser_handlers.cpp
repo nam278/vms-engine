@@ -115,10 +115,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
                 const auto& ep = fe["ext_processor"];
                 ext.enable = yaml_bool(ep, "enable", false);
                 ext.publish_channel = yaml_str(ep, "publish_channel");
-                ext.min_interval_sec = yaml_int(ep, "min_interval_sec", 5);
-                ext.queue_capacity = yaml_int(ep, "queue_capacity", 256);
-                ext.worker_threads = yaml_int(ep, "worker_threads", 2);
-                ext.jpeg_quality = yaml_int(ep, "jpeg_quality", 80);
+                ext.jpeg_quality = yaml_int(ep, "jpeg_quality", 85);
                 ext.connect_timeout_ms = yaml_int(ep, "connect_timeout_ms", 5000);
                 ext.request_timeout_ms = yaml_int(ep, "request_timeout_ms", 10000);
                 ext.emit_empty_result = yaml_bool(ep, "emit_empty_result", false);
@@ -131,7 +128,6 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
                         rule.endpoint = yaml_str(r, "endpoint");
                         rule.result_path = yaml_str(r, "result_path");
                         rule.display_path = yaml_str(r, "display_path");
-                        rule.crop_ref_preferred = yaml_bool(r, "crop_ref_preferred", true);
 
                         if (r["params"] && r["params"].IsMap()) {
                             for (const auto& kv : r["params"]) {

@@ -1,12 +1,14 @@
 #pragma once
 
 #include "engine/core/config/config_types.hpp"
+#include "engine/pipeline/extproc/frame_events_ext_proc_service.hpp"
 
 #include <gst/gst.h>
 #include <gstnvdsmeta.h>
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,10 +22,6 @@ class FrameEvidenceCache;
 struct FrameObjectSnapshot;
 struct FrameCaptureMetadata;
 }  // namespace engine::pipeline::evidence
-
-namespace engine::pipeline::extproc {
-class FrameEventsExtProcService;
-}
 
 namespace engine::pipeline::probes {
 
@@ -94,13 +92,12 @@ struct PerSourceEmitState {
 class FrameEventsProbeHandler {
    public:
     FrameEventsProbeHandler() = default;
-    ~FrameEventsProbeHandler() = default;
+    ~FrameEventsProbeHandler();
 
     void configure(const engine::core::config::PipelineConfig& config,
                    const engine::core::config::EventHandlerConfig& handler,
                    engine::core::messaging::IMessageProducer* eproducer,
-                   engine::pipeline::evidence::FrameEvidenceCache* cache,
-                   engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service);
+                   engine::pipeline::evidence::FrameEvidenceCache* cache);
 
     static GstPadProbeReturn on_buffer(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
 
@@ -119,6 +116,9 @@ class FrameEventsProbeHandler {
     void publish_frame_message(const engine::pipeline::evidence::FrameCaptureMetadata& meta,
                                const std::vector<std::string>& emit_reason,
                                const std::vector<FrameEventObject>& objects) const;
+    void dispatch_ext_proc_for_frame(NvDsFrameMeta* frame_meta, NvBufSurface* batch_surface,
+                                     const engine::pipeline::evidence::FrameCaptureMetadata& meta,
+                                     const std::vector<FrameEventObject>& objects) const;
     void reset_source_state(int source_id);
     double compute_iou(const LastEmittedObjectState& previous,
                        const FrameEventObject& current) const;
@@ -134,7 +134,7 @@ class FrameEventsProbeHandler {
     std::string handler_id_;
     engine::core::messaging::IMessageProducer* producer_ = nullptr;
     engine::pipeline::evidence::FrameEvidenceCache* cache_ = nullptr;
-    engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service_ = nullptr;
+    std::unique_ptr<engine::pipeline::extproc::FrameEventsExtProcService> ext_proc_service_;
 };
 
 }  // namespace engine::pipeline::probes

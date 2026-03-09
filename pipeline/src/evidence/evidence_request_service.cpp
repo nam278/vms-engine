@@ -138,24 +138,6 @@ bool wants_type(const std::vector<std::string>& evidence_types, const std::strin
     return std::find(evidence_types.begin(), evidence_types.end(), type) != evidence_types.end();
 }
 
-const FrameObjectSnapshot* find_cached_object(const CachedFrameEntry& entry,
-                                              const EvidenceRequestObject& request_object) {
-    for (const auto& object : entry.objects) {
-        if (!request_object.object_key.empty() && object.object_key == request_object.object_key) {
-            return &object;
-        }
-        if (!request_object.instance_key.empty() &&
-            object.instance_key == request_object.instance_key) {
-            return &object;
-        }
-        if (request_object.object_id >= 0 &&
-            object.object_id == static_cast<uint64_t>(request_object.object_id)) {
-            return &object;
-        }
-    }
-    return nullptr;
-}
-
 }  // namespace
 
 EvidenceRequestService::EvidenceRequestService(const engine::core::config::EvidenceConfig& config,
@@ -211,7 +193,6 @@ bool EvidenceRequestService::parse_request_payload(const std::string& payload,
     }
 
     out_job.raw_payload = payload;
-    out_job.schema_version = json_string(node, "schema_version", "1.0");
     out_job.request_id = json_string(node, "request_id", make_default_request_id());
     out_job.pipeline_id = json_string(node, "pipeline_id");
     out_job.source_name = json_string(node, "source_name");
@@ -373,7 +354,9 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
         int class_id = 0;
         uint64_t object_id = 0;
 
-        const FrameObjectSnapshot* cached_object = find_cached_object(entry, request_object);
+        const FrameObjectSnapshot* cached_object =
+            cache_->find_object(entry, request_object.object_key, request_object.instance_key,
+                                request_object.object_id);
         if (cached_object) {
             left = cached_object->left;
             top = cached_object->top;
@@ -457,7 +440,6 @@ void EvidenceRequestService::publish_ready(const EvidenceRequestJob& job, const 
     json ready = json::object();
     // This is a completion event for media-side consumers, not a synchronous response to Python.
     ready["event"] = "evidence_ready";
-    ready["schema_version"] = job.schema_version;
     ready["request_id"] = job.request_id;
     ready["pipeline_id"] = job.pipeline_id;
     ready["source_name"] = job.source_name;

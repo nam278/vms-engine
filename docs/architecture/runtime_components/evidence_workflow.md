@@ -95,7 +95,7 @@ evidence:
   save_dir: "/opt/vms_engine/dev/rec/frames"
   frame_cache_ttl_ms: 10000
   max_frame_gap_ms: 250
-  overview_jpeg_quality: 80
+  overview_jpeg_quality: 85
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
@@ -111,7 +111,7 @@ evidence:
 | `save_dir`              | `/opt/vms_engine/dev/rec/frames` | Root directory materialize JPEG ra đĩa                      |
 | `frame_cache_ttl_ms`    | `10000`                          | TTL của cached emitted frames                               |
 | `max_frame_gap_ms`      | `250`                            | Fallback nearest-frame tolerance khi exact `frame_key` miss |
-| `overview_jpeg_quality` | `80`                             | JPEG quality dùng cho overview và crop                      |
+| `overview_jpeg_quality` | `85`                             | JPEG quality dùng cho overview và crop                      |
 | `cache_on_frame_events` | `true`                           | Có cache frame đã emit từ `frame_events` hay không          |
 | `cache_backend`         | `nvbufsurface_copy`              | Backend snapshot hiện tại                                   |
 | `max_frames_per_source` | `16`                             | Hard bound cho mỗi `(pipeline_id, source_name, source_id)`  |
@@ -175,7 +175,6 @@ Downstream gửi request theo routing envelope của frame đã nhận từ `fra
 ```json
 {
   "event": "evidence_request",
-  "schema_version": "1.0",
   "request_id": "req-0001",
   "pipeline_id": "de1",
   "source_id": 0,
@@ -200,7 +199,6 @@ Downstream gửi request theo routing envelope của frame đã nhận từ `fra
 ```json
 {
   "event": "evidence_ready",
-  "schema_version": "1.0",
   "request_id": "req-0001",
   "pipeline_id": "de1",
   "source_id": 0,

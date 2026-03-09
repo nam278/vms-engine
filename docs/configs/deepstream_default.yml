@@ -349,28 +349,19 @@ event_handlers:
       ext_processor:
         enable: true
         publish_channel: worker_lsr_ext_proc
-        min_interval_sec: 5
-        queue_capacity: 256
-        worker_threads: 2
-        jpeg_quality: 80
+        jpeg_quality: 85
         connect_timeout_ms: 5000
         request_timeout_ms: 10000
         emit_empty_result: false
         include_overview_ref: true
         rules:
           - label: face
-            endpoint: "http://face-rec-svc:8080/api/recognize"
+            endpoint: "http://192.168.1.99:8765/api/recognize/upload"
             result_path: "match.external_id"
             display_path: "match.face_name"
-            crop_ref_preferred: true
             params:
-              threshold: "0.7"
-
-          - label: license_plate
-            endpoint: "http://lpr-svc:9090/api/recognize"
-            result_path: "plate.number"
-            display_path: "plate.owner"
-            crop_ref_preferred: true
+              threshold: "0.65"
+              skip_detection: "false"
 
   # ---------------------------------------------------------------------------
   # Object crop + optional external processing (e.g. face recognition)
@@ -402,9 +393,9 @@ event_handlers:
       min_interval_sec: 1
       rules:
         - label: face
-          endpoint: http://192.168.1.99:8000/api/v1/face/recognize/upload
+          endpoint: http://192.168.1.99:8765/api/v1/face/recognize/upload
           result_path: match.external_id # JSON path for ID written into object meta
           display_path: match.face_name # JSON path for OSD display label
           params:
             threshold: "0.65"
-            skip_anti_spoofing: "false"
+            skip_detection: "false"

@@ -35,7 +35,6 @@ struct FrameObjectSnapshot {
 
 /** @brief Routing and frame metadata persisted for one emitted semantic frame. */
 struct FrameCaptureMetadata {
-    std::string schema_version;
     std::string pipeline_id;
     int source_id = 0;
     std::string source_name;

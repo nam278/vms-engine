@@ -34,6 +34,8 @@
 
 `ExternalProcessorService` — service standalone thực hiện **HTTP POST** gửi JPEG crop lên external AI endpoint, nhận JSON response, parse kết quả và publish qua `IMessageProducer`.
 
+`FrameEventsExtProcService` hiện cũng dùng cùng pattern live-surface encode + detached HTTP thread, và giống legacy service ở chỗ được probe handler sở hữu trực tiếp. Khác biệt là nó được `FrameEventsProbeHandler` gọi sau `frame_events` semantic publish và publish payload ext-proc giàu correlation hơn.
+
 Mặc dù được `CropObjectHandler` gọi từ probe path, implementation của legacy service hiện đã được đặt dưới `pipeline/extproc/` để gom toàn bộ external-enrichment services vào cùng một nhóm module.
 
 ```mermaid
@@ -84,11 +86,12 @@ event_handlers:
       min_interval_sec: 5 # Throttle per (source:tracker_id:label)
       rules:
         - label: face
-          endpoint: "http://face-rec-svc:8080/api/recognize"
+          endpoint: "http://192.168.1.99:8765/api/recognize/upload"
           result_path: "match.external_id" # Dot-notation JSON path
           display_path: "match.face_name" # Dot-notation JSON path
           params:
-            threshold: "0.7"
+            threshold: "0.65"
+            skip_detection: "false"
 
         - label: license_plate
           endpoint: "http://lpr-svc:9090/api/recognize"
@@ -256,14 +259,15 @@ ext_processor:
   min_interval_sec: 5
   rules:
     - label: face
-      endpoint: "http://face-rec-svc:8080/api/v1/recognize"
-      result_path: "data.person_id"
-      display_path: "data.person_name"
+      endpoint: "http://192.168.1.99:8765/api/recognize/upload"
+      result_path: "match.external_id"
+      display_path: "match.face_name"
       params:
-        confidence_threshold: "0.65"
+        threshold: "0.65"
+        skip_detection: "false"
 ```
 
-**Flow**: detect `face` → throttle check `"0:42:face"` → JPEG encode → POST → response `{"data":{"person_id":"emp_001","person_name":"Le Van A"}}` → publish `"ext_proc"` event.
+**Flow**: detect `face` → throttle check `"0:42:face"` → JPEG encode → POST → response `{"match":{"external_id":"emp_001","face_name":"Le Van A"}}` → publish `"ext_proc"` event.
 
 ---
 

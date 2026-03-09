@@ -7,6 +7,7 @@
 
 #include <gstnvdsmeta.h>
 #include <nlohmann/json.hpp>
+#include <nvbufsurface.h>
 
 #include <algorithm>
 #include <cctype>
@@ -154,12 +155,12 @@ std::string build_signature(const std::vector<FrameEventObject>& objects) {
 
 }  // namespace
 
-void FrameEventsProbeHandler::configure(
-    const engine::core::config::PipelineConfig& config,
-    const engine::core::config::EventHandlerConfig& handler,
-    engine::core::messaging::IMessageProducer* producer,
-    engine::pipeline::evidence::FrameEvidenceCache* cache,
-    engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service) {
+FrameEventsProbeHandler::~FrameEventsProbeHandler() = default;
+
+void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConfig& config,
+                                        const engine::core::config::EventHandlerConfig& handler,
+                                        engine::core::messaging::IMessageProducer* producer,
+                                        engine::pipeline::evidence::FrameEvidenceCache* cache) {
     pipeline_id_ = config.pipeline.id;
     handler_id_ = handler.id;
     source_width_ = config.sources.width;
@@ -168,9 +169,27 @@ void FrameEventsProbeHandler::configure(
     label_filter_ = handler.label_filter;
     producer_ = producer;
     cache_ = cache;
-    ext_proc_service_ = ext_proc_service;
+    ext_proc_service_.reset();
     if (handler.frame_events) {
         config_ = *handler.frame_events;
+    }
+
+    if (producer_ && config_.ext_processor && config_.ext_processor->enable &&
+        !config_.ext_processor->rules.empty()) {
+        ext_proc_service_ =
+            std::make_unique<engine::pipeline::extproc::FrameEventsExtProcService>(producer_);
+        if (!ext_proc_service_->register_handler(handler_id_, pipeline_id_,
+                                                 *config_.ext_processor) ||
+            !ext_proc_service_->start()) {
+            LOG_W("FrameEventsProbeHandler: failed to initialize ext-proc service for handler='{}'",
+                  handler_id_);
+            ext_proc_service_.reset();
+        }
+    } else if (config_.ext_processor && config_.ext_processor->enable && !producer_) {
+        LOG_W(
+            "FrameEventsProbeHandler: ext-proc configured for handler='{}' but producer is not "
+            "wired",
+            handler_id_);
     }
 
     for (int index = 0; index < static_cast<int>(config.sources.cameras.size()); ++index) {
@@ -233,7 +252,6 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
         }
 
         engine::pipeline::evidence::FrameCaptureMetadata capture_meta;
-        capture_meta.schema_version = "1.0";
         capture_meta.pipeline_id = self->pipeline_id_;
         capture_meta.source_id = source_id;
         capture_meta.source_name = source_name;
@@ -291,33 +309,7 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
 
         self->publish_frame_message(capture_meta, emit_reason, objects);
 
-        if (cached_frame && self->ext_proc_service_ && self->config_.ext_processor &&
-            self->config_.ext_processor->enable) {
-            for (const auto& object : objects) {
-                engine::pipeline::extproc::FrameEventsExtProcJob job;
-                job.handler_id = self->handler_id_;
-                job.pipeline_id = capture_meta.pipeline_id;
-                job.source_id = capture_meta.source_id;
-                job.source_name = capture_meta.source_name;
-                job.frame_key = capture_meta.frame_key;
-                job.frame_ts_ms = capture_meta.frame_ts_ms;
-                job.overview_ref = capture_meta.overview_ref;
-                job.crop_ref = object.crop_ref;
-                job.object_key = object.object_key;
-                job.instance_key = object.instance_key;
-                job.object_id = object.object_id;
-                job.tracker_id = object.tracker_id;
-                job.class_id = object.class_id;
-                job.object_type = object.object_type;
-                job.confidence = object.confidence;
-                job.has_bbox = true;
-                job.left = object.left;
-                job.top = object.top;
-                job.width = object.width;
-                job.height = object.height;
-                self->ext_proc_service_->enqueue(job);
-            }
-        }
+        self->dispatch_ext_proc_for_frame(frame_meta, batch_surface, capture_meta, objects);
     }
 
     gst_buffer_unmap(buffer, &map_info);
@@ -485,7 +477,6 @@ void FrameEventsProbeHandler::publish_frame_message(
 
     json message = json::object();
     message["event"] = "frame_events";
-    message["schema_version"] = meta.schema_version;
     message["pipeline_id"] = meta.pipeline_id;
     message["source_id"] = meta.source_id;
     message["source_name"] = meta.source_name;
@@ -522,6 +513,43 @@ void FrameEventsProbeHandler::publish_frame_message(
 
     message["objects"] = std::move(object_list);
     producer_->publish_json(broker_channel_, message.dump());
+}
+
+void FrameEventsProbeHandler::dispatch_ext_proc_for_frame(
+    NvDsFrameMeta* frame_meta, NvBufSurface* batch_surface,
+    const engine::pipeline::evidence::FrameCaptureMetadata& meta,
+    const std::vector<FrameEventObject>& objects) const {
+    if (!ext_proc_service_ || !config_.ext_processor || !config_.ext_processor->enable ||
+        !frame_meta || !batch_surface) {
+        return;
+    }
+
+    std::unordered_map<uint64_t, const FrameEventObject*> emitted_objects;
+    emitted_objects.reserve(objects.size());
+    for (const auto& object : objects) {
+        emitted_objects[object.object_id] = &object;
+    }
+
+    for (NvDsMetaList* object_iter = frame_meta->obj_meta_list; object_iter;
+         object_iter = object_iter->next) {
+        auto* object_meta = static_cast<NvDsObjectMeta*>(object_iter->data);
+        if (!object_meta || object_meta->object_id == kUntrackedObjectId) {
+            continue;
+        }
+
+        const uint64_t object_id = static_cast<uint64_t>(object_meta->object_id);
+        const auto emitted_it = emitted_objects.find(object_id);
+        if (emitted_it == emitted_objects.end()) {
+            continue;
+        }
+
+        const auto& object = *emitted_it->second;
+        ext_proc_service_->process_object(
+            handler_id_, meta.source_id, meta.source_name, meta.frame_key, meta.frame_ts_ms,
+            meta.overview_ref, object.crop_ref, object.object_key, object.instance_key,
+            object.object_id, object.tracker_id, object.class_id, object.object_type,
+            object.confidence, object_meta, frame_meta, batch_surface);
+    }
 }
 
 void FrameEventsProbeHandler::reset_source_state(int source_id) {

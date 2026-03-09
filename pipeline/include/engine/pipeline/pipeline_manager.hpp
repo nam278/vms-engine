@@ -20,10 +20,6 @@ class FrameEvidenceCache;
 class EvidenceRequestService;
 }  // namespace evidence
 
-namespace extproc {
-class FrameEventsExtProcService;
-}  // namespace extproc
-
 namespace probes {
 class ProbeHandlerManager;
 }
@@ -91,7 +87,6 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager {
 
     std::unique_ptr<evidence::FrameEvidenceCache> frame_evidence_cache_;
     std::unique_ptr<evidence::EvidenceRequestService> evidence_request_service_;
-    std::unique_ptr<extproc::FrameEventsExtProcService> frame_events_ext_proc_service_;
 
     static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer data);
     void handle_eos();

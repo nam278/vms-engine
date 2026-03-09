@@ -241,22 +241,19 @@ struct FrameEventsExtProcRule {
     std::string result_path;   ///< JSON path to primary result value
     std::string display_path;  ///< JSON path to human-readable display text
     std::unordered_map<std::string, std::string> params;  ///< Extra query parameters
-    bool crop_ref_preferred = true;  ///< Prefer deterministic crop_ref from frame_events.
 };
 
 /**
  * @brief Async external enrichment sidecar for `trigger: frame_events`.
  *
  * Unlike the legacy root-level `ext_processor` block used by `crop_objects`,
- * this config runs after semantic publish using cached emitted frames.
+ * this config is namespaced under `frame_events:` and is invoked only after a
+ * semantic frame has already been published.
  */
 struct FrameEventsExtProcConfig {
     bool enable = false;
     std::string publish_channel;  ///< Dedicated broker channel/topic for ext_proc events.
-    int min_interval_sec = 5;
-    int queue_capacity = 256;
-    int worker_threads = 2;
-    int jpeg_quality = 80;
+    int jpeg_quality = 85;
     int connect_timeout_ms = 5000;
     int request_timeout_ms = 10000;
     bool emit_empty_result = false;

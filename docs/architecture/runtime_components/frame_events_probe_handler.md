@@ -26,11 +26,14 @@
 
 `FrameEventsProbeHandler` là **canonical primary detection feed** cho downstream business-event generation. Nó publish theo **camera-frame**, không publish theo từng object riêng lẻ, và không encode JPEG trong semantic path.
 
+Khi `frame_events.ext_processor.enable = true`, chính `FrameEventsProbeHandler` sẽ tự tạo `FrameEventsExtProcService` trong `configure(...)`, tương tự cách `CropObjectHandler` tự giữ `ExternalProcessorService` của nhánh `crop_objects`.
+
 ```mermaid
 flowchart LR
     DS["tracker:src pad"] --> FE["FrameEventsProbeHandler"]
     FE --> PUB["Publish frame_events"]
     FE --> CACHE["FrameEvidenceCache\nstore emitted frame snapshot"]
+  PUB --> EXTPROC["FrameEventsExtProcService\nlive-surface crop -> detached HTTP"]
     PUB --> PY["Python downstream\nzone/rule matching"]
     PY --> REQ["Publish evidence_request"]
     REQ --> EV["EvidenceRequestService"]
@@ -136,20 +139,19 @@ event_handlers:
       ext_processor:
         enable: true
         publish_channel: worker_lsr_ext_proc
-        min_interval_sec: 5
-        queue_capacity: 256
-        worker_threads: 2
-        jpeg_quality: 80
+        jpeg_quality: 85
         connect_timeout_ms: 5000
         request_timeout_ms: 10000
         emit_empty_result: false
         include_overview_ref: true
         rules:
           - label: face
-            endpoint: "http://face-rec-svc:8080/api/recognize"
+            endpoint: "http://192.168.1.99:8765/api/recognize/upload"
             result_path: "match.external_id"
             display_path: "match.face_name"
-            crop_ref_preferred: true
+            params:
+              threshold: "0.65"
+              skip_detection: "false"
 ```
 
 ### 3.2 `frame_events:` block
@@ -193,20 +195,17 @@ event_handlers:
 
 ### 3.4 `frame_events.ext_processor:` block
 
-| Field                  | Default | Mô tả                                                     |
-| ---------------------- | ------- | --------------------------------------------------------- |
-| `enable`               | `false` | Bật sidecar ext-proc cho `frame_events`                   |
-| `publish_channel`      | `""`    | Stream/topic riêng để publish `ext_proc`                  |
-| `min_interval_sec`     | `5`     | Throttle per `(pipeline_id, source_id, object_id, label)` |
-| `queue_capacity`       | `256`   | Bounded queue cho ext-proc worker pool                    |
-| `worker_threads`       | `2`     | Số worker xử lý HTTP enrichment                           |
-| `jpeg_quality`         | `80`    | Chất lượng JPEG crop in-memory                            |
-| `connect_timeout_ms`   | `5000`  | Timeout kết nối HTTP                                      |
-| `request_timeout_ms`   | `10000` | Timeout tổng request                                      |
-| `emit_empty_result`    | `false` | Có publish khi `result_path` rỗng hay không               |
-| `include_overview_ref` | `true`  | Có echo `overview_ref` trong payload `ext_proc`           |
+| Field                  | Default | Mô tả                                           |
+| ---------------------- | ------- | ----------------------------------------------- |
+| `enable`               | `false` | Bật sidecar ext-proc cho `frame_events`         |
+| `publish_channel`      | `""`    | Stream/topic riêng để publish `ext_proc`        |
+| `jpeg_quality`         | `85`    | Chất lượng JPEG crop in-memory                  |
+| `connect_timeout_ms`   | `5000`  | Timeout kết nối HTTP                            |
+| `request_timeout_ms`   | `10000` | Timeout tổng request                            |
+| `emit_empty_result`    | `false` | Có publish khi `result_path` rỗng hay không     |
+| `include_overview_ref` | `true`  | Có echo `overview_ref` trong payload `ext_proc` |
 
-Nhánh này chỉ enqueue sau khi `store_frame(...)` thành công. Nếu cache fail thì ext-proc job bị skip để tránh publish enrichment không còn tương ứng đúng với semantic frame đã emit.
+Nhánh này không còn queue riêng và không còn phụ thuộc cache. Sau khi `publish_frame_message(...)` hoàn tất, handler duyệt các object vừa emit, object nào khớp `rules[].label` thì encode crop ngay trên live `NvBufSurface`, rồi chuyển HTTP work sang detached thread.
 
 ---
 
@@ -224,10 +223,12 @@ flowchart TD
     COLLECT --> DECIDE["should_emit_message()"]
     DECIDE -->|false| SKIP["skip"]
     DECIDE -->|true| CACHE["store_frame()"]
-    CACHE --> PUB["publish_frame_message()"]
+  CACHE --> PUB["publish_frame_message()"]
+  PUB --> EXT["dispatch_ext_proc_for_frame()"]
 
     style PUB fill:#4a9eff,color:#fff
     style CACHE fill:#00b894,color:#fff
+  style EXT fill:#ff9f43,color:#fff
 ```
 
 ### 4.2 Emit reasons
@@ -275,6 +276,7 @@ Hàm này bind runtime dependency cho probe:
 - copy `handler.frame_events` nếu YAML có override
 - build map `source_id -> source_name`
 - giữ pointer tới `IMessageProducer` và `FrameEvidenceCache`
+- nếu `frame_events.ext_processor.enable = true` thì tự tạo, register, rồi `start()` một `FrameEventsExtProcService` riêng cho handler này
 
 Nó không tạo state detect mới; `emit_state_` chỉ được populate dần trong `should_emit_message(...)` khi buffer thực sự chạy qua.
 
@@ -291,13 +293,13 @@ Nó không tạo state detect mới; `emit_state_` chỉ được populate dần
 7. nếu phải emit, build `FrameCaptureMetadata`, gán `overview_ref`, gán `crop_ref` cho từng object
 8. nếu evidence cache bật, handoff cùng metadata/snapshot sang `FrameEvidenceCache::store_frame(...)`
 9. publish JSON qua `publish_frame_message(...)`
-10. nếu `frame_events.ext_processor.enable = true` và cache thành công, enqueue ext-proc job cho từng object khớp rule
+10. nếu `frame_events.ext_processor.enable = true`, map emitted objects trở lại `NvDsObjectMeta` tương ứng và gọi ext-proc trực tiếp cho từng object khớp rule
 
 Điểm quan trọng là naming contract được chốt ngay tại bước 7, và cache phải xong trước khi downstream nhìn thấy `frame_events` để tránh race khi Python bắn `evidence_request` ngay lập tức. Ref hiện không tạo folder lồng; nó là một filename phẳng prefix bởi `pipeline_id` và `source_name`.
 
-Ext-proc sidecar mới cũng bám vào ordering này. Semantic publish luôn xảy ra trước; ext-proc chỉ là worker-scoped enrichment dùng lại frame snapshot đã cache, không chạy trên live mapped `NvBufSurface` của pad probe.
+Ext-proc sidecar mới cũng bám vào ordering này. Semantic publish luôn xảy ra trước; ext-proc encode crop ngay trên live mapped `NvBufSurface` của pad probe, nhưng HTTP request và JSON parse vẫn được đẩy sang detached thread nên không chặn semantic publish bởi network latency.
 
-Phần chi tiết về queue model, throttle key, HTTP request shape, payload `ext_proc`, và failure semantics của sidecar được tách riêng trong [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md). Legacy `ExternalProcessorService` dùng bởi `crop_objects` hiện cũng đã được gom về module `pipeline/extproc/`, nhưng vẫn là nhánh runtime riêng.
+Phần chi tiết về HTTP request shape, payload `ext_proc`, và failure semantics của sidecar được tách riêng trong [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md). Legacy `ExternalProcessorService` dùng bởi `crop_objects` hiện cũng đã được gom về module `pipeline/extproc/`, nhưng vẫn là nhánh runtime riêng và cũng là probe-owned service.
 
 ### 5.3 `FrameEventsProbeHandler::collect_frame_objects(...)`
 
@@ -446,7 +448,6 @@ Snapshot ownership hiện dùng `NvBufSurfaceCreate(...) + NvBufSurfaceCopy(...)
 
 Tất cả request/ready messages phải giữ chung routing envelope:
 
-- `schema_version`
 - `request_id`
 - `pipeline_id`
 - `source_name`
@@ -519,7 +520,6 @@ Trong đó:
 ```json
 {
   "event": "frame_events",
-  "schema_version": "1.0",
   "pipeline_id": "de1",
   "source_id": 0,
   "source_name": "camera-01",
@@ -645,7 +645,6 @@ frame=1238 object=42 raw_label_signature='helmet|vest' vote_window=5/5 provision
 
 ```json
 {
-  "schema_version": "1.0",
   "request_id": "req-1741593006200",
   "pipeline_id": "de1",
   "source_name": "camera-01",
@@ -686,7 +685,6 @@ Rules hiện tại của service:
 ```json
 {
   "event": "evidence_ready",
-  "schema_version": "1.0",
   "request_id": "req-1741593006200",
   "pipeline_id": "de1",
   "source_name": "camera-01",
@@ -711,7 +709,6 @@ Rules cho `evidence_ready` hiện tại:
 ```json
 {
   "event": "evidence_ready",
-  "schema_version": "1.0",
   "request_id": "req-1741593009000",
   "pipeline_id": "de1",
   "source_name": "camera-01",

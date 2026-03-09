@@ -14,10 +14,6 @@ namespace engine::pipeline::evidence {
 class FrameEvidenceCache;
 }
 
-namespace engine::pipeline::extproc {
-class FrameEventsExtProcService;
-}
-
 namespace engine::pipeline::probes {
 
 /**
@@ -54,8 +50,7 @@ class ProbeHandlerManager {
      */
     bool attach_probes(const engine::core::config::PipelineConfig& config,
                        engine::core::messaging::IMessageProducer* producer,
-                       engine::pipeline::evidence::FrameEvidenceCache* cache,
-                       engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service);
+                       engine::pipeline::evidence::FrameEvidenceCache* cache);
 
     /**
      * @brief Remove all attached probes (call before pipeline teardown).

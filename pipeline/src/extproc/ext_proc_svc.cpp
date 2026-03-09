@@ -22,11 +22,13 @@ namespace engine::pipeline::extproc {
 
 namespace {
 
+// CURL body sink for small JSON responses from face-rec / LPR services.
 size_t curl_write_callback(void* contents, size_t size, size_t nmemb, std::string* out) noexcept {
     out->append(static_cast<char*>(contents), size * nmemb);
     return size * nmemb;
 }
 
+// Convert dot-path like "match.external_id" into a JSON pointer lookup.
 std::string json_get_by_path(const json& j, const std::string& path) {
     if (path.empty())
         return "";
@@ -57,6 +59,8 @@ inline int64_t epoch_ms() noexcept {
 
 }  // namespace
 
+// Legacy crop_objects ext-proc keeps its mutable runtime state behind a pimpl so detached
+// HTTP threads can safely outlive the probe callback that launched them.
 struct ExternalProcessorService::Impl {
     engine::core::config::ExtProcessorConfig config;
     std::string pipeline_id;
@@ -81,6 +85,8 @@ struct ExternalProcessorService::Impl {
         }
     }
 
+    // Throttle is keyed by source + tracker + label because this service runs directly on
+    // tracked objects inside CropObjectHandler and should suppress repeat API calls per object.
     bool should_process(const std::string& key) {
         const int64_t min_ns = static_cast<int64_t>(config.min_interval_sec) * 1'000'000'000LL;
         const int64_t now = monotonic_ns();
@@ -96,6 +102,8 @@ struct ExternalProcessorService::Impl {
         return true;
     }
 
+    // This path must run while the live NvBufSurface is still mapped inside CropObjectHandler.
+    // We attach crop bytes as NVDS_CROP_IMAGE_META, then copy them out before the probe returns.
     std::vector<unsigned char> encode_object_jpeg(NvDsObjectMeta* obj_meta,
                                                   NvDsFrameMeta* frame_meta,
                                                   NvBufSurface* batch_surf) {
@@ -124,6 +132,8 @@ struct ExternalProcessorService::Impl {
         return {};
     }
 
+    // Expensive I/O runs off the probe thread. By the time this executes, the JPEG payload has
+    // already been detached from DeepStream metadata and is safe to move into CURL.
     void perform_api_call(std::vector<unsigned char> jpeg_data,
                           const engine::core::config::ExtProcessorRule* rule, int source_id,
                           const std::string& source_name, const std::string& instance_key,
@@ -277,6 +287,8 @@ void ExternalProcessorService::process_object(NvDsObjectMeta* obj_meta, NvDsFram
                                               const std::string& source_name,
                                               const std::string& instance_key,
                                               const std::string& object_key) {
+    // Unlike FrameEventsExtProcService, this legacy path is intentionally probe-owned because it
+    // depends on the live mapped surface from the current batch and cannot be replayed from cache.
     if (!pimpl_->obj_enc_ctx)
         return;
     if (!obj_meta || !frame_meta || !batch_surf)
@@ -309,6 +321,8 @@ void ExternalProcessorService::process_object(NvDsObjectMeta* obj_meta, NvDsFram
     LOG_D("ExternalProcessorService: launching API call label='{}' jpeg={}B tracker_id={}", label,
           jpeg_data.size(), tracker_id);
 
+    // Detached thread is acceptable here because the probe path only needs fire-and-forget
+    // enrichment after the crop bytes have been copied into process-owned memory.
     auto impl_ref = pimpl_;
     const int class_id = obj_meta->class_id;
     const float conf = obj_meta->confidence;

@@ -107,7 +107,9 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
         LOG_E("CropObjectHandler: failed to create NvDsObjEnc context");
     }
 
-    // External processor service (optional — only created when configured)
+    // Legacy ext-proc stays probe-owned because it operates on the live mapped batch surface
+    // from CropObjectHandler. It cannot be safely hoisted to PipelineManager without changing
+    // the execution model to a cache-backed workflow like frame_events ext-proc.
     ext_proc_svc_.reset();
     if (handler.ext_processor && handler.ext_processor->enable &&
         !handler.ext_processor->rules.empty()) {

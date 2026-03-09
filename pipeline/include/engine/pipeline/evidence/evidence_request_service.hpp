@@ -41,7 +41,6 @@ struct EvidenceRequestObject {
 
 /** @brief Parsed evidence request queued for asynchronous materialization. */
 struct EvidenceRequestJob {
-    std::string schema_version;
     std::string request_id;
     std::string pipeline_id;
     std::string source_name;
