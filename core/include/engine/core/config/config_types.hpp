@@ -168,12 +168,15 @@ struct VisualsConfig {
 struct OutputElementConfig {
     std::string id;
     std::string type;  ///< GStreamer factory name
+    int gpu_id = 0;
 
     // Common GStreamer properties (flat — parsed from YAML key-value)
     // Each element type has different properties; store as key-value pairs
     // for flexibility. Builders extract what they need.
     std::string caps;               ///< for capsfilter
     std::string nvbuf_memory_type;  ///< for nvvideoconvert
+    std::string src_crop;           ///< for nvvideoconvert
+    std::string dest_crop;          ///< for nvvideoconvert
     int bitrate = 0;                ///< for encoder (bps)
     std::string control_rate;       ///< for encoder
     std::string profile;            ///< for encoder

@@ -23,9 +23,11 @@ bool RedisStreamConsumer::connect(const std::string& host, int port, const std::
     port_ = port;
     consumer_scope_ = consumer_scope.empty() ? std::string("default") : consumer_scope;
 
-    std::lock_guard<std::mutex> lk(ctx_mtx_);
-    if (!do_connect()) {
-        return false;
+    {
+        std::lock_guard<std::mutex> lk(ctx_mtx_);
+        if (!do_connect()) {
+            return false;
+        }
     }
 
     if (!channel.empty()) {
@@ -86,8 +88,9 @@ bool RedisStreamConsumer::subscribe(const std::string& channel) {
     if (std::find(channels_.begin(), channels_.end(), channel) == channels_.end()) {
         channels_.push_back(channel);
     }
+
     // Always start from '$' on subscribe/resubscribe so this consumer only sees
-    // entries produced after the subscription point.
+    // entries produced after the current process attaches to the stream.
     last_ids_[channel] = "$";
     LOG_I("RedisStreamConsumer: subscribed to stream '{}' scope='{}' from latest id '$'", channel,
           consumer_scope_);

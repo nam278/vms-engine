@@ -12,8 +12,9 @@ namespace engine::infrastructure::messaging {
 /**
  * @brief Kafka consumer backed by librdkafka C++ API.
  *
- * Uses a stable consumer group derived from pipeline scope and
- * `auto.offset.reset=latest`.
+ * Uses a stable consumer group derived from pipeline scope and always
+ * seeks assigned partitions to their end offsets on startup/rebalance so
+ * only messages produced after the current process joins are consumed.
  */
 class KafkaConsumer : public engine::core::messaging::IMessageConsumer {
    public:

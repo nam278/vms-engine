@@ -224,6 +224,7 @@ outputs:
     elements:
       - id: preencode_convert
         type: nvvideoconvert
+        gpu_id: 0
         nvbuf_memory_type: nvbuf-mem-cuda-device
         src_crop: "0:0:0:0"
         dest_crop: "0:0:0:0"
@@ -235,6 +236,7 @@ outputs:
 
       - id: encoder
         type: nvv4l2h264enc # nvv4l2h264enc | nvv4l2h265enc
+        gpu_id: 0
         bitrate: 4000000 # bps
         control_rate: cbr # cbr | vbr
         profile: main # baseline | main | high

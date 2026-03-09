@@ -21,6 +21,8 @@ GstElement* EncoderBuilder::build(const engine::core::config::PipelineConfig& co
         return nullptr;
     }
 
+    g_object_set(G_OBJECT(elem.get()), "gpu-id", static_cast<guint>(elem_cfg.gpu_id), nullptr);
+
     // Bitrate
     if (elem_cfg.bitrate > 0) {
         g_object_set(G_OBJECT(elem.get()), "bitrate", static_cast<guint>(elem_cfg.bitrate),
@@ -33,6 +35,15 @@ GstElement* EncoderBuilder::build(const engine::core::config::PipelineConfig& co
                      static_cast<guint>(elem_cfg.iframeinterval), nullptr);
     }
 
+    if (!elem_cfg.control_rate.empty()) {
+        gst_util_set_object_arg(G_OBJECT(elem.get()), "control-rate",
+                                elem_cfg.control_rate.c_str());
+    }
+
+    if (!elem_cfg.profile.empty()) {
+        gst_util_set_object_arg(G_OBJECT(elem.get()), "profile", elem_cfg.profile.c_str());
+    }
+
     // Required for RTSP streaming: insert SPS/PPS before each IDR
     g_object_set(G_OBJECT(elem.get()), "insert-sps-pps", static_cast<gboolean>(TRUE), nullptr);
 
@@ -41,7 +52,8 @@ GstElement* EncoderBuilder::build(const engine::core::config::PipelineConfig& co
         return nullptr;
     }
 
-    LOG_I("Built encoder '{}' (type={}, bitrate={})", id, type, elem_cfg.bitrate);
+    LOG_I("Built encoder '{}' (type={}, gpu_id={}, bitrate={})", id, type, elem_cfg.gpu_id,
+          elem_cfg.bitrate);
     return elem.release();
 }
 

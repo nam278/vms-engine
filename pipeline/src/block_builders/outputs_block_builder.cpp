@@ -10,6 +10,55 @@
 
 namespace engine::pipeline::block_builders {
 
+namespace {
+
+void apply_gpu_id_if_supported(GstElement* element, int gpu_id) {
+    if (element == nullptr) {
+        return;
+    }
+
+    GParamSpec* gpu_id_prop = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "gpu-id");
+    if (gpu_id_prop != nullptr) {
+        g_object_set(G_OBJECT(element), "gpu-id", static_cast<guint>(gpu_id), nullptr);
+    }
+}
+
+bool apply_generic_output_properties(GstElement* element,
+                                     const engine::core::config::OutputElementConfig& elem_cfg) {
+    if (element == nullptr) {
+        return false;
+    }
+
+    apply_gpu_id_if_supported(element, elem_cfg.gpu_id);
+
+    if (elem_cfg.type == "capsfilter" && !elem_cfg.caps.empty()) {
+        GstCaps* caps = gst_caps_from_string(elem_cfg.caps.c_str());
+        if (caps == nullptr) {
+            LOG_E("OutputsBlockBuilder: invalid caps '{}' for '{}'", elem_cfg.caps, elem_cfg.id);
+            return false;
+        }
+        g_object_set(G_OBJECT(element), "caps", caps, nullptr);
+        gst_caps_unref(caps);
+    }
+
+    if (elem_cfg.type == "nvvideoconvert") {
+        if (!elem_cfg.nvbuf_memory_type.empty()) {
+            gst_util_set_object_arg(G_OBJECT(element), "nvbuf-memory-type",
+                                    elem_cfg.nvbuf_memory_type.c_str());
+        }
+        if (!elem_cfg.src_crop.empty()) {
+            g_object_set(G_OBJECT(element), "src-crop", elem_cfg.src_crop.c_str(), nullptr);
+        }
+        if (!elem_cfg.dest_crop.empty()) {
+            g_object_set(G_OBJECT(element), "dest-crop", elem_cfg.dest_crop.c_str(), nullptr);
+        }
+    }
+
+    return true;
+}
+
+}  // namespace
+
 // ── Helper: expose a ghost pad on a bin pointing at target_elem's pad ───────────────────────────
 static bool expose_ghost(GstElement* bin, GstElement* target_elem, const char* pad_name,
                          const char* ghost_name) {
@@ -163,6 +212,10 @@ GstElement* OutputsBlockBuilder::build_output_bin(
             if (!guard) {
                 LOG_E("OutputsBlockBuilder: unknown element type '{}' for '{}'", elem_cfg.type,
                       elem_cfg.id);
+                gst_object_unref(out_bin);
+                return nullptr;
+            }
+            if (!apply_generic_output_properties(guard.get(), elem_cfg)) {
                 gst_object_unref(out_bin);
                 return nullptr;
             }

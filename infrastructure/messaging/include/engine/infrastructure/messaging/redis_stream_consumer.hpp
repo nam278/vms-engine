@@ -16,9 +16,10 @@ namespace engine::infrastructure::messaging {
  * @brief Minimal Redis Streams consumer based on XREAD.
  *
  * Reads new entries only by default (`$`) and resets to `$` again on
- * reconnect/resubscribe. Consumer scope is tracked for logging/operations,
- * then flat Redis field/value pairs are converted back into a JSON object
- * payload string.
+ * reconnect/resubscribe, so messages published while the consumer is offline
+ * are skipped on the next start. Consumer scope is tracked for
+ * logging/operations, then flat Redis field/value pairs are converted back
+ * into a JSON object payload string.
  */
 class RedisStreamConsumer : public engine::core::messaging::IMessageConsumer {
    public:

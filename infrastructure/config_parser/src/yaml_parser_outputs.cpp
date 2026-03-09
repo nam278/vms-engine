@@ -32,10 +32,13 @@ void YamlConfigParser::parse_outputs(const void* node_ptr,
 
                 elem.id = yaml_str(elem_node, "id");
                 elem.type = yaml_str(elem_node, "type");
+                elem.gpu_id = yaml_int(elem_node, "gpu_id", 0);
 
                 // Flat properties — each element type uses a different subset
                 elem.caps = yaml_str(elem_node, "caps");
                 elem.nvbuf_memory_type = yaml_str(elem_node, "nvbuf_memory_type");
+                elem.src_crop = yaml_str(elem_node, "src_crop");
+                elem.dest_crop = yaml_str(elem_node, "dest_crop");
                 elem.bitrate = yaml_int(elem_node, "bitrate", 0);
                 elem.control_rate = yaml_str(elem_node, "control_rate");
                 elem.profile = yaml_str(elem_node, "profile");
