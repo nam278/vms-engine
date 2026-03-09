@@ -21,6 +21,10 @@ struct FrameObjectSnapshot;
 struct FrameCaptureMetadata;
 }  // namespace engine::pipeline::evidence
 
+namespace engine::pipeline::extproc {
+class FrameEventsExtProcService;
+}
+
 namespace engine::pipeline::probes {
 
 /**
@@ -95,7 +99,8 @@ class FrameEventsProbeHandler {
     void configure(const engine::core::config::PipelineConfig& config,
                    const engine::core::config::EventHandlerConfig& handler,
                    engine::core::messaging::IMessageProducer* eproducer,
-                   engine::pipeline::evidence::FrameEvidenceCache* cache);
+                   engine::pipeline::evidence::FrameEvidenceCache* cache,
+                   engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service);
 
     static GstPadProbeReturn on_buffer(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
 
@@ -126,8 +131,10 @@ class FrameEventsProbeHandler {
     std::unordered_map<int, PerSourceEmitState> emit_state_;
     int source_width_ = 0;
     int source_height_ = 0;
+    std::string handler_id_;
     engine::core::messaging::IMessageProducer* producer_ = nullptr;
     engine::pipeline::evidence::FrameEvidenceCache* cache_ = nullptr;
+    engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service_ = nullptr;
 };
 
 }  // namespace engine::pipeline::probes

@@ -1,8 +1,8 @@
 # FrameEventsProbeHandler — Semantic Primary Feed & Evidence Workflow
 
-> **Scope**: `FrameEventsProbeHandler`, `FrameEvidenceCache`, `EvidenceRequestService`, và contract `frame_events -> evidence_request -> evidence_ready`.
+> **Scope**: `FrameEventsProbeHandler`, `FrameEvidenceCache`, `EvidenceRequestService`, `FrameEventsExtProcService`, và contract `frame_events -> evidence_request -> evidence_ready`.
 >
-> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [05 — Configuration System](../deepstream/05_configuration.md) · [crop_object_handler.md](crop_object_handler.md)
+> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [05 — Configuration System](../deepstream/05_configuration.md) · [crop_object_handler.md](crop_object_handler.md) · [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md) · [evidence_workflow.md](evidence_workflow.md)
 
 ---
 
@@ -55,6 +55,8 @@ Kiến trúc mới theo đúng tinh thần `semantic first, evidence later`:
 
 - `frame_events` mang **detection semantics**.
 - `evidence_ready` mang **media materialization result**.
+
+Phần evidence subsystem hiện đã có tài liệu riêng tại [evidence_workflow.md](evidence_workflow.md). Tài liệu này giữ trọng tâm vào semantic emit path của `FrameEventsProbeHandler`, còn workflow request-driven media materialization được mô tả chi tiết ở doc evidence.
 
 ---
 
@@ -131,6 +133,23 @@ event_handlers:
       label_vote_window_frames: 5
       emit_on_parent_change: true
       emit_empty_frames: false
+      ext_processor:
+        enable: true
+        publish_channel: worker_lsr_ext_proc
+        min_interval_sec: 5
+        queue_capacity: 256
+        worker_threads: 2
+        jpeg_quality: 80
+        connect_timeout_ms: 5000
+        request_timeout_ms: 10000
+        emit_empty_result: false
+        include_overview_ref: true
+        rules:
+          - label: face
+            endpoint: "http://face-rec-svc:8080/api/recognize"
+            result_path: "match.external_id"
+            display_path: "match.face_name"
+            crop_ref_preferred: true
 ```
 
 ### 3.2 `frame_events:` block
@@ -171,6 +190,23 @@ event_handlers:
 > 📋 `evidence_request` và `evidence_ready` luôn dùng **cùng backend broker** với `messaging.type`.
 
 `frame_events` hiện publish deterministic `overview_ref` và `crop_ref` theo dạng **flat filename/ref only**, với prefix kiểu `pipelineid_sourcename_...jpg`. Payload semantic không prepend `evidence.save_dir`; path đó chỉ được dùng sau này ở evidence materialization path khi engine thực sự ghi file ra đĩa. File chưa tồn tại ở thời điểm semantic publish; nó chỉ là naming contract để downstream echo lại khi cần evidence chính xác.
+
+### 3.4 `frame_events.ext_processor:` block
+
+| Field                  | Default | Mô tả                                                     |
+| ---------------------- | ------- | --------------------------------------------------------- |
+| `enable`               | `false` | Bật sidecar ext-proc cho `frame_events`                   |
+| `publish_channel`      | `""`    | Stream/topic riêng để publish `ext_proc`                  |
+| `min_interval_sec`     | `5`     | Throttle per `(pipeline_id, source_id, object_id, label)` |
+| `queue_capacity`       | `256`   | Bounded queue cho ext-proc worker pool                    |
+| `worker_threads`       | `2`     | Số worker xử lý HTTP enrichment                           |
+| `jpeg_quality`         | `80`    | Chất lượng JPEG crop in-memory                            |
+| `connect_timeout_ms`   | `5000`  | Timeout kết nối HTTP                                      |
+| `request_timeout_ms`   | `10000` | Timeout tổng request                                      |
+| `emit_empty_result`    | `false` | Có publish khi `result_path` rỗng hay không               |
+| `include_overview_ref` | `true`  | Có echo `overview_ref` trong payload `ext_proc`           |
+
+Nhánh này chỉ enqueue sau khi `store_frame(...)` thành công. Nếu cache fail thì ext-proc job bị skip để tránh publish enrichment không còn tương ứng đúng với semantic frame đã emit.
 
 ---
 
@@ -255,8 +291,13 @@ Nó không tạo state detect mới; `emit_state_` chỉ được populate dần
 7. nếu phải emit, build `FrameCaptureMetadata`, gán `overview_ref`, gán `crop_ref` cho từng object
 8. nếu evidence cache bật, handoff cùng metadata/snapshot sang `FrameEvidenceCache::store_frame(...)`
 9. publish JSON qua `publish_frame_message(...)`
+10. nếu `frame_events.ext_processor.enable = true` và cache thành công, enqueue ext-proc job cho từng object khớp rule
 
 Điểm quan trọng là naming contract được chốt ngay tại bước 7, và cache phải xong trước khi downstream nhìn thấy `frame_events` để tránh race khi Python bắn `evidence_request` ngay lập tức. Ref hiện không tạo folder lồng; nó là một filename phẳng prefix bởi `pipeline_id` và `source_name`.
+
+Ext-proc sidecar mới cũng bám vào ordering này. Semantic publish luôn xảy ra trước; ext-proc chỉ là worker-scoped enrichment dùng lại frame snapshot đã cache, không chạy trên live mapped `NvBufSurface` của pad probe.
+
+Phần chi tiết về queue model, throttle key, HTTP request shape, payload `ext_proc`, và failure semantics của sidecar được tách riêng trong [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md). Legacy `ExternalProcessorService` dùng bởi `crop_objects` hiện cũng đã được gom về module `pipeline/extproc/`, nhưng vẫn là nhánh runtime riêng.
 
 ### 5.3 `FrameEventsProbeHandler::collect_frame_objects(...)`
 
@@ -765,6 +806,7 @@ Các log này trả lời ba câu hỏi vận hành quan trọng:
 | ----------------- | ------------------------------------------------------------------------- |
 | Probe overview    | [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) |
 | Config schema     | [05 — Configuration System](../deepstream/05_configuration.md)            |
+| Evidence workflow | [evidence_workflow.md](evidence_workflow.md)                              |
 | Legacy media path | [crop_object_handler.md](crop_object_handler.md)                          |
 | Smart Record      | [smart_record_probe_handler.md](smart_record_probe_handler.md)            |
 | Phase plan        | [phase2/01_deepstream_phase2.md](../plans/phase2/01_deepstream_phase2.md) |

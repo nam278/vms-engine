@@ -2,27 +2,39 @@
 
 > **Scope**: HTTP-based AI enrichment (face recognition, license plate lookup, etc.) cho detected objects, chạy non-blocking trong detached threads.
 >
-> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [crop_object_handler.md](crop_object_handler.md)
+> **Đọc trước**: [07 — Event Handlers & Probes](../deepstream/07_event_handlers_probes.md) · [crop_object_handler.md](crop_object_handler.md) · [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md) · [evidence_workflow.md](evidence_workflow.md)
+
+<!-- markdownlint-disable MD040 MD060 -->
 
 ---
 
 ## Mục lục
 
-- [1. Tổng quan](#1-tổng-quan)
-- [2. YAML Config](#2-yaml-config)
-- [3. Cơ chế hoạt động](#3-cơ-chế-hoạt-động)
-- [4. Code Structure](#4-code-structure)
-- [5. Message Publish Schema](#5-message-publish-schema)
-- [6. Tích hợp CropObjectHandler](#6-tích-hợp-cropobjecthandler)
-- [7. Ví dụ: Face Recognition](#7-ví-dụ-face-recognition)
-- [8. Vận hành & Debug](#8-vận-hành--debug)
-- [9. Cross-references](#9-cross-references)
+- [External Processor Service (ExtProcSvc) — HTTP AI Enrichment](#external-processor-service-extprocsvc--http-ai-enrichment)
+  - [Mục lục](#mục-lục)
+  - [1. Tổng quan](#1-tổng-quan)
+    - [So sánh lantanav2 vs vms-engine](#so-sánh-lantanav2-vs-vms-engine)
+  - [2. YAML Config](#2-yaml-config)
+  - [3. Cơ chế hoạt động](#3-cơ-chế-hoạt-động)
+    - [3.1 Throttle (Per-object Rate Limiting)](#31-throttle-per-object-rate-limiting)
+    - [3.2 In-Memory JPEG Encoding](#32-in-memory-jpeg-encoding)
+    - [3.3 HTTP POST (CURL Multipart)](#33-http-post-curl-multipart)
+    - [3.4 JSON Response Parsing](#34-json-response-parsing)
+  - [4. Code Structure](#4-code-structure)
+    - [Pimpl với `shared_ptr` — Lifetime Safety](#pimpl-với-shared_ptr--lifetime-safety)
+  - [5. Message Publish Schema](#5-message-publish-schema)
+  - [6. Tích hợp CropObjectHandler](#6-tích-hợp-cropobjecthandler)
+  - [7. Ví dụ: Face Recognition](#7-ví-dụ-face-recognition)
+  - [8. Vận hành \& Debug](#8-vận-hành--debug)
+  - [9. Cross-references](#9-cross-references)
 
 ---
 
 ## 1. Tổng quan
 
 `ExternalProcessorService` — service standalone thực hiện **HTTP POST** gửi JPEG crop lên external AI endpoint, nhận JSON response, parse kết quả và publish qua `IMessageProducer`.
+
+Mặc dù được `CropObjectHandler` gọi từ probe path, implementation của legacy service hiện đã được đặt dưới `pipeline/extproc/` để gom toàn bộ external-enrichment services vào cùng một nhóm module.
 
 ```mermaid
 sequenceDiagram
@@ -46,12 +58,12 @@ sequenceDiagram
 
 ### So sánh lantanav2 vs vms-engine
 
-| Khía cạnh           | lantanav2 V2                     | vms-engine ExtProcSvc                  |
-| -------------------- | -------------------------------- | -------------------------------------- |
-| Throttle key         | `parent_id:label`                | `source_id:tracker_id:label`           |
-| Messaging            | `RedisStreamProducer*` (concrete) | `IMessageProducer*` (interface)        |
-| OSD support          | Có (pending_osd_results_)        | **Không**                              |
-| Impl lifetime safety | Raw pointer capture              | `shared_ptr<Impl>` trong detached thread |
+| Khía cạnh            | lantanav2 V2                      | vms-engine ExtProcSvc                    |
+| -------------------- | --------------------------------- | ---------------------------------------- |
+| Throttle key         | `parent_id:label`                 | `source_id:tracker_id:label`             |
+| Messaging            | `RedisStreamProducer*` (concrete) | `IMessageProducer*` (interface)          |
+| OSD support          | Có (pending*osd_results*)         | **Không**                                |
+| Impl lifetime safety | Raw pointer capture               | `shared_ptr<Impl>` trong detached thread |
 
 ---
 
@@ -69,12 +81,12 @@ event_handlers:
 
     ext_processor:
       enable: true
-      min_interval_sec: 5           # Throttle per (source:tracker_id:label)
+      min_interval_sec: 5 # Throttle per (source:tracker_id:label)
       rules:
         - label: face
           endpoint: "http://face-rec-svc:8080/api/recognize"
-          result_path: "match.external_id"    # Dot-notation JSON path
-          display_path: "match.face_name"     # Dot-notation JSON path
+          result_path: "match.external_id" # Dot-notation JSON path
+          display_path: "match.face_name" # Dot-notation JSON path
           params:
             threshold: "0.7"
 
@@ -84,15 +96,15 @@ event_handlers:
           display_path: "plate.owner"
 ```
 
-| Trường               | Kiểu                  | Mô tả                                            |
-| -------------------- | --------------------- | ------------------------------------------------- |
-| `enable`             | `bool`                | Bật/tắt service                                   |
-| `min_interval_sec`   | `int`                 | Khoảng cách tối thiểu (s) giữa 2 API call cùng object |
-| `rules[].label`      | `string`              | Label để áp dụng rule                             |
-| `rules[].endpoint`   | `string`              | HTTP POST endpoint (multipart/form-data)          |
-| `rules[].result_path`| `string`              | Dot-notation đến kết quả chính trong JSON         |
-| `rules[].display_path`| `string`             | Dot-notation đến text hiển thị                    |
-| `rules[].params`     | `map<string, string>` | Query parameters (auto URL-escaped)               |
+| Trường                 | Kiểu                  | Mô tả                                                 |
+| ---------------------- | --------------------- | ----------------------------------------------------- |
+| `enable`               | `bool`                | Bật/tắt service                                       |
+| `min_interval_sec`     | `int`                 | Khoảng cách tối thiểu (s) giữa 2 API call cùng object |
+| `rules[].label`        | `string`              | Label để áp dụng rule                                 |
+| `rules[].endpoint`     | `string`              | HTTP POST endpoint (multipart/form-data)              |
+| `rules[].result_path`  | `string`              | Dot-notation đến kết quả chính trong JSON             |
+| `rules[].display_path` | `string`              | Dot-notation đến text hiển thị                        |
+| `rules[].params`       | `map<string, string>` | Query parameters (auto URL-escaped)                   |
 
 ---
 
@@ -142,9 +154,9 @@ Nếu parse fail → publish với `result=""`, `display=""`.
 
 ## 4. Code Structure
 
-```
-pipeline/include/engine/pipeline/probes/ext_proc_svc.hpp   ← Public interface
-pipeline/src/probes/ext_proc_svc.cpp                       ← Implementation (pimpl)
+```text
+pipeline/include/engine/pipeline/extproc/ext_proc_svc.hpp   ← Public interface
+pipeline/src/extproc/ext_proc_svc.cpp                       ← Implementation (pimpl)
 ```
 
 ```mermaid
@@ -201,16 +213,16 @@ std::thread([impl_ref = std::move(impl_ref), jpeg = std::move(jpeg_data), ...] {
 }
 ```
 
-| Trường         | Nguồn                                               |
-| -------------- | --------------------------------------------------- |
-| `event`        | Constant `"ext_proc"`                               |
-| `pid`          | `config.pipeline.id`                                |
-| `sid` / `sname`| `frame_meta->source_id` / camera name map           |
-| `oid`          | `obj_meta->object_id` (tracker ID)                  |
-| `labels`       | `result \| display` (lantanav2-compatible)           |
-| `result`       | Parse từ `result_path`                              |
-| `display`      | Parse từ `display_path`                             |
-| `event_ts`     | `system_clock` epoch ms (string)                    |
+| Trường          | Nguồn                                      |
+| --------------- | ------------------------------------------ |
+| `event`         | Constant `"ext_proc"`                      |
+| `pid`           | `config.pipeline.id`                       |
+| `sid` / `sname` | `frame_meta->source_id` / camera name map  |
+| `oid`           | `obj_meta->object_id` (tracker ID)         |
+| `labels`        | `result \| display` (lantanav2-compatible) |
+| `result`        | Parse từ `result_path`                     |
+| `display`       | Parse từ `display_path`                    |
+| `event_ts`      | `system_clock` epoch ms (string)           |
 
 > 📋 **Tương thích lantanav2**: JSON giữ nguyên tất cả fields — downstream consumers không cần thay đổi.
 
@@ -257,12 +269,12 @@ ext_processor:
 
 ## 8. Vận hành & Debug
 
-| Concern      | Guideline                                                       |
-| ------------ | --------------------------------------------------------------- |
+| Concern      | Guideline                                                        |
+| ------------ | ---------------------------------------------------------------- |
 | CPU overload | Mỗi API call = 1 OS thread. Tăng `min_interval_sec` nếu overload |
-| HTTP timeout | connect=5s, total=10s. Service chậm → thread tồn tại lâu      |
-| JPEG encode  | ~1-3ms/object (GPU). Context riêng, không block file saver     |
-| Dependencies | DeepStream 8.0, libcurl 7.x+, nlohmann/json 3.11+, C++17     |
+| HTTP timeout | connect=5s, total=10s. Service chậm → thread tồn tại lâu         |
+| JPEG encode  | ~1-3ms/object (GPU). Context riêng, không block file saver       |
+| Dependencies | DeepStream 8.0, libcurl 7.x+, nlohmann/json 3.11+, C++17         |
 
 ```bash
 # Debug ext_proc calls
@@ -273,9 +285,13 @@ GST_DEBUG=2 ./build/bin/vms_engine -c configs/default.yml 2>&1 | grep ext_proc
 
 ## 9. Cross-references
 
-| Topic                     | Document                                                           |
-| ------------------------- | ------------------------------------------------------------------ |
-| Probe system overview     | [07 — Event Handlers](../deepstream/07_event_handlers_probes.md)   |
-| CropObject handler detail | [crop_object_handler.md](crop_object_handler.md)                   |
-| SmartRecord probe         | [smart_record_probe_handler.md](smart_record_probe_handler.md)     |
-| RAII for encoder contexts | [RAII Guide](../RAII.md)                                           |
+| Topic                        | Document                                                             |
+| ---------------------------- | -------------------------------------------------------------------- |
+| Probe system overview        | [07 — Event Handlers](../deepstream/07_event_handlers_probes.md)     |
+| CropObject handler detail    | [crop_object_handler.md](crop_object_handler.md)                     |
+| frame_events ext-proc detail | [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md) |
+| Evidence workflow            | [evidence_workflow.md](evidence_workflow.md)                         |
+| SmartRecord probe            | [smart_record_probe_handler.md](smart_record_probe_handler.md)       |
+| RAII for encoder contexts    | [RAII Guide](../RAII.md)                                             |
+
+<!-- markdownlint-enable MD040 MD060 -->

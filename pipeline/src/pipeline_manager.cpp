@@ -1,6 +1,7 @@
 #include "engine/pipeline/pipeline_manager.hpp"
 #include "engine/pipeline/evidence/evidence_request_service.hpp"
 #include "engine/pipeline/evidence/frame_evidence_cache.hpp"
+#include "engine/pipeline/extproc/frame_events_ext_proc_service.hpp"
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
 #include "engine/core/messaging/imessage_consumer.hpp"
 #include "engine/core/utils/logger.hpp"
@@ -61,8 +62,11 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         gst_bus_add_watch(bus.get(), on_bus_message, this);
     }
 
-    if (config.evidence && config.evidence->enable && producer_ && consumer_) {
+    if (config.evidence && config.evidence->enable) {
         frame_evidence_cache_ = std::make_unique<evidence::FrameEvidenceCache>(*config.evidence);
+    }
+
+    if (config.evidence && config.evidence->enable && producer_ && consumer_) {
         evidence_request_service_ = std::make_unique<evidence::EvidenceRequestService>(
             *config.evidence, producer_, frame_evidence_cache_.get());
         LOG_I(
@@ -74,10 +78,36 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         LOG_W("PipelineManager: evidence enabled in config but producer/consumer not fully wired");
     }
 
+    if (producer_ && frame_evidence_cache_) {
+        frame_events_ext_proc_service_ = std::make_unique<extproc::FrameEventsExtProcService>(
+            producer_, frame_evidence_cache_.get());
+
+        bool registered_any_handler = false;
+        for (const auto& handler : config.event_handlers) {
+            if (!handler.enable || handler.trigger != "frame_events" || !handler.frame_events ||
+                !handler.frame_events->ext_processor ||
+                !handler.frame_events->ext_processor->enable) {
+                continue;
+            }
+
+            if (frame_events_ext_proc_service_->register_handler(
+                    handler.id, config.pipeline.id, *handler.frame_events->ext_processor)) {
+                registered_any_handler = true;
+            }
+        }
+
+        if (registered_any_handler) {
+            frame_events_ext_proc_service_->start();
+        } else {
+            frame_events_ext_proc_service_.reset();
+        }
+    }
+
     // Attach pad probes from event_handlers config
     if (!config.event_handlers.empty()) {
         probe_manager_ = std::make_unique<probes::ProbeHandlerManager>(pipeline_);
-        if (!probe_manager_->attach_probes(config, producer_, frame_evidence_cache_.get())) {
+        if (!probe_manager_->attach_probes(config, producer_, frame_evidence_cache_.get(),
+                                           frame_events_ext_proc_service_.get())) {
             LOG_E("Failed to attach one or more pad probes");
             // Non-fatal — continue with reduced functionality
         }
@@ -283,6 +313,7 @@ void PipelineManager::cleanup() {
     stop();
 
     evidence_request_service_.reset();
+    frame_events_ext_proc_service_.reset();
     frame_evidence_cache_.reset();
 
     if (pipeline_) {

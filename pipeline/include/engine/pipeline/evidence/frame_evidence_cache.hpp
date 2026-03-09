@@ -83,6 +83,11 @@ class FrameEvidenceCache {
                                                     const std::string& frame_key,
                                                     int64_t frame_ts_ms) const;
 
+    const FrameObjectSnapshot* find_object(const CachedFrameEntry& entry,
+                                           const std::string& object_key,
+                                           const std::string& instance_key,
+                                           int64_t object_id) const;
+
     void clear();
     size_t size() const;
 

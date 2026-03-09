@@ -3,6 +3,7 @@
 #include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/pipeline/evidence/frame_evidence_cache.hpp"
+#include "engine/pipeline/evidence/frame_image_materializer.hpp"
 
 #include <gstnvdsmeta.h>
 #include <nlohmann/json.hpp>
@@ -326,11 +327,6 @@ void EvidenceRequestService::process_job(const EvidenceRequestJob& job) {
 bool EvidenceRequestService::encode_overview(const CachedFrameEntry& entry,
                                              const EvidenceRequestJob& job, std::string& out_ref,
                                              std::string& failure_reason) {
-    if (!enc_ctx_ || !entry.surface) {
-        failure_reason = "encoder_not_ready";
-        return false;
-    }
-
     const std::string output_ref =
         !job.overview_ref.empty() ? job.overview_ref : entry.meta.overview_ref;
     std::string file_path;
@@ -338,30 +334,11 @@ bool EvidenceRequestService::encode_overview(const CachedFrameEntry& entry,
         return false;
     }
 
-    NvDsFrameMeta frame_meta{};
-    frame_meta.batch_id = 0;
-    frame_meta.source_id = static_cast<guint>(entry.meta.source_id);
-    frame_meta.frame_num = static_cast<gint>(entry.meta.frame_num);
-    frame_meta.buf_pts = static_cast<guint64>(entry.meta.frame_ts_ms) * GST_MSECOND;
-
-    NvDsObjectMeta object_meta{};
-    object_meta.rect_params.left = 0.0F;
-    object_meta.rect_params.top = 0.0F;
-    object_meta.rect_params.width = static_cast<float>(entry.meta.width);
-    object_meta.rect_params.height = static_cast<float>(entry.meta.height);
-
-    NvDsObjEncUsrArgs args{};
-    args.saveImg = TRUE;
-    args.attachUsrMeta = FALSE;
-    args.scaleImg = FALSE;
-    args.quality = config_.overview_jpeg_quality;
-    args.isFrame = TRUE;
-    std::snprintf(args.fileNameImg, sizeof(args.fileNameImg), "%s", file_path.c_str());
-
-    if (!nvds_obj_enc_process(enc_ctx_, &args, entry.surface, &object_meta, &frame_meta)) {
+    if (!FrameImageMaterializer::encode_overview_to_file(
+            enc_ctx_, entry, file_path, config_.overview_jpeg_quality, failure_reason)) {
         return false;
     }
-    nvds_obj_enc_finish(enc_ctx_);
+
     out_ref = output_ref;
     return true;
 }
@@ -370,11 +347,6 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
                                           const EvidenceRequestJob& job,
                                           std::vector<std::string>& out_refs,
                                           std::string& failure_reason) {
-    if (!enc_ctx_ || !entry.surface) {
-        failure_reason = "encoder_not_ready";
-        return false;
-    }
-
     std::vector<EvidenceRequestObject> request_objects = job.objects;
     if (request_objects.empty()) {
         // No explicit object filter means "materialize crops for everything visible on that frame".
@@ -392,13 +364,6 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
             request_objects.push_back(std::move(request_object));
         }
     }
-
-    NvDsFrameMeta frame_meta{};
-    frame_meta.batch_id = 0;
-    frame_meta.source_id = static_cast<guint>(entry.meta.source_id);
-    frame_meta.frame_num = static_cast<gint>(entry.meta.frame_num);
-    frame_meta.buf_pts = static_cast<guint64>(entry.meta.frame_ts_ms) * GST_MSECOND;
-
     int crop_index = 0;
     for (const auto& request_object : request_objects) {
         float left = request_object.left;
@@ -435,32 +400,13 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
         }
         ++crop_index;
 
-        NvDsObjectMeta object_meta{};
-        object_meta.object_id = static_cast<guint64>(object_id);
-        object_meta.class_id = class_id;
-        object_meta.rect_params.left = left;
-        object_meta.rect_params.top = top;
-        object_meta.rect_params.width = width;
-        object_meta.rect_params.height = height;
-
-        NvDsObjEncUsrArgs args{};
-        args.saveImg = TRUE;
-        args.attachUsrMeta = FALSE;
-        args.scaleImg = FALSE;
-        args.quality = config_.overview_jpeg_quality;
-        args.isFrame = FALSE;
-        std::snprintf(args.fileNameImg, sizeof(args.fileNameImg), "%s", file_path.c_str());
-
-        if (!nvds_obj_enc_process(enc_ctx_, &args, entry.surface, &object_meta, &frame_meta)) {
-            failure_reason = "crop_encode_failed";
+        if (!FrameImageMaterializer::encode_crop_to_file(
+                enc_ctx_, entry, left, top, width, height, class_id, object_id, file_path,
+                config_.overview_jpeg_quality, failure_reason)) {
             return false;
         }
 
         out_refs.push_back(output_ref);
-    }
-
-    if (!out_refs.empty()) {
-        nvds_obj_enc_finish(enc_ctx_);
     }
     return true;
 }

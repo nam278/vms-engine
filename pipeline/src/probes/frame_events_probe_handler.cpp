@@ -3,6 +3,7 @@
 #include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/pipeline/evidence/frame_evidence_cache.hpp"
+#include "engine/pipeline/extproc/frame_events_ext_proc_service.hpp"
 
 #include <gstnvdsmeta.h>
 #include <nlohmann/json.hpp>
@@ -153,17 +154,21 @@ std::string build_signature(const std::vector<FrameEventObject>& objects) {
 
 }  // namespace
 
-void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConfig& config,
-                                        const engine::core::config::EventHandlerConfig& handler,
-                                        engine::core::messaging::IMessageProducer* producer,
-                                        engine::pipeline::evidence::FrameEvidenceCache* cache) {
+void FrameEventsProbeHandler::configure(
+    const engine::core::config::PipelineConfig& config,
+    const engine::core::config::EventHandlerConfig& handler,
+    engine::core::messaging::IMessageProducer* producer,
+    engine::pipeline::evidence::FrameEvidenceCache* cache,
+    engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service) {
     pipeline_id_ = config.pipeline.id;
+    handler_id_ = handler.id;
     source_width_ = config.sources.width;
     source_height_ = config.sources.height;
     broker_channel_ = handler.channel;
     label_filter_ = handler.label_filter;
     producer_ = producer;
     cache_ = cache;
+    ext_proc_service_ = ext_proc_service;
     if (handler.frame_events) {
         config_ = *handler.frame_events;
     }
@@ -248,8 +253,8 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
             object.crop_ref = build_crop_ref(capture_meta, object);
         }
 
+        bool cached_frame = false;
         if (self->cache_ && batch_surface) {
-            bool cached_frame = false;
             // Cache only emitted frames so downstream evidence requests can target the
             // exact semantic frame_key that triggered business logic.
             std::vector<engine::pipeline::evidence::FrameObjectSnapshot> cached_objects;
@@ -285,6 +290,34 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
         }
 
         self->publish_frame_message(capture_meta, emit_reason, objects);
+
+        if (cached_frame && self->ext_proc_service_ && self->config_.ext_processor &&
+            self->config_.ext_processor->enable) {
+            for (const auto& object : objects) {
+                engine::pipeline::extproc::FrameEventsExtProcJob job;
+                job.handler_id = self->handler_id_;
+                job.pipeline_id = capture_meta.pipeline_id;
+                job.source_id = capture_meta.source_id;
+                job.source_name = capture_meta.source_name;
+                job.frame_key = capture_meta.frame_key;
+                job.frame_ts_ms = capture_meta.frame_ts_ms;
+                job.overview_ref = capture_meta.overview_ref;
+                job.crop_ref = object.crop_ref;
+                job.object_key = object.object_key;
+                job.instance_key = object.instance_key;
+                job.object_id = object.object_id;
+                job.tracker_id = object.tracker_id;
+                job.class_id = object.class_id;
+                job.object_type = object.object_type;
+                job.confidence = object.confidence;
+                job.has_bbox = true;
+                job.left = object.left;
+                job.top = object.top;
+                job.width = object.width;
+                job.height = object.height;
+                self->ext_proc_service_->enqueue(job);
+            }
+        }
     }
 
     gst_buffer_unmap(buffer, &map_info);

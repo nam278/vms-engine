@@ -1,4 +1,4 @@
-// pipeline/include/engine/pipeline/probes/ext_proc_svc.hpp
+// pipeline/include/engine/pipeline/extproc/ext_proc_svc.hpp
 #pragma once
 
 #include "engine/core/config/config_types.hpp"
@@ -12,7 +12,7 @@ typedef struct _NvDsObjectMeta NvDsObjectMeta;
 typedef struct _NvDsFrameMeta NvDsFrameMeta;
 struct NvBufSurface;
 
-namespace engine::pipeline::probes {
+namespace engine::pipeline::extproc {
 
 /**
  * @brief External processor service — HTTP-based AI enrichment for detected
@@ -85,4 +85,4 @@ class ExternalProcessorService {
     std::shared_ptr<Impl> pimpl_;
 };
 
-}  // namespace engine::pipeline::probes
+}  // namespace engine::pipeline::extproc

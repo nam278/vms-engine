@@ -29,7 +29,7 @@
 #include "engine/core/config/config_types.hpp"
 #include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/utils/uuid_v7_generator.hpp"
-#include "engine/pipeline/probes/ext_proc_svc.hpp"
+#include "engine/pipeline/extproc/ext_proc_svc.hpp"
 
 #include <gst/gst.h>
 #include <nvbufsurface.h>
@@ -181,7 +181,7 @@ class CropObjectHandler {
 
     // -- External Processor Service ------------------------------------------
     /** @brief Optional HTTP-based enrichment service (face-rec, plate lookup, …). */
-    std::unique_ptr<ExternalProcessorService> ext_proc_svc_;
+    std::unique_ptr<engine::pipeline::extproc::ExternalProcessorService> ext_proc_svc_;
 
     // -- Message Broker ------------------------------------------------------
     engine::core::messaging::IMessageProducer* producer_ = nullptr;  ///< Borrowed, not owned

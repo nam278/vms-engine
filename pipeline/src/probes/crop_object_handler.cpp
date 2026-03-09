@@ -111,7 +111,7 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
     ext_proc_svc_.reset();
     if (handler.ext_processor && handler.ext_processor->enable &&
         !handler.ext_processor->rules.empty()) {
-        ext_proc_svc_ = std::make_unique<ExternalProcessorService>();
+        ext_proc_svc_ = std::make_unique<engine::pipeline::extproc::ExternalProcessorService>();
         ext_proc_svc_->configure(*handler.ext_processor, pipeline_id_, producer, broker_channel_);
     }
 

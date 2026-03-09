@@ -234,6 +234,36 @@ struct ExtProcessorConfig {
     std::vector<ExtProcessorRule> rules;
 };
 
+/** @brief One frame-events external processing rule (e.g. face-rec, LPR). */
+struct FrameEventsExtProcRule {
+    std::string label;         ///< Object label to match (e.g. "face")
+    std::string endpoint;      ///< HTTP endpoint URL
+    std::string result_path;   ///< JSON path to primary result value
+    std::string display_path;  ///< JSON path to human-readable display text
+    std::unordered_map<std::string, std::string> params;  ///< Extra query parameters
+    bool crop_ref_preferred = true;  ///< Prefer deterministic crop_ref from frame_events.
+};
+
+/**
+ * @brief Async external enrichment sidecar for `trigger: frame_events`.
+ *
+ * Unlike the legacy root-level `ext_processor` block used by `crop_objects`,
+ * this config runs after semantic publish using cached emitted frames.
+ */
+struct FrameEventsExtProcConfig {
+    bool enable = false;
+    std::string publish_channel;  ///< Dedicated broker channel/topic for ext_proc events.
+    int min_interval_sec = 5;
+    int queue_capacity = 256;
+    int worker_threads = 2;
+    int jpeg_quality = 80;
+    int connect_timeout_ms = 5000;
+    int request_timeout_ms = 10000;
+    bool emit_empty_result = false;
+    bool include_overview_ref = true;
+    std::vector<FrameEventsExtProcRule> rules;
+};
+
 /**
  * @brief Semantic emit policy for `trigger: frame_events`.
  *
@@ -265,6 +295,8 @@ struct FrameEventsConfig {
     bool emit_on_parent_change = true;
     ///< If true, allow empty semantic frames to be published.
     bool emit_empty_frames = false;
+    ///< Optional async external enrichment sidecar for emitted frame_events.
+    std::optional<FrameEventsExtProcConfig> ext_processor;
 };
 
 /**

@@ -1,6 +1,7 @@
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
 #include "engine/pipeline/probes/class_id_namespace_handler.hpp"
 #include "engine/pipeline/probes/crop_object_handler.hpp"
+#include "engine/pipeline/extproc/frame_events_ext_proc_service.hpp"
 #include "engine/pipeline/probes/frame_events_probe_handler.hpp"
 #include "engine/pipeline/probes/smart_record_probe_handler.hpp"
 #include "engine/core/utils/logger.hpp"
@@ -9,9 +10,11 @@ namespace engine::pipeline::probes {
 
 ProbeHandlerManager::ProbeHandlerManager(GstElement* pipeline) : pipeline_(pipeline) {}
 
-bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConfig& config,
-                                        engine::core::messaging::IMessageProducer* producer,
-                                        engine::pipeline::evidence::FrameEvidenceCache* cache) {
+bool ProbeHandlerManager::attach_probes(
+    const engine::core::config::PipelineConfig& config,
+    engine::core::messaging::IMessageProducer* producer,
+    engine::pipeline::evidence::FrameEvidenceCache* cache,
+    engine::pipeline::extproc::FrameEventsExtProcService* ext_proc_service) {
     for (const auto& cfg : config.event_handlers) {
         if (!cfg.enable) {
             LOG_D("ProbeHandlerManager: handler '{}' disabled, skipping", cfg.id);
@@ -71,7 +74,7 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
             // ── frame_events ───────────────────────────────────────────
         } else if (cfg.trigger == "frame_events") {
             auto* handler = new FrameEventsProbeHandler();
-            handler->configure(config, cfg, producer, cache);
+            handler->configure(config, cfg, producer, cache, ext_proc_service);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, FrameEventsProbeHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<FrameEventsProbeHandler*>(ud); });

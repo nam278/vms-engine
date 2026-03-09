@@ -151,6 +151,24 @@ std::shared_ptr<const CachedFrameEntry> FrameEvidenceCache::resolve(const std::s
     return best_match;
 }
 
+const FrameObjectSnapshot* FrameEvidenceCache::find_object(const CachedFrameEntry& entry,
+                                                           const std::string& object_key,
+                                                           const std::string& instance_key,
+                                                           int64_t object_id) const {
+    for (const auto& object : entry.objects) {
+        if (!object_key.empty() && object.object_key == object_key) {
+            return &object;
+        }
+        if (!instance_key.empty() && object.instance_key == instance_key) {
+            return &object;
+        }
+        if (object_id >= 0 && object.object_id == static_cast<uint64_t>(object_id)) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
 void FrameEvidenceCache::clear() {
     std::lock_guard<std::mutex> lk(mutex_);
     entries_.clear();
