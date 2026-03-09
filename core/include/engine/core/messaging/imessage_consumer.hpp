@@ -21,7 +21,8 @@ class IMessageConsumer {
    public:
     virtual ~IMessageConsumer() = default;
 
-    virtual bool connect(const std::string& host, int port, const std::string& channel = "") = 0;
+    virtual bool connect(const std::string& host, int port, const std::string& channel = "",
+                         const std::string& consumer_scope = "") = 0;
     virtual bool subscribe(const std::string& channel) = 0;
     virtual bool poll(int timeout_ms, ConsumedMessage& out_message) = 0;
     virtual bool ack(const ConsumedMessage& message) = 0;

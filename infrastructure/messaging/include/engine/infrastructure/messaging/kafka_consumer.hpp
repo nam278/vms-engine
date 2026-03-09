@@ -11,6 +11,9 @@ namespace engine::infrastructure::messaging {
 
 /**
  * @brief Kafka consumer backed by librdkafka C++ API.
+ *
+ * Uses a stable consumer group derived from pipeline scope and
+ * `auto.offset.reset=latest`.
  */
 class KafkaConsumer : public engine::core::messaging::IMessageConsumer {
    public:
@@ -20,7 +23,8 @@ class KafkaConsumer : public engine::core::messaging::IMessageConsumer {
     KafkaConsumer(const KafkaConsumer&) = delete;
     KafkaConsumer& operator=(const KafkaConsumer&) = delete;
 
-    bool connect(const std::string& host, int port, const std::string& channel = "") override;
+    bool connect(const std::string& host, int port, const std::string& channel = "",
+                 const std::string& consumer_scope = "") override;
     bool subscribe(const std::string& channel) override;
     bool poll(int timeout_ms, engine::core::messaging::ConsumedMessage& out_message) override;
     bool ack(const engine::core::messaging::ConsumedMessage& message) override;
@@ -33,6 +37,7 @@ class KafkaConsumer : public engine::core::messaging::IMessageConsumer {
 
     std::string brokers_;
     std::string default_topic_;
+    std::string consumer_scope_;
     std::vector<std::string> subscriptions_;
     mutable std::mutex mtx_;
 };

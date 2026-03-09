@@ -57,6 +57,8 @@ std::string sanitize_ref_component(const std::string& value) {
 std::string build_overview_ref(const engine::pipeline::evidence::FrameCaptureMetadata& meta) {
     const std::string safe_pipeline = sanitize_ref_component(meta.pipeline_id);
     const std::string safe_source_name = sanitize_ref_component(meta.source_name);
+    // Publish only the flat filename/ref. save_dir is applied later by the
+    // evidence materialization path when writing the JPEG to disk.
     return safe_pipeline + "_" + safe_source_name + "_" + std::to_string(meta.frame_num) + "_" +
            std::to_string(meta.frame_ts_ms) + "_overview.jpg";
 }
@@ -65,6 +67,8 @@ std::string build_crop_ref(const engine::pipeline::evidence::FrameCaptureMetadat
                            const FrameEventObject& object) {
     const std::string safe_pipeline = sanitize_ref_component(meta.pipeline_id);
     const std::string safe_source_name = sanitize_ref_component(meta.source_name);
+    // Publish only the flat filename/ref. save_dir is applied later by the
+    // evidence materialization path when writing the JPEG to disk.
     return safe_pipeline + "_" + safe_source_name + "_" + std::to_string(meta.frame_num) + "_" +
            std::to_string(meta.frame_ts_ms) + "_crop_" + std::to_string(object.object_id) + ".jpg";
 }
@@ -207,9 +211,10 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
                                             ? self->source_id_to_name_.at(source_id)
                                             : ("source_" + std::to_string(source_id));
         const int64_t emitted_at_ms = now_epoch_ms();
-        const int64_t frame_ts_ms = GST_CLOCK_TIME_IS_VALID(frame_meta->buf_pts)
-                                        ? static_cast<int64_t>(frame_meta->buf_pts / GST_MSECOND)
-                                        : emitted_at_ms;
+        // Export wall-clock epoch milliseconds so downstream can compare frame_ts_ms
+        // directly with emitted_at_ms and use frame_key across services without
+        // interpreting DeepStream's pipeline-relative buf_pts domain.
+        const int64_t frame_ts_ms = emitted_at_ms;
         const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
         const std::string frame_key =
             make_frame_key(self->pipeline_id_, source_name, frame_num, frame_ts_ms);
@@ -243,9 +248,8 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
             object.crop_ref = build_crop_ref(capture_meta, object);
         }
 
-        self->publish_frame_message(capture_meta, emit_reason, objects);
-
         if (self->cache_ && batch_surface) {
+            bool cached_frame = false;
             // Cache only emitted frames so downstream evidence requests can target the
             // exact semantic frame_key that triggered business logic.
             std::vector<engine::pipeline::evidence::FrameObjectSnapshot> cached_objects;
@@ -270,9 +274,17 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
                 cached_objects.push_back(std::move(snapshot));
             }
 
-            self->cache_->store_frame(capture_meta, cached_objects, batch_surface,
-                                      static_cast<int>(frame_meta->batch_id));
+            cached_frame = self->cache_->store_frame(capture_meta, cached_objects, batch_surface,
+                                                     static_cast<int>(frame_meta->batch_id));
+            if (!cached_frame) {
+                LOG_W(
+                    "FrameEventsProbeHandler: failed to cache emitted frame_key='{}' before "
+                    "publish",
+                    capture_meta.frame_key);
+            }
         }
+
+        self->publish_frame_message(capture_meta, emit_reason, objects);
     }
 
     gst_buffer_unmap(buffer, &map_info);

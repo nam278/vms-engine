@@ -23,7 +23,8 @@ KafkaConsumer::~KafkaConsumer() {
     disconnect();
 }
 
-bool KafkaConsumer::connect(const std::string& host, int port, const std::string& channel) {
+bool KafkaConsumer::connect(const std::string& host, int port, const std::string& channel,
+                            const std::string& consumer_scope) {
     std::lock_guard<std::mutex> lk(mtx_);
 
     if (impl_->consumer) {
@@ -34,6 +35,7 @@ bool KafkaConsumer::connect(const std::string& host, int port, const std::string
     if (!channel.empty()) {
         default_topic_ = channel;
     }
+    consumer_scope_ = consumer_scope.empty() ? std::string("default") : consumer_scope;
 
     std::string errstr;
     std::unique_ptr<RdKafka::Conf> conf(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL));
@@ -42,7 +44,7 @@ bool KafkaConsumer::connect(const std::string& host, int port, const std::string
         return false;
     }
 
-    const std::string group_id = "vms-engine-evidence-" + std::to_string(getpid());
+    const std::string group_id = consumer_scope_;
     conf->set("group.id", group_id, errstr);
     conf->set("enable.auto.commit", "true", errstr);
     conf->set("auto.offset.reset", "latest", errstr);
@@ -53,7 +55,8 @@ bool KafkaConsumer::connect(const std::string& host, int port, const std::string
         return false;
     }
 
-    LOG_I("KafkaConsumer: consumer created for {} group={}", brokers_, group_id);
+    LOG_I("KafkaConsumer: consumer created for {} group={} topic='{}'", brokers_, group_id,
+          default_topic_);
     if (!default_topic_.empty()) {
         return subscribe(default_topic_);
     }
@@ -76,7 +79,8 @@ bool KafkaConsumer::subscribe(const std::string& channel) {
         return false;
     }
 
-    LOG_I("KafkaConsumer: subscribed to {} topic(s)", subscriptions_.size());
+    LOG_I("KafkaConsumer: subscribed to {} topic(s) group={}", subscriptions_.size(),
+          consumer_scope_);
     return true;
 }
 

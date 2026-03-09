@@ -15,8 +15,10 @@ namespace engine::infrastructure::messaging {
 /**
  * @brief Minimal Redis Streams consumer based on XREAD.
  *
- * Reads new entries only by default (`$`) and converts flat Redis field/value
- * pairs back into a JSON object payload string.
+ * Reads new entries only by default (`$`) and resets to `$` again on
+ * reconnect/resubscribe. Consumer scope is tracked for logging/operations,
+ * then flat Redis field/value pairs are converted back into a JSON object
+ * payload string.
  */
 class RedisStreamConsumer : public engine::core::messaging::IMessageConsumer {
    public:
@@ -26,7 +28,8 @@ class RedisStreamConsumer : public engine::core::messaging::IMessageConsumer {
     RedisStreamConsumer(const RedisStreamConsumer&) = delete;
     RedisStreamConsumer& operator=(const RedisStreamConsumer&) = delete;
 
-    bool connect(const std::string& host, int port, const std::string& channel = "") override;
+    bool connect(const std::string& host, int port, const std::string& channel = "",
+                 const std::string& consumer_scope = "") override;
     bool subscribe(const std::string& channel) override;
     bool poll(int timeout_ms, engine::core::messaging::ConsumedMessage& out_message) override;
     bool ack(const engine::core::messaging::ConsumedMessage& message) override;
@@ -41,6 +44,7 @@ class RedisStreamConsumer : public engine::core::messaging::IMessageConsumer {
     redisContext* ctx_ = nullptr;
     std::mutex ctx_mtx_;
     std::atomic<bool> connected_{false};
+    std::string consumer_scope_;
     std::vector<std::string> channels_;
     std::unordered_map<std::string, std::string> last_ids_;
 

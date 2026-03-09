@@ -19,8 +19,10 @@ _deps/
 vcpkg_installed/
 
 # Runtime data — git-ignored, only .gitkeep is tracked
+venv
 dev/*
 !dev/.gitkeep
+!dev/scripts/
 
 # Logs
 *.log

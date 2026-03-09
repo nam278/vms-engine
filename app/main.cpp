@@ -220,10 +220,11 @@ std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consum
     }
 
     if (messaging.type == "kafka") {
-        LOG_I("Messaging: creating Kafka consumer ({}:{}) topic='{}'", messaging.host,
-              messaging.port, evidence.request_channel);
+        LOG_I("Messaging: creating Kafka consumer ({}:{}) topic='{}' group='{}'", messaging.host,
+              messaging.port, evidence.request_channel, config.pipeline.id);
         auto consumer = std::make_unique<engine::infrastructure::messaging::KafkaConsumer>();
-        if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel)) {
+        if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel,
+                               config.pipeline.id)) {
             LOG_W("Messaging: Kafka consumer connection failed ({}:{})", messaging.host,
                   messaging.port);
             return nullptr;
@@ -231,10 +232,11 @@ std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consum
         return consumer;
     }
 
-    LOG_I("Messaging: creating Redis consumer ({}:{}) stream='{}'", messaging.host, messaging.port,
-          evidence.request_channel);
+    LOG_I("Messaging: creating Redis consumer ({}:{}) stream='{}' scope='{}'", messaging.host,
+          messaging.port, evidence.request_channel, config.pipeline.id);
     auto consumer = std::make_unique<engine::infrastructure::messaging::RedisStreamConsumer>();
-    if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel)) {
+    if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel,
+                           config.pipeline.id)) {
         LOG_W("Messaging: Redis consumer connection failed ({}:{})", messaging.host,
               messaging.port);
         return nullptr;

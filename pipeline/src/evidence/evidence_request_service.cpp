@@ -362,7 +362,7 @@ bool EvidenceRequestService::encode_overview(const CachedFrameEntry& entry,
         return false;
     }
     nvds_obj_enc_finish(enc_ctx_);
-    out_ref = file_path;
+    out_ref = output_ref;
     return true;
 }
 
@@ -456,7 +456,7 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
             return false;
         }
 
-        out_refs.push_back(file_path);
+        out_refs.push_back(output_ref);
     }
 
     if (!out_refs.empty()) {

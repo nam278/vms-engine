@@ -17,9 +17,11 @@ RedisStreamConsumer::~RedisStreamConsumer() {
     disconnect();
 }
 
-bool RedisStreamConsumer::connect(const std::string& host, int port, const std::string& channel) {
+bool RedisStreamConsumer::connect(const std::string& host, int port, const std::string& channel,
+                                  const std::string& consumer_scope) {
     host_ = host;
     port_ = port;
+    consumer_scope_ = consumer_scope.empty() ? std::string("default") : consumer_scope;
 
     std::lock_guard<std::mutex> lk(ctx_mtx_);
     if (!do_connect()) {
@@ -65,8 +67,14 @@ bool RedisStreamConsumer::do_connect() {
         return false;
     }
     freeReplyObject(reply);
+
+    for (const auto& channel : channels_) {
+        last_ids_[channel] = "$";
+    }
+
     connected_.store(true);
-    LOG_I("RedisStreamConsumer: connected to {}:{}", host_, port_);
+    LOG_I("RedisStreamConsumer: connected to {}:{} scope='{}' (new messages only)", host_, port_,
+          consumer_scope_);
     return true;
 }
 
@@ -77,9 +85,12 @@ bool RedisStreamConsumer::subscribe(const std::string& channel) {
 
     if (std::find(channels_.begin(), channels_.end(), channel) == channels_.end()) {
         channels_.push_back(channel);
-        last_ids_[channel] = "$";
-        LOG_I("RedisStreamConsumer: subscribed to stream '{}'", channel);
     }
+    // Always start from '$' on subscribe/resubscribe so this consumer only sees
+    // entries produced after the subscription point.
+    last_ids_[channel] = "$";
+    LOG_I("RedisStreamConsumer: subscribed to stream '{}' scope='{}' from latest id '$'", channel,
+          consumer_scope_);
     return true;
 }
 
