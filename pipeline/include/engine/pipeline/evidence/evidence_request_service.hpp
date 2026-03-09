@@ -49,8 +49,6 @@ struct EvidenceRequestJob {
     std::string frame_key;
     int64_t frame_ts_ms = 0;
     std::string overview_ref;
-    std::string event_id;
-    std::string timeline_id;
     std::vector<std::string> evidence_types;
     std::vector<EvidenceRequestObject> objects;
     std::string raw_payload;

@@ -603,8 +603,6 @@ frame=1238 object=42 raw_label_signature='helmet|vest' vote_window=5/5 provision
   "frame_key": "de1:camera-01:1234:1741593005123",
   "frame_ts_ms": 1741593005123,
   "overview_ref": "de1_camera-01_1234_1741593005123_overview.jpg",
-  "event_id": "0195a9d2-2b1f-7d3a-b51a-e2d1f4b6c001",
-  "timeline_id": "0195a9d2-2b20-79df-83a3-fbfad469a4d1",
   "evidence_types": ["overview", "crop"],
   "objects": [
     {
@@ -644,8 +642,6 @@ Rules hiện tại của service:
   "frame_key": "de1:camera-01:1234:1741593005123",
   "frame_ts_ms": 1741593005123,
   "status": "ok",
-  "event_id": "0195a9d2-2b1f-7d3a-b51a-e2d1f4b6c001",
-  "timeline_id": "0195a9d2-2b20-79df-83a3-fbfad469a4d1",
   "generated_at_ms": 1741593006314,
   "overview_ref": "/opt/vms_engine/dev/rec/frames/de1_camera-01_1234_1741593005123_overview.jpg",
   "crop_refs": [
@@ -667,8 +663,6 @@ Rules hiện tại của service:
   "frame_key": "de1:camera-01:1220:1741592999000",
   "frame_ts_ms": 1741592999000,
   "status": "not_found",
-  "event_id": "0195a9d2-2b1f-7d3a-b51a-e2d1f4b6c001",
-  "timeline_id": "0195a9d2-2b20-79df-83a3-fbfad469a4d1",
   "generated_at_ms": 1741593009058,
   "failure_reason": "frame_not_in_cache"
 }

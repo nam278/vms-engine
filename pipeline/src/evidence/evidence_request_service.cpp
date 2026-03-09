@@ -221,8 +221,6 @@ bool EvidenceRequestService::parse_request_payload(const std::string& payload,
     out_job.frame_key = json_string(node, "frame_key");
     out_job.frame_ts_ms = json_int64(node, "frame_ts_ms", 0);
     out_job.overview_ref = json_string(node, "overview_ref");
-    out_job.event_id = json_string(node, "event_id");
-    out_job.timeline_id = json_string(node, "timeline_id");
     out_job.evidence_types = parse_string_list(node, "evidence_types");
 
     if (out_job.pipeline_id.empty() || out_job.source_name.empty() || out_job.source_id < 0 ||
@@ -521,8 +519,6 @@ void EvidenceRequestService::publish_ready(const EvidenceRequestJob& job, const 
     ready["frame_key"] = job.frame_key;
     ready["frame_ts_ms"] = job.frame_ts_ms;
     ready["status"] = status;
-    ready["event_id"] = job.event_id;
-    ready["timeline_id"] = job.timeline_id;
     ready["generated_at_ms"] = now_epoch_ms();
     if (!overview_ref.empty()) {
         ready["overview_ref"] = overview_ref;
