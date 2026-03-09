@@ -6,6 +6,7 @@
 #include <gstnvdsmeta.h>
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,9 +37,13 @@ struct FrameEventObject {
     uint64_t object_id = 0;
     uint64_t tracker_id = 0;
     int class_id = 0;
+    ///< Primary detector label from `NvDsObjectMeta::obj_label`.
     std::string object_type;
     double confidence = 0.0;
+    ///< First observed SGIE labels before commit, then stable voted SGIE labels after commit.
     std::vector<std::string> labels;
+    ///< Internal stable signature used only for label_change decisions.
+    std::string label_signature;
     float left = 0.0F;
     float top = 0.0F;
     float width = 0.0F;
@@ -51,6 +56,7 @@ struct FrameEventObject {
 /** @brief Last emitted view of one tracked object, used for change detection. */
 struct LastEmittedObjectState {
     std::string object_type;
+    std::string label_signature;
     int class_id = 0;
     int64_t parent_object_id = -1;
     float left = 0.0F;
@@ -59,11 +65,25 @@ struct LastEmittedObjectState {
     float height = 0.0F;
 };
 
+struct LabelVoteSample {
+    std::string signature;
+    std::vector<std::string> labels;
+};
+
+struct LabelVoteState {
+    std::deque<LabelVoteSample> samples;
+    bool provisional_initialized = false;
+    std::vector<std::string> provisional_labels;
+    std::string committed_signature;
+    std::vector<std::string> committed_labels;
+};
+
 /** @brief Per-source semantic state used for heartbeat and emit suppression. */
 struct PerSourceEmitState {
     int64_t last_emit_ms = 0;
     bool had_detection = false;
     std::unordered_map<uint64_t, LastEmittedObjectState> objects;
+    std::unordered_map<uint64_t, LabelVoteState> label_votes;
     std::string last_object_signature;
 };
 
@@ -74,7 +94,7 @@ class FrameEventsProbeHandler {
 
     void configure(const engine::core::config::PipelineConfig& config,
                    const engine::core::config::EventHandlerConfig& handler,
-                   engine::core::messaging::IMessageProducer* producer,
+                   engine::core::messaging::IMessageProducer* eproducer,
                    engine::pipeline::evidence::FrameEvidenceCache* cache);
 
     static GstPadProbeReturn on_buffer(GstPad* pad, GstPadProbeInfo* info, gpointer user_data);
@@ -84,8 +104,11 @@ class FrameEventsProbeHandler {
     void collect_frame_objects(NvDsFrameMeta* frame_meta, const std::string& source_name,
                                const std::string& frame_key,
                                std::vector<FrameEventObject>& out_objects) const;
+    // Smooth SGIE label jitter with sliding-window majority vote per object.
+    void apply_label_majority_vote(PerSourceEmitState& state,
+                                   std::vector<FrameEventObject>& objects) const;
     // Apply the emit policy and explain why this frame should be published.
-    bool should_emit_message(int source_id, const std::vector<FrameEventObject>& objects,
+    bool should_emit_message(int source_id, std::vector<FrameEventObject>& objects,
                              int64_t emitted_at_ms, std::vector<std::string>& out_reasons);
     // Publish the canonical one-frame payload consumed by downstream rule engines.
     void publish_frame_message(const engine::pipeline::evidence::FrameCaptureMetadata& meta,

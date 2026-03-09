@@ -74,7 +74,7 @@ evidence:
   save_dir: "/opt/vms_engine/dev/rec/frames"
   frame_cache_ttl_ms: 10000
   max_frame_gap_ms: 250
-  overview_jpeg_quality: 80
+  overview_jpeg_quality: 85
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
@@ -311,7 +311,7 @@ event_handlers:
   # nvmultiurisrcbin (referenced by source_element).
   # ---------------------------------------------------------------------------
   - id: smart_record
-    enable: false
+    enable: true
     type: on_detect
     probe_element: tracker # attach pad probe to tracker's src pad
     source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
@@ -329,7 +329,7 @@ event_handlers:
   - id: frame_events
     enable: true
     type: on_detect
-    probe_element: tracker
+    probe_element: sgie_classification
     pad_name: src
     trigger: frame_events
     channel: worker_lsr_frame_events
@@ -343,6 +343,7 @@ event_handlers:
       emit_on_first_frame: true
       emit_on_object_set_change: true
       emit_on_label_change: true
+      label_vote_window_frames: 5
       emit_on_parent_change: true
       emit_empty_frames: false
 
@@ -353,7 +354,7 @@ event_handlers:
   - id: crop_objects
     enable: false
     type: on_detect
-    probe_element: tracker
+    probe_element: sgie_classification
     trigger: crop_objects
     channel: worker_lsr_snap # Redis Stream / Kafka topic to publish crop events
     label_filter: [bike, bus, car, person, truck]

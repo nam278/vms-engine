@@ -11,7 +11,10 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 using json = nlohmann::json;
 
@@ -66,6 +69,61 @@ std::string build_crop_ref(const engine::pipeline::evidence::FrameCaptureMetadat
            std::to_string(meta.frame_ts_ms) + "_crop_" + std::to_string(object.object_id) + ".jpg";
 }
 
+std::vector<std::string> collect_sgie_labels(NvDsObjectMeta* object_meta) {
+    std::vector<std::string> labels;
+    if (!object_meta || !object_meta->classifier_meta_list) {
+        return labels;
+    }
+
+    for (NvDsMetaList* classifier_iter = object_meta->classifier_meta_list; classifier_iter;
+         classifier_iter = classifier_iter->next) {
+        auto* classifier_meta = static_cast<NvDsClassifierMeta*>(classifier_iter->data);
+        if (!classifier_meta) {
+            continue;
+        }
+
+        for (NvDsMetaList* label_iter = classifier_meta->label_info_list; label_iter;
+             label_iter = label_iter->next) {
+            auto* label_info = static_cast<NvDsLabelInfo*>(label_iter->data);
+            if (!label_info) {
+                continue;
+            }
+
+            std::ostringstream oss;
+            oss << (label_info->result_label ? label_info->result_label : "") << ":"
+                << label_info->label_id << ":" << std::fixed << std::setprecision(2)
+                << label_info->result_prob;
+            labels.push_back(oss.str());
+        }
+    }
+
+    return labels;
+}
+
+std::string build_label_signature(const std::vector<std::string>& labels) {
+    if (labels.empty()) {
+        return "";
+    }
+
+    std::vector<std::string> parts = labels;
+    for (auto& part : parts) {
+        const size_t separator = part.find(':');
+        if (separator != std::string::npos) {
+            part = part.substr(0, separator);
+        }
+    }
+    std::sort(parts.begin(), parts.end());
+
+    std::ostringstream joined;
+    for (size_t index = 0; index < parts.size(); ++index) {
+        if (index > 0) {
+            joined << '|';
+        }
+        joined << parts[index];
+    }
+    return joined.str();
+}
+
 // Build a stable signature for the object set on one frame.
 // Sorting makes it resilient to metadata iteration order changes.
 std::string build_signature(const std::vector<FrameEventObject>& objects) {
@@ -110,9 +168,10 @@ void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConf
 
     LOG_I(
         "FrameEventsProbeHandler: configured channel='{}' heartbeat_ms={} min_gap_ms={} "
-        "emit_on_motion_change={} emit_empty_frames={} filters={}",
+        "label_vote_window_frames={} emit_on_motion_change={} emit_empty_frames={} filters={}",
         broker_channel_, config_.heartbeat_interval_ms, config_.min_emit_gap_ms,
-        config_.emit_on_motion_change, config_.emit_empty_frames, label_filter_.size());
+        config_.label_vote_window_frames, config_.emit_on_motion_change, config_.emit_empty_frames,
+        label_filter_.size());
 }
 
 GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProbeInfo* info,
@@ -242,7 +301,7 @@ void FrameEventsProbeHandler::collect_frame_objects(
         object.class_id = static_cast<int>(object_meta->class_id);
         object.object_type = label;
         object.confidence = object_meta->confidence;
-        object.labels.push_back(label);
+        object.labels = collect_sgie_labels(object_meta);
         object.left = object_meta->rect_params.left;
         object.top = object_meta->rect_params.top;
         object.width = object_meta->rect_params.width;
@@ -264,7 +323,7 @@ void FrameEventsProbeHandler::collect_frame_objects(
 }
 
 bool FrameEventsProbeHandler::should_emit_message(int source_id,
-                                                  const std::vector<FrameEventObject>& objects,
+                                                  std::vector<FrameEventObject>& objects,
                                                   int64_t emitted_at_ms,
                                                   std::vector<std::string>& out_reasons) {
     auto& state = emit_state_[source_id];
@@ -275,6 +334,8 @@ bool FrameEventsProbeHandler::should_emit_message(int source_id,
         reset_source_state(source_id);
         return false;
     }
+
+    apply_label_majority_vote(state, objects);
 
     const std::string signature = build_signature(objects);
     const int64_t elapsed_ms = state.last_emit_ms > 0 ? emitted_at_ms - state.last_emit_ms : 0;
@@ -297,8 +358,10 @@ bool FrameEventsProbeHandler::should_emit_message(int source_id,
         }
 
         const auto& previous = previous_it->second;
+        const std::string& current_label_signature = object.label_signature;
         if (config_.emit_on_label_change &&
-            (previous.object_type != object.object_type || previous.class_id != object.class_id)) {
+            (previous.object_type != object.object_type || previous.class_id != object.class_id ||
+             previous.label_signature != current_label_signature)) {
             has_label_change = true;
         }
         if (config_.emit_on_parent_change && previous.parent_object_id != object.parent_object_id) {
@@ -352,6 +415,7 @@ bool FrameEventsProbeHandler::should_emit_message(int source_id,
     for (const auto& object : objects) {
         LastEmittedObjectState object_state;
         object_state.object_type = object.object_type;
+        object_state.label_signature = object.label_signature;
         object_state.class_id = object.class_id;
         object_state.parent_object_id = object.parent_object_id;
         object_state.left = object.left;
@@ -419,8 +483,83 @@ void FrameEventsProbeHandler::reset_source_state(int source_id) {
     }
 
     it->second.had_detection = false;
+    it->second.label_votes.clear();
     it->second.objects.clear();
     it->second.last_object_signature.clear();
+}
+
+void FrameEventsProbeHandler::apply_label_majority_vote(
+    PerSourceEmitState& state, std::vector<FrameEventObject>& objects) const {
+    const size_t window_size = static_cast<size_t>(std::max(1, config_.label_vote_window_frames));
+    std::unordered_set<uint64_t> seen_object_ids;
+    seen_object_ids.reserve(objects.size());
+
+    for (auto& object : objects) {
+        seen_object_ids.insert(object.object_id);
+
+        auto& vote_state = state.label_votes[object.object_id];
+        LabelVoteSample sample;
+        sample.signature = build_label_signature(object.labels);
+        sample.labels = object.labels;
+        if (!vote_state.provisional_initialized) {
+            vote_state.provisional_initialized = true;
+            vote_state.provisional_labels = object.labels;
+        }
+        vote_state.samples.push_back(std::move(sample));
+        while (vote_state.samples.size() > window_size) {
+            vote_state.samples.pop_front();
+        }
+
+        if (window_size == 1 && !vote_state.samples.empty()) {
+            const auto& latest = vote_state.samples.back();
+            vote_state.committed_signature = latest.signature;
+            vote_state.committed_labels = latest.labels;
+        } else if (vote_state.samples.size() >= window_size) {
+            std::unordered_map<std::string, int> counts;
+            std::unordered_map<std::string, size_t> latest_index;
+            std::unordered_map<std::string, std::vector<std::string>> latest_labels;
+            for (size_t index = 0; index < vote_state.samples.size(); ++index) {
+                const auto& observed = vote_state.samples[index];
+                counts[observed.signature] += 1;
+                latest_index[observed.signature] = index;
+                latest_labels[observed.signature] = observed.labels;
+            }
+
+            std::string winner_signature = vote_state.committed_signature;
+            int winner_count = -1;
+            size_t winner_latest_index = 0;
+            for (const auto& [signature, count] : counts) {
+                const size_t candidate_latest_index = latest_index[signature];
+                if (count > winner_count ||
+                    (count == winner_count && candidate_latest_index > winner_latest_index)) {
+                    winner_signature = signature;
+                    winner_count = count;
+                    winner_latest_index = candidate_latest_index;
+                }
+            }
+
+            if (winner_count > static_cast<int>(vote_state.samples.size() / 2U)) {
+                vote_state.committed_signature = winner_signature;
+                vote_state.committed_labels = latest_labels[winner_signature];
+            }
+        }
+
+        if (!vote_state.committed_signature.empty() || !vote_state.committed_labels.empty()) {
+            object.labels = vote_state.committed_labels;
+            object.label_signature = vote_state.committed_signature;
+        } else {
+            object.labels = vote_state.provisional_labels;
+            object.label_signature.clear();
+        }
+    }
+
+    for (auto vote_it = state.label_votes.begin(); vote_it != state.label_votes.end();) {
+        if (seen_object_ids.find(vote_it->first) == seen_object_ids.end()) {
+            vote_it = state.label_votes.erase(vote_it);
+        } else {
+            ++vote_it;
+        }
+    }
 }
 
 double FrameEventsProbeHandler::compute_iou(const LastEmittedObjectState& previous,

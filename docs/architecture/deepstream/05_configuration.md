@@ -261,7 +261,7 @@ evidence:
   save_dir: "/opt/vms_engine/dev/rec/frames"
   frame_cache_ttl_ms: 10000
   max_frame_gap_ms: 250
-  overview_jpeg_quality: 80
+  overview_jpeg_quality: 85
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
@@ -286,7 +286,7 @@ evidence:
 | `save_dir`              | string | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized    |
 | `frame_cache_ttl_ms`    | int    | 10000                            | TTL cho emitted frame snapshots                   |
 | `max_frame_gap_ms`      | int    | 250                              | Nearest-frame fallback tolerance                  |
-| `overview_jpeg_quality` | int    | 80                               | JPEG quality hiện dùng cho overview và crop       |
+| `overview_jpeg_quality` | int    | 85                               | JPEG quality hiện dùng cho overview và crop       |
 | `cache_on_frame_events` | bool   | true                             | Cache emitted frames khi evidence bật             |
 | `cache_backend`         | string | `nvbufsurface_copy`              | Backend snapshot hiện tại                         |
 | `max_frames_per_source` | int    | 16                               | Bound per `(pipeline_id, source_name, source_id)` |

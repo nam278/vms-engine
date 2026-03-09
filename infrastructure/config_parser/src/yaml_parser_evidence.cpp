@@ -24,7 +24,7 @@ void YamlConfigParser::parse_evidence(const void* node_ptr,
     out.save_dir = yaml_str(node, "save_dir", "/opt/vms_engine/dev/rec/frames");
     out.frame_cache_ttl_ms = yaml_int(node, "frame_cache_ttl_ms", 10000);
     out.max_frame_gap_ms = yaml_int(node, "max_frame_gap_ms", 250);
-    out.overview_jpeg_quality = yaml_int(node, "overview_jpeg_quality", 80);
+    out.overview_jpeg_quality = yaml_int(node, "overview_jpeg_quality", 85);
     out.cache_on_frame_events = yaml_bool(node, "cache_on_frame_events", true);
     out.cache_backend = yaml_str(node, "cache_backend", "nvbufsurface_copy");
     out.max_frames_per_source = yaml_int(node, "max_frames_per_source", 16);

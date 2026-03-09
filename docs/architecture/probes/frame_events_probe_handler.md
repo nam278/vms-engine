@@ -83,6 +83,8 @@ Trong code hiện tại, `object_set_change` dùng một signature ổn định,
 
 Các phần tử được sort trước khi join, nên reorder metadata trong cùng frame sẽ **không** tạo false-positive change event. Đây là ý nghĩa của helper `build_signature(...)` trong implementation.
 
+`objects[].labels` là contract riêng cho **SGIE classifier results**, dùng cùng verbose format với `CropObjectHandler`: mỗi phần tử có dạng `result_label:label_id:result_prob`. Tuy nhiên sliding-window majority vote chỉ lấy `result_label` (phần trước dấu `:` đầu tiên) để build signature ổn định. Các classifier labels này **không** đi vào `object_set_change`; chúng được so sánh riêng để suy ra `label_change`.
+
 ---
 
 ## 3. YAML Config
@@ -102,7 +104,7 @@ evidence:
   save_dir: "/opt/vms_engine/dev/rec/frames"
   frame_cache_ttl_ms: 10000
   max_frame_gap_ms: 250
-  overview_jpeg_quality: 80
+  overview_jpeg_quality: 85
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
@@ -126,6 +128,7 @@ event_handlers:
       emit_on_first_frame: true
       emit_on_object_set_change: true
       emit_on_label_change: true
+      label_vote_window_frames: 5
       emit_on_parent_change: true
       emit_empty_frames: false
 ```
@@ -141,7 +144,8 @@ event_handlers:
 | `emit_on_motion_change`        | `false` | Chỉ emit `motion_change` khi explicitly bật                       |
 | `emit_on_first_frame`          | `true`  | Emit ngay frame đầu tiên có detection                             |
 | `emit_on_object_set_change`    | `true`  | Emit khi tập object thay đổi                                      |
-| `emit_on_label_change`         | `true`  | Emit khi class hoặc label đổi                                     |
+| `emit_on_label_change`         | `true`  | Emit khi primary class hoặc stable SGIE labels đổi                |
+| `label_vote_window_frames`     | `5`     | Kích thước cửa sổ majority vote cho SGIE labels của từng object   |
 | `emit_on_parent_change`        | `true`  | Emit khi parent relationship đổi                                  |
 | `emit_empty_frames`            | `false` | Mặc định không spam frame rỗng                                    |
 
@@ -157,7 +161,7 @@ event_handlers:
 | `save_dir`              | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized            |
 | `frame_cache_ttl_ms`    | `10000`                          | TTL của cached emitted frames                             |
 | `max_frame_gap_ms`      | `250`                            | Fallback nearest-frame tolerance theo `frame_ts_ms`       |
-| `overview_jpeg_quality` | `80`                             | JPEG quality hiện được dùng cho cả overview và crop       |
+| `overview_jpeg_quality` | `85`                             | JPEG quality hiện được dùng cho cả overview và crop       |
 | `cache_on_frame_events` | `true`                           | Cache các frame đã emit khi evidence subsystem bật        |
 | `cache_backend`         | `nvbufsurface_copy`              | Backend snapshot hiện tại                                 |
 | `max_frames_per_source` | `16`                             | Bound per `(pipeline_id, source_name, source_id)`         |
@@ -198,7 +202,7 @@ flowchart TD
 | ------------------- | -------------------------------------------------------------------- |
 | `first_frame`       | Nguồn này trước đó chưa có detection đang active                     |
 | `object_set_change` | Signature tập object thay đổi                                        |
-| `label_change`      | Object cũ nhưng class hoặc label đổi                                 |
+| `label_change`      | Object cũ nhưng primary class hoặc stable SGIE labels đổi            |
 | `parent_change`     | Parent-child relationship đổi                                        |
 | `motion_change`     | IoU hoặc center shift vượt ngưỡng khi `emit_on_motion_change = true` |
 | `heartbeat`         | Không có thay đổi nào khác nhưng đã quá heartbeat                    |
@@ -260,23 +264,59 @@ Hàm này đọc `NvDsObjectMeta` của một source-frame và normalize về `F
 
 - skip object không có tracker id hợp lệ
 - áp `label_filter` nếu config có
+- giữ `object_type` là primary detector label từ `obj_label`
+- extract raw SGIE labels từ `NvDsClassifierMeta` theo cùng verbose format với `CropObjectHandler`: `result_label:label_id:result_prob`
 - dựng `object_key` ổn định theo `pipeline_id + source_name + object_id`
 - dựng `instance_key` riêng cho đúng frame emit hiện tại
 - kéo theo `parent_object_key`, `parent_instance_key`, `parent_object_id` nếu metadata có parent
 
-Ở bước này object mới chỉ mang semantic snapshot; `crop_ref` được gán sau khi `FrameCaptureMetadata` đã hoàn chỉnh.
+Nếu object không có classifier metadata thì raw labels sẽ là mảng rỗng. Ở bước này object mới chỉ mang semantic snapshot; `crop_ref` được gán sau khi `FrameCaptureMetadata` đã hoàn chỉnh.
 
 ### 5.4 `FrameEventsProbeHandler::should_emit_message(...)`
 
 Đây là nơi quyết định cadence:
 
 - nếu `objects.empty()`, source state bị reset và không publish
+- chạy sliding-window majority vote cho SGIE labels của từng object
 - build stable signature để detect `object_set_change`
 - so sánh với state frame trước để suy ra `label_change`, `parent_change`, và optional `motion_change`
 - nếu không có change nào nhưng quá `heartbeat_interval_ms`, thêm reason `heartbeat`
 - cuối cùng áp `min_emit_gap_ms` như burst guard
 
+`label_change` hiện bám theo hai nguồn: primary detector identity (`class_id`, `object_type`) và stable SGIE label signature. Signature này chỉ lấy `result_label` của từng entry trong `labels[]`, sort, rồi majority vote trên `label_vote_window_frames` frame quan sát gần nhất của chính object đó. Như vậy classifier drift theo `label_id` hoặc `result_prob` sẽ không tự tạo false positive.
+
+Ở `first_frame`, payload sẽ giữ **labels quan sát được ở frame đầu tiên của chính object đó** như provisional labels. Trong các frame warm-up tiếp theo, nếu vote chưa đủ cửa sổ thì payload vẫn giữ provisional labels này; chỉ `label_change` mới phải chờ committed voted signature.
+
 Nếu pass toàn bộ điều kiện, hàm update `emit_state_` bằng snapshot mới nhất của từng object. Như vậy state chỉ đại diện cho **last emitted frame**, không phải last seen frame.
+
+#### `apply_label_majority_vote(...)` làm gì
+
+Hàm này chạy trên **mọi frame được quan sát**, không chỉ trên frame đã emit trước đó. Với mỗi object đang thấy ở frame hiện tại, logic là:
+
+1. Lấy raw SGIE labels của frame hiện tại.
+2. Build `signature` chỉ từ `result_label` của từng entry trong `labels[]`.
+3. Đẩy sample vào sliding window có kích thước `label_vote_window_frames`.
+4. Khi trong cửa sổ đã có một signature thắng đa số, commit signature đó.
+5. `object.labels` được thay bằng committed labels của sample thắng mới nhất.
+
+Điểm đáng chú ý:
+
+- Vote dùng **cả cửa sổ** gần nhất, không yêu cầu tất cả frame phải giống hệt nhau.
+- `label_id` và `result_prob` không tham gia stability decision; chúng chỉ được giữ lại trong payload từ sample thắng gần nhất.
+- Nếu object mới chưa đủ cửa sổ vote, committed label vẫn rỗng nhưng payload vẫn có thể giữ provisional labels từ frame đầu tiên của object.
+
+Khác gì với consecutive-frame confirm?
+
+- **Consecutive-frame confirm**: cần cùng một label/signature lặp lại liên tiếp `K` frame. Chỉ một frame nhiễu chen vào là reset đếm.
+- **Sliding window majority vote**: nhìn toàn bộ `K` frame gần nhất và chọn signature thắng đa số. Một frame nhiễu ở giữa chưa đủ làm flip state nếu phần lớn cửa sổ vẫn ổn định.
+
+Ví dụ với cửa sổ `3`:
+
+- Raw signatures: `helmet|vest`, `helmet|vest`, `no_helmet|vest`
+- Consecutive confirm `K=3`: chưa commit gì vì frame thứ 3 làm gãy chuỗi liên tiếp.
+- Majority vote `window=3`: vẫn commit `helmet|vest` vì thắng `2/3` sample.
+
+Đó là khác biệt chính: majority vote chịu nhiễu tốt hơn, còn consecutive confirm phản ứng gắt hơn nhưng cũng dễ bị reset bởi jitter ngắn.
 
 ### 5.5 `FrameEventsProbeHandler::publish_frame_message(...)`
 
@@ -454,7 +494,7 @@ Trong đó:
       "class_id": 0,
       "object_type": "person",
       "confidence": 0.98,
-      "labels": ["person"],
+      "labels": ["helmet:1:0.98", "vest:1:0.91"],
       "bbox": {
         "left": 412.0,
         "top": 126.0,
@@ -468,6 +508,88 @@ Trong đó:
   ]
 }
 ```
+
+Ghi chú cho object payload:
+
+- `object_type` là label của primary detector (`NvDsObjectMeta::obj_label`).
+- `labels[]` là stable SGIE classifier results theo format `result_label:label_id:result_prob`, khớp với contract đang dùng trong `CropObjectHandler`.
+- Majority vote chỉ dùng `result_label` để build signature; `label_id` và `result_prob` vẫn được giữ lại từ sample thắng vote gần nhất.
+- Nếu object đã có classifier metadata nhưng chưa đủ `label_vote_window_frames`, payload vẫn giữ provisional labels từ frame đầu tiên của object. `labels[]` chỉ rỗng khi object thực sự không có classifier metadata.
+
+#### Ví dụ object mới: giữ labels của frame đầu rồi ổn định sau 5 frame
+
+Giả sử config có `label_vote_window_frames: 5`, object `42` vừa mới xuất hiện, và raw SGIE outputs của 5 frame đầu là:
+
+- frame `1234`: `helmet:1:0.81`, `vest:1:0.90`
+- frame `1235`: `helmet:3:0.78`, `vest:4:0.88`
+- frame `1236`: `no_helmet:2:0.51`, `vest:1:0.89`
+- frame `1237`: `helmet:2:0.84`, `vest:1:0.87`
+- frame `1238`: `helmet:2:0.92`, `vest:1:0.91`
+
+Mặc dù `label_id` và `result_prob` dao động, và frame `1236` có một sample nhiễu `no_helmet`, vote signature của 5 frame vẫn cho `helmet|vest` thắng `4/5`, nên đến frame thứ 5 system mới có đủ cửa sổ để commit.
+
+Ví dụ payload rút gọn:
+
+```json
+{
+  "event": "frame_events",
+  "frame_num": 1234,
+  "emit_reason": ["first_frame", "object_set_change"],
+  "objects": [
+    {
+      "object_id": 42,
+      "object_type": "person",
+      "labels": ["helmet:1:0.81", "vest:1:0.90"]
+    }
+  ]
+}
+```
+
+```json
+{
+  "event": "frame_events",
+  "frame_num": 1235,
+  "emit_reason": ["heartbeat"],
+  "objects": [
+    {
+      "object_id": 42,
+      "object_type": "person",
+      "labels": ["helmet:1:0.81", "vest:1:0.90"]
+    }
+  ]
+}
+```
+
+```json
+{
+  "event": "frame_events",
+  "frame_num": 1238,
+  "emit_reason": ["label_change"],
+  "objects": [
+    {
+      "object_id": 42,
+      "object_type": "person",
+      "labels": ["helmet:2:0.92", "vest:1:0.91"]
+    }
+  ]
+}
+```
+
+Ví dụ log/debug tương ứng:
+
+```text
+frame=1234 object=42 raw_label_signature='helmet|vest' vote_window=1/5 provisional='helmet|vest' committed=''
+frame=1235 object=42 raw_label_signature='helmet|vest' vote_window=2/5 provisional='helmet|vest' committed=''
+frame=1236 object=42 raw_label_signature='no_helmet|vest' vote_window=3/5 provisional='helmet|vest' committed=''
+frame=1237 object=42 raw_label_signature='helmet|vest' vote_window=4/5 provisional='helmet|vest' committed=''
+frame=1238 object=42 raw_label_signature='helmet|vest' vote_window=5/5 provisional='helmet|vest' committed='helmet|vest'
+```
+
+Ý nghĩa của ví dụ này là:
+
+- `first_frame` không đảm bảo object đã có stable classifier labels ngay, nhưng payload vẫn có thể mang provisional labels của frame đầu tiên.
+- Trong giai đoạn warm-up, payload giữ provisional labels của object thay vì để trống.
+- Khi cửa sổ vote đủ lớn và có majority rõ ràng, payload mới chuyển từ provisional labels sang voted stable labels.
 
 ### 7.2 `evidence_request`
 
@@ -587,7 +709,7 @@ Ví dụ log khi config + evidence được bật:
 ```text
 Messaging: creating Redis consumer (192.168.1.99:6379) stream='worker_lsr_evidence_request'
 PipelineManager: evidence subsystem initialized (request='worker_lsr_evidence_request' ready='worker_lsr_evidence_ready' save_dir='/opt/vms_engine/dev/rec/frames')
-FrameEventsProbeHandler: configured channel='worker_lsr_frame_events' heartbeat_ms=1000 min_gap_ms=250 emit_on_motion_change=false emit_empty_frames=false filters=11
+FrameEventsProbeHandler: configured channel='worker_lsr_frame_events' heartbeat_ms=1000 min_gap_ms=250 label_vote_window_frames=5 emit_on_motion_change=false emit_empty_frames=false filters=11
 ProbeHandlerManager: attached 'frame_events' probe on 'tracker' for handler 'frame_events'
 PipelineManager: evidence loop started on 'worker_lsr_evidence_request'
 ```
@@ -604,14 +726,15 @@ Các log này trả lời ba câu hỏi vận hành quan trọng:
 
 <!-- markdownlint-disable MD060 -->
 
-| Vấn đề                                            | Dấu hiệu                                                                    | Hướng xử lý                                                                |
-| ------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Không có `frame_events`                           | Probe attach thành công nhưng channel rỗng hoặc producer không kết nối      | Kiểm tra `event_handlers[].channel` và `messaging`                         |
-| Có `frame_events` nhưng không có `evidence_ready` | Consumer không tạo hoặc không subscribe được                                | Kiểm tra `evidence.enable`, `request_channel`, `ready_channel`, `save_dir` |
-| `evidence_ready:not_found` nhiều                  | TTL quá ngắn hoặc Python gửi request quá muộn                               | Tăng `frame_cache_ttl_ms` hoặc giảm độ trễ downstream                      |
-| Crop không đúng object                            | `objects[]` không gửi `object_key` hoặc `instance_key` và bbox fallback sai | Gửi đủ routing + object metadata từ Python                                 |
-| `evidence_ready:error` với `invalid_output_ref`   | Request gửi absolute path hoặc ref có `..`                                  | Chỉ echo lại `overview_ref` / `crop_ref` đã nhận từ `frame_events`         |
-| RAM tăng                                          | `max_frames_per_source` quá lớn hoặc camera quá nhiều                       | Giảm TTL hoặc giảm bound per source                                        |
+| Vấn đề                                             | Dấu hiệu                                                                    | Hướng xử lý                                                                                               |
+| -------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Không có `frame_events`                            | Probe attach thành công nhưng channel rỗng hoặc producer không kết nối      | Kiểm tra `event_handlers[].channel` và `messaging`                                                        |
+| Có `frame_events` nhưng không có `evidence_ready`  | Consumer không tạo hoặc không subscribe được                                | Kiểm tra `evidence.enable`, `request_channel`, `ready_channel`, `save_dir`                                |
+| `labels[]` thường xuyên không ổn định ở object mới | Cửa sổ majority vote chưa commit hoặc object không có SGIE metadata         | Giảm `label_vote_window_frames` nếu cần phản ứng sớm hơn, hoặc chấp nhận provisional labels trong warm-up |
+| `evidence_ready:not_found` nhiều                   | TTL quá ngắn hoặc Python gửi request quá muộn                               | Tăng `frame_cache_ttl_ms` hoặc giảm độ trễ downstream                                                     |
+| Crop không đúng object                             | `objects[]` không gửi `object_key` hoặc `instance_key` và bbox fallback sai | Gửi đủ routing + object metadata từ Python                                                                |
+| `evidence_ready:error` với `invalid_output_ref`    | Request gửi absolute path hoặc ref có `..`                                  | Chỉ echo lại `overview_ref` / `crop_ref` đã nhận từ `frame_events`                                        |
+| RAM tăng                                           | `max_frames_per_source` quá lớn hoặc camera quá nhiều                       | Giảm TTL hoặc giảm bound per source                                                                       |
 
 <!-- markdownlint-enable MD060 -->
 

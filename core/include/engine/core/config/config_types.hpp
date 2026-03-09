@@ -257,8 +257,10 @@ struct FrameEventsConfig {
     bool emit_on_first_frame = true;
     ///< Emit when the tracked object membership for the frame changes.
     bool emit_on_object_set_change = true;
-    ///< Emit when class_id or object_type changes for an existing tracked object.
+    ///< Emit when class_id, object_type, or stable SGIE labels change.
     bool emit_on_label_change = true;
+    ///< Sliding window size for SGIE label majority vote per tracked object.
+    int label_vote_window_frames = 5;
     ///< Emit when a child object is re-parented to a different parent track.
     bool emit_on_parent_change = true;
     ///< If true, allow empty semantic frames to be published.

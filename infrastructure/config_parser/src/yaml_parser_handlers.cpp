@@ -106,6 +106,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
             frame_events.emit_on_object_set_change =
                 yaml_bool(fe, "emit_on_object_set_change", true);
             frame_events.emit_on_label_change = yaml_bool(fe, "emit_on_label_change", true);
+            frame_events.label_vote_window_frames = yaml_int(fe, "label_vote_window_frames", 5);
             frame_events.emit_on_parent_change = yaml_bool(fe, "emit_on_parent_change", true);
             frame_events.emit_empty_frames = yaml_bool(fe, "emit_empty_frames", false);
             handler.frame_events = frame_events;
