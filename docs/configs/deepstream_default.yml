@@ -78,6 +78,8 @@ evidence:
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
+  encode_dedupe_ttl_ms: 30000
+  max_recent_encoded_refs: 256
 
 # =============================================================================
 # STAGE 1 — Sources Block  (→ sources_bin)
@@ -227,6 +229,7 @@ visuals:
 # queue: {}  on an element → insert a GstQueue BEFORE it (see queue_defaults).
 #
 # Full RTSP output chain (confirmed from demo_build_graph.dot):
+# Dedicated output builders handle nvvideoconvert, capsfilter, parser, encoder, and sink.
 #   queue → nvvideoconvert → capsfilter → nvv4l2h264enc
 #         → queue → h264parse → queue → rtspclientsink
 # =============================================================================
@@ -238,8 +241,12 @@ outputs:
         type: nvvideoconvert
         gpu_id: 0
         nvbuf_memory_type: nvbuf-mem-cuda-device
-        src_crop: "0:0:0:0"
-        dest_crop: "0:0:0:0"
+        # Omit crop fields unless you need a real left:top:width:height ROI.
+        # "0:0:0:0" is a zero-sized rectangle and results in black output.
+        # src_crop: "0:0:1920:1080"
+        # dest_crop: "0:0:1920:1080"
+        # src_crop: "0:0:0:0"
+        # dest_crop: "0:0:0:0"
         queue: {} # → entry queue before videoconvert (thread boundary from visuals)
 
       - id: preencode_caps

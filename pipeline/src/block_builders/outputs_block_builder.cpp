@@ -1,4 +1,7 @@
 #include "engine/pipeline/block_builders/outputs_block_builder.hpp"
+#include "engine/pipeline/builders/capsfilter_builder.hpp"
+#include "engine/pipeline/builders/parser_builder.hpp"
+#include "engine/pipeline/builders/video_convert_builder.hpp"
 #include "engine/pipeline/builders/encoder_builder.hpp"
 #include "engine/pipeline/builders/sink_builder.hpp"
 #include "engine/pipeline/builders/msgconv_builder.hpp"
@@ -9,55 +12,6 @@
 #include "engine/core/utils/logger.hpp"
 
 namespace engine::pipeline::block_builders {
-
-namespace {
-
-void apply_gpu_id_if_supported(GstElement* element, int gpu_id) {
-    if (element == nullptr) {
-        return;
-    }
-
-    GParamSpec* gpu_id_prop = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "gpu-id");
-    if (gpu_id_prop != nullptr) {
-        g_object_set(G_OBJECT(element), "gpu-id", static_cast<guint>(gpu_id), nullptr);
-    }
-}
-
-bool apply_generic_output_properties(GstElement* element,
-                                     const engine::core::config::OutputElementConfig& elem_cfg) {
-    if (element == nullptr) {
-        return false;
-    }
-
-    apply_gpu_id_if_supported(element, elem_cfg.gpu_id);
-
-    if (elem_cfg.type == "capsfilter" && !elem_cfg.caps.empty()) {
-        GstCaps* caps = gst_caps_from_string(elem_cfg.caps.c_str());
-        if (caps == nullptr) {
-            LOG_E("OutputsBlockBuilder: invalid caps '{}' for '{}'", elem_cfg.caps, elem_cfg.id);
-            return false;
-        }
-        g_object_set(G_OBJECT(element), "caps", caps, nullptr);
-        gst_caps_unref(caps);
-    }
-
-    if (elem_cfg.type == "nvvideoconvert") {
-        if (!elem_cfg.nvbuf_memory_type.empty()) {
-            gst_util_set_object_arg(G_OBJECT(element), "nvbuf-memory-type",
-                                    elem_cfg.nvbuf_memory_type.c_str());
-        }
-        if (!elem_cfg.src_crop.empty()) {
-            g_object_set(G_OBJECT(element), "src-crop", elem_cfg.src_crop.c_str(), nullptr);
-        }
-        if (!elem_cfg.dest_crop.empty()) {
-            g_object_set(G_OBJECT(element), "dest-crop", elem_cfg.dest_crop.c_str(), nullptr);
-        }
-    }
-
-    return true;
-}
-
-}  // namespace
 
 // ── Helper: expose a ghost pad on a bin pointing at target_elem's pad ───────────────────────────
 static bool expose_ghost(GstElement* bin, GstElement* target_elem, const char* pad_name,
@@ -192,8 +146,19 @@ GstElement* OutputsBlockBuilder::build_output_bin(
 
         GstElement* elem = nullptr;
 
-        if (elem_cfg.type == "nvv4l2h264enc" || elem_cfg.type == "nvv4l2h265enc") {
+        // Output-specific builders centralize property application for elements that used to rely
+        // on the generic factory branch, keeping phase 4 dispatch explicit and predictable.
+        if (elem_cfg.type == "nvvideoconvert") {
+            builders::VideoConvertBuilder builder(out_bin);
+            elem = builder.build(config, output_index * 100 + j);
+        } else if (elem_cfg.type == "capsfilter") {
+            builders::CapsFilterBuilder builder(out_bin);
+            elem = builder.build(config, output_index * 100 + j);
+        } else if (elem_cfg.type == "nvv4l2h264enc" || elem_cfg.type == "nvv4l2h265enc") {
             builders::EncoderBuilder builder(out_bin);
+            elem = builder.build(config, output_index * 100 + j);
+        } else if (elem_cfg.type == "h264parse" || elem_cfg.type == "h265parse") {
+            builders::ParserBuilder builder(out_bin);
             elem = builder.build(config, output_index * 100 + j);
         } else if (elem_cfg.type == "rtspclientsink" || elem_cfg.type == "fakesink" ||
                    elem_cfg.type == "filesink") {
@@ -212,10 +177,6 @@ GstElement* OutputsBlockBuilder::build_output_bin(
             if (!guard) {
                 LOG_E("OutputsBlockBuilder: unknown element type '{}' for '{}'", elem_cfg.type,
                       elem_cfg.id);
-                gst_object_unref(out_bin);
-                return nullptr;
-            }
-            if (!apply_generic_output_properties(guard.get(), elem_cfg)) {
                 gst_object_unref(out_bin);
                 return nullptr;
             }

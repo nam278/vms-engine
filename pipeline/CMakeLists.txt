@@ -1,5 +1,5 @@
 # ── Collect all .cpp sources recursively ────────────────────────────
-file(GLOB_RECURSE PIPELINE_SOURCES
+file(GLOB_RECURSE PIPELINE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
