@@ -1,11 +1,11 @@
 /**
  * @file kafka_producer.cpp
- * @brief Kafka producer via librdkafka C++ API.
+ * @brief Kafka producer via system librdkafka C API.
  *
  * Reconnect strategy
  * ------------------
  * librdkafka manages broker-level TCP reconnects internally for an existing
- * RdKafka::Producer handle.  When the broker is unreachable, librdkafka will
+ * producer handle. When the broker is unreachable, librdkafka will
  * keep retrying delivery for up to `message.timeout.ms` and will reconnect
  * transparently when the broker comes back -- no application thread needed.
  *
@@ -15,22 +15,51 @@
 #include "engine/infrastructure/messaging/kafka_producer.hpp"
 #include "engine/core/utils/logger.hpp"
 
-#include <rdkafkacpp.h>
+#include <librdkafka/rdkafka.h>
+
+#include <array>
 
 namespace engine::infrastructure::messaging {
 
-struct KafkaProducer::Impl : public RdKafka::DeliveryReportCb {
-    RdKafka::Producer* producer = nullptr;
+namespace {
 
-    void dr_cb(RdKafka::Message& msg) override {
-        if (msg.err()) {
-            LOG_W("KafkaProducer: delivery failed -- topic={} err={}", msg.topic_name(),
-                  msg.errstr());
-        } else {
-            LOG_D("KafkaProducer: delivered -- topic={} partition={} offset={}", msg.topic_name(),
-                  msg.partition(), msg.offset());
-        }
+constexpr std::size_t kErrBufSize = 512U;
+
+bool set_kafka_conf(rd_kafka_conf_t* conf, const char* key, const std::string& value) {
+    std::array<char, kErrBufSize> errstr{};
+    const rd_kafka_conf_res_t result =
+        rd_kafka_conf_set(conf, key, value.c_str(), errstr.data(), errstr.size());
+    if (result != RD_KAFKA_CONF_OK) {
+        LOG_E("KafkaProducer: invalid {}='{}': {}", key, value, errstr.data());
+        return false;
     }
+    return true;
+}
+
+void on_delivery_report(rd_kafka_t* /*producer*/, const rd_kafka_message_t* message,
+                        void* /*opaque*/) {
+    const char* topic_name = message != nullptr && message->rkt != nullptr
+                                 ? rd_kafka_topic_name(message->rkt)
+                                 : "<unknown>";
+    if (message == nullptr) {
+        LOG_W("KafkaProducer: delivery callback received null message");
+        return;
+    }
+
+    if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        LOG_W("KafkaProducer: delivery failed -- topic={} err={}", topic_name,
+              rd_kafka_err2str(message->err));
+        return;
+    }
+
+    LOG_D("KafkaProducer: delivered -- topic={} partition={} offset={}", topic_name,
+          message->partition, message->offset);
+}
+
+}  // namespace
+
+struct KafkaProducer::Impl {
+    rd_kafka_t* producer = nullptr;
 };
 
 KafkaProducer::KafkaProducer() : impl_(std::make_unique<Impl>()) {}
@@ -52,31 +81,30 @@ bool KafkaProducer::connect(const std::string& host, int port, const std::string
         default_topic_ = channel;
     }
 
-    std::string errstr;
-    std::unique_ptr<RdKafka::Conf> conf(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL));
-
-    if (conf->set("bootstrap.servers", brokers_, errstr) != RdKafka::Conf::CONF_OK) {
-        LOG_E("KafkaProducer: invalid bootstrap.servers='{}': {}", brokers_, errstr);
+    rd_kafka_conf_t* conf = rd_kafka_conf_new();
+    if (conf == nullptr) {
+        LOG_E("KafkaProducer: failed to allocate rd_kafka_conf");
         return false;
     }
 
-    // Once a message is accepted by librdkafka, let the library own reconnect and retry policy.
-    conf->set("message.timeout.ms", "0", errstr);
-    conf->set("request.required.acks", "1", errstr);
-    conf->set("message.send.max.retries", "2147483647", errstr);
-
-    conf->set("reconnect.backoff.ms", "5000", errstr);
-    conf->set("reconnect.backoff.max.ms", "60000", errstr);
-
-    if (conf->set("dr_cb", static_cast<RdKafka::DeliveryReportCb*>(impl_.get()), errstr) !=
-        RdKafka::Conf::CONF_OK) {
-        LOG_E("KafkaProducer: failed to set dr_cb: {}", errstr);
+    if (!set_kafka_conf(conf, "bootstrap.servers", brokers_) ||
+        !set_kafka_conf(conf, "message.timeout.ms", "0") ||
+        !set_kafka_conf(conf, "request.required.acks", "1") ||
+        !set_kafka_conf(conf, "message.send.max.retries", "2147483647") ||
+        !set_kafka_conf(conf, "reconnect.backoff.ms", "5000") ||
+        !set_kafka_conf(conf, "reconnect.backoff.max.ms", "60000")) {
+        rd_kafka_conf_destroy(conf);
         return false;
     }
 
-    impl_->producer = RdKafka::Producer::create(conf.get(), errstr);
+    rd_kafka_conf_set_dr_msg_cb(conf, on_delivery_report);
+    rd_kafka_conf_set_opaque(conf, impl_.get());
+
+    std::array<char, kErrBufSize> errstr{};
+    impl_->producer = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr.data(), errstr.size());
     if (!impl_->producer) {
-        LOG_E("KafkaProducer: failed to create producer for '{}': {}", brokers_, errstr);
+        rd_kafka_conf_destroy(conf);
+        LOG_E("KafkaProducer: failed to create producer for '{}': {}", brokers_, errstr.data());
         return false;
     }
 
@@ -105,24 +133,26 @@ bool KafkaProducer::publish(const std::string& channel, const std::string& key,
     }
 
 retry:
-    RdKafka::ErrorCode err = impl_->producer->produce(
-        topic, RdKafka::Topic::PARTITION_UA, RdKafka::Producer::RK_MSG_COPY,
-        const_cast<char*>(value.data()), value.size(), key.empty() ? nullptr : key.data(),
-        key.size(), 0, nullptr, nullptr);
+    const rd_kafka_resp_err_t err = rd_kafka_producev(
+        impl_->producer, RD_KAFKA_V_TOPIC(topic.c_str()),
+        RD_KAFKA_V_PARTITION(RD_KAFKA_PARTITION_UA), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+        RD_KAFKA_V_VALUE(const_cast<char*>(value.data()), value.size()),
+        RD_KAFKA_V_KEY(key.empty() ? nullptr : const_cast<char*>(key.data()), key.size()),
+        RD_KAFKA_V_END);
 
-    if (err == RdKafka::ERR__QUEUE_FULL) {
+    if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
         LOG_D("KafkaProducer: internal queue full -- polling 500 ms (topic='{}')", topic);
-        impl_->producer->poll(500);
+        rd_kafka_poll(impl_->producer, 500);
         goto retry;
     }
 
-    if (err != RdKafka::ERR_NO_ERROR) {
+    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
         LOG_W("KafkaProducer: produce enqueue error -- topic='{}' err={}", topic,
-              RdKafka::err2str(err));
+              rd_kafka_err2str(err));
         return false;
     }
 
-    impl_->producer->poll(0);
+    rd_kafka_poll(impl_->producer, 0);
     return true;
 }
 
@@ -137,16 +167,16 @@ void KafkaProducer::disconnect() {
         return;
     }
 
-    LOG_D("KafkaProducer: flushing {} in-flight message(s) to {}...", impl_->producer->outq_len(),
-          brokers_);
-    impl_->producer->flush(10 * 1000);
+    LOG_D("KafkaProducer: flushing {} in-flight message(s) to {}...",
+          rd_kafka_outq_len(impl_->producer), brokers_);
+    rd_kafka_flush(impl_->producer, 10 * 1000);
 
-    if (impl_->producer->outq_len() > 0) {
+    if (rd_kafka_outq_len(impl_->producer) > 0) {
         LOG_W("KafkaProducer: {} message(s) not delivered after flush -- dropping",
-              impl_->producer->outq_len());
+              rd_kafka_outq_len(impl_->producer));
     }
 
-    delete impl_->producer;
+    rd_kafka_destroy(impl_->producer);
     impl_->producer = nullptr;
 
     LOG_I("KafkaProducer: disconnected from {}", brokers_);

@@ -29,6 +29,26 @@ pkg_check_modules(GST REQUIRED IMPORTED_TARGET
 
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 
+option(VMS_ENGINE_WITH_KAFKA "Enable Kafka messaging support" ON)
+
+if(VMS_ENGINE_WITH_KAFKA)
+    find_path(RDKAFKA_INCLUDE_DIR
+        NAMES rdkafka.h
+        PATH_SUFFIXES librdkafka)
+    find_library(RDKAFKA_LIBRARY NAMES rdkafka)
+
+    if(NOT RDKAFKA_INCLUDE_DIR OR NOT RDKAFKA_LIBRARY)
+        message(FATAL_ERROR
+            "VMS_ENGINE_WITH_KAFKA=ON requires system librdkafka development files. "
+            "Install librdkafka-dev or set RDKAFKA_INCLUDE_DIR and RDKAFKA_LIBRARY.")
+    endif()
+
+    add_library(RdKafka::rdkafka SHARED IMPORTED GLOBAL)
+    set_target_properties(RdKafka::rdkafka PROPERTIES
+        IMPORTED_LOCATION "${RDKAFKA_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${RDKAFKA_INCLUDE_DIR}")
+endif()
+
 # ── DeepStream SDK 8.0 ──────────────────────────────────────────────
 set(DEEPSTREAM_DIR "/opt/nvidia/deepstream/deepstream"
     CACHE PATH "DeepStream SDK installation path")
@@ -80,20 +100,7 @@ FetchContent_Declare(nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG        v3.11.3)
 
-# librdkafka — Kafka C/C++ client (production Kafka producer)
-# Keep feature set minimal to avoid system-library dependencies.
-set(RDKAFKA_BUILD_EXAMPLES       OFF CACHE BOOL "" FORCE)
-set(RDKAFKA_BUILD_TESTS          OFF CACHE BOOL "" FORCE)
-set(WITH_ZSTD                    OFF CACHE BOOL "" FORCE)
-set(WITH_SASL                    OFF CACHE BOOL "" FORCE)
-set(RDKAFKA_BUILD_STATIC         ON  CACHE BOOL "" FORCE)
-set(RDKAFKA_BUILD_DYNAMIC        OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(librdkafka
-    GIT_REPOSITORY https://github.com/confluentinc/librdkafka.git
-    GIT_TAG        v2.3.0
-    GIT_SHALLOW    TRUE)
-
-FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json librdkafka)
+FetchContent_MakeAvailable(spdlog yaml-cpp hiredis nlohmann_json)
 
 # ── spdlog compile-time log level ───────────────────────────────────
 # SPDLOG_ACTIVE_LEVEL controls which LOG_* calls are compiled in.

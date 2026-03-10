@@ -56,6 +56,13 @@ RuntimeParamRules RuntimeParamRules::create_default() {
     rules.register_rule("bitrate",
                         {"bitrate", "Encoder bitrate in bps", 4000000, 500000, 20000000, false});
 
+    rules.register_rule(
+        "osd.display_bbox",
+        {"osd.display_bbox", "Enable/disable OSD bounding boxes", true, false, true, false});
+
+    rules.register_rule("osd.display_text", {"osd.display_text", "Enable/disable OSD text labels",
+                                             true, false, true, false});
+
     return rules;
 }
 

@@ -58,9 +58,31 @@ queue_defaults:
 # Handlers publish to a channel specified by the `channel` field (falls back to handler `id` if omitted).
 # -----------------------------------------------------------------------------
 messaging:
-  type: redis
+  # type: redis
+  # host: "192.168.1.99"
+  # port: 6319
+  type: kafka
   host: "192.168.1.99"
-  port: 6319
+  port: 9094
+
+# -----------------------------------------------------------------------------
+# Runtime control API
+# HTTP API cho state query và runtime property updates theo element id.
+# -----------------------------------------------------------------------------
+control_api:
+  enable: true
+  bind_address: "0.0.0.0"
+  port: 9875
+
+# -----------------------------------------------------------------------------
+# Runtime control messaging
+# Worker có thể publish command generic vào channel này; engine sẽ consume và
+# trả reply qua reply_channel nếu producer đang được cấu hình.
+# -----------------------------------------------------------------------------
+control_messaging:
+  enable: true
+  channel: worker_lsr_runtime_control
+  reply_channel: worker_lsr_runtime_control_reply
 
 # -----------------------------------------------------------------------------
 # Evidence workflow — downstream-driven request/completion flow

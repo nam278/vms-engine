@@ -31,6 +31,7 @@ services:
     environment:
       VMS_ENGINE_BIN: ${VMS_ENGINE_BIN:-./build/bin/vms_engine}
       VMS_ENGINE_CONFIG: ${VMS_ENGINE_CONFIG:-dev/configs/deepstream_default.yml}
+    # command: ${VMS_ENGINE_BIN:-./build/bin/vms_engine} -c ${VMS_ENGINE_CONFIG:-dev/configs/deepstream_default.yml}
     entrypoint:
       - /bin/bash
       - -lc

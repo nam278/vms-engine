@@ -1,32 +1,33 @@
 #pragma once
 /**
  * @file pistache_server.hpp
- * @brief REST API server stub for runtime pipeline control.
+ * @brief Lightweight HTTP control server for runtime pipeline/property control.
  *
- * Placeholder for Pistache HTTP server integration.
- * Will expose endpoints: GET /health, POST /pipeline/start, POST /pipeline/stop,
- * POST /params/{key}, GET /state.
+ * The class name is kept for compatibility, but the implementation uses
+ * GLib/GIO sockets instead of the Pistache framework.
  */
-#include "engine/core/pipeline/ipipeline_manager.hpp"
-#include <string>
+#include "engine/infrastructure/control/runtime_control_handler.hpp"
+
+#include <gio/gio.h>
+
+#include <atomic>
 #include <memory>
+#include <string>
 
 namespace engine::infrastructure::rest_api {
 
 /**
- * @brief HTTP REST server wrapping IPipelineManager for runtime control.
- *
- * Stub — will be fully implemented when Pistache is added as a dependency.
+ * @brief HTTP server wrapping IPipelineManager + IRuntimeParamManager.
  */
 class PistacheServer {
    public:
     /**
-     * @param manager Pipeline manager to control via REST endpoints.
-     * @param address Bind address (e.g. "0.0.0.0").
-     * @param port    Listen port (e.g. 8080).
+     * @param handler            Shared runtime control handler.
+     * @param address            Bind address (e.g. "0.0.0.0").
+     * @param port               Listen port (e.g. 18080).
      */
-    PistacheServer(engine::core::pipeline::IPipelineManager* manager, const std::string& address,
-                   int port);
+    PistacheServer(std::shared_ptr<engine::infrastructure::control::RuntimeControlHandler> handler,
+                   const std::string& address, int port);
     ~PistacheServer();
 
     /** @brief Start the HTTP server (non-blocking). */
@@ -36,10 +37,15 @@ class PistacheServer {
     void stop();
 
    private:
-    engine::core::pipeline::IPipelineManager* manager_;
+    std::shared_ptr<engine::infrastructure::control::RuntimeControlHandler> handler_;
     std::string address_;
     int port_;
-    bool running_ = false;
+    GSocketService* service_ = nullptr;
+    std::atomic<bool> running_{false};
+
+    static gboolean on_incoming(GSocketService* service, GSocketConnection* connection,
+                                GObject* source_object, gpointer user_data);
+    void handle_connection(GSocketConnection* connection);
 };
 
 }  // namespace engine::infrastructure::rest_api

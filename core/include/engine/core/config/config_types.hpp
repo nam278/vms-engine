@@ -213,6 +213,20 @@ struct MessagingConfig {
     int port = 6379;             ///< broker port (Redis default 6379)
 };
 
+/** @brief Optional HTTP control API for runtime pipeline/property control. */
+struct ControlApiConfig {
+    bool enable = false;
+    std::string bind_address = "0.0.0.0";
+    int port = 18080;
+};
+
+/** @brief Optional broker-based runtime control consumer. */
+struct ControlMessagingConfig {
+    bool enable = false;
+    std::string channel = "runtime_control";
+    std::string reply_channel;
+};
+
 struct CleanupConfig {
     ///< Drop stale per-object state after N unseen minutes.
     int stale_object_timeout_min = 5;
@@ -388,6 +402,12 @@ struct PipelineConfig {
 
     /** @brief Optional top-level message broker (producer). Absent = no publishing. */
     std::optional<MessagingConfig> messaging;
+
+    /** @brief Optional HTTP control API configuration. */
+    std::optional<ControlApiConfig> control_api;
+
+    /** @brief Optional broker-based runtime control consumer configuration. */
+    std::optional<ControlMessagingConfig> control_messaging;
 
     /** @brief Optional top-level evidence request/completion workflow configuration. */
     std::optional<EvidenceConfig> evidence;

@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/core/pipeline/ipipeline_manager.hpp"
+#include "engine/core/runtime/iruntime_param_manager.hpp"
 #include "engine/core/builders/ipipeline_builder.hpp"
 #include "engine/core/config/config_types.hpp"
 
@@ -31,7 +32,8 @@ class ProbeHandlerManager;
  * injected IPipelineBuilder. Bus watch runs on a dedicated thread.
  * After build, attaches pad probes via ProbeHandlerManager.
  */
-class PipelineManager : public engine::core::pipeline::IPipelineManager {
+class PipelineManager : public engine::core::pipeline::IPipelineManager,
+                        public engine::core::runtime::IRuntimeParamManager {
    public:
     explicit PipelineManager(std::unique_ptr<engine::core::builders::IPipelineBuilder> builder);
 
@@ -43,6 +45,9 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager {
     bool pause() override;
     bool resume() override;
     engine::core::pipeline::PipelineState get_state() const override;
+    bool set_param(const std::string& element_id, const std::string& property,
+                   const std::string& value) override;
+    std::string get_param(const std::string& element_id, const std::string& property) override;
 
     /**
      * @brief Set optional message producer for probe handlers.

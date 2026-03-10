@@ -10,7 +10,7 @@
 namespace engine::infrastructure::messaging {
 
 /**
- * @brief Kafka consumer backed by librdkafka C++ API.
+ * @brief Kafka consumer backed by librdkafka C API.
  *
  * Uses a stable consumer group derived from pipeline scope and always
  * seeks assigned partitions to their end offsets on startup/rebalance so

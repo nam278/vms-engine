@@ -30,6 +30,8 @@ bool YamlConfigParser::parse(const std::string& file_path,
         YAML::Node outputs_node = root["outputs"];
         YAML::Node handlers_node = root["event_handlers"];
         YAML::Node messaging_node = root["messaging"];
+        YAML::Node control_api_node = root["control_api"];
+        YAML::Node control_messaging_node = root["control_messaging"];
         YAML::Node evidence_node = root["evidence"];
 
         // ── pipeline meta ──
@@ -76,6 +78,19 @@ bool YamlConfigParser::parse(const std::string& file_path,
         if (messaging_node) {
             config.messaging = engine::core::config::MessagingConfig{};
             parse_messaging(static_cast<const void*>(&messaging_node), *config.messaging);
+        }
+
+        // ── control_api (optional) ──
+        if (control_api_node) {
+            config.control_api = engine::core::config::ControlApiConfig{};
+            parse_control_api(static_cast<const void*>(&control_api_node), *config.control_api);
+        }
+
+        // ── control_messaging (optional) ──
+        if (control_messaging_node) {
+            config.control_messaging = engine::core::config::ControlMessagingConfig{};
+            parse_control_messaging(static_cast<const void*>(&control_messaging_node),
+                                    *config.control_messaging);
         }
 
         // ── evidence (optional) ──

@@ -8,6 +8,10 @@ target_link_libraries(vms_engine
     PRIVATE Threads::Threads
 )
 
+target_compile_definitions(vms_engine
+    PRIVATE $<$<BOOL:${VMS_ENGINE_WITH_KAFKA}>:VMS_ENGINE_WITH_KAFKA>
+)
+
 # Copy configs/ to build/bin/configs/ on every build
 add_custom_command(TARGET vms_engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

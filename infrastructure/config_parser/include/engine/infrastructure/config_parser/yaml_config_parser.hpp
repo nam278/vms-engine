@@ -58,6 +58,13 @@ class YamlConfigParser : public engine::core::config::IConfigParser {
     /** @brief Parse `messaging:` section (optional top-level producer config). */
     void parse_messaging(const void* node, engine::core::config::MessagingConfig& out);
 
+    /** @brief Parse `control_api:` section (optional top-level HTTP control server config). */
+    void parse_control_api(const void* node, engine::core::config::ControlApiConfig& out);
+
+    /** @brief Parse `control_messaging:` section (optional broker control consumer config). */
+    void parse_control_messaging(const void* node,
+                                 engine::core::config::ControlMessagingConfig& out);
+
     /** @brief Parse `evidence:` section (optional top-level evidence workflow config). */
     void parse_evidence(const void* node, engine::core::config::EvidenceConfig& out);
 };

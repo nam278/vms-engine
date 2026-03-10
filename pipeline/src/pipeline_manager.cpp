@@ -6,7 +6,203 @@
 #include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/gst_utils.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <future>
+#include <sstream>
+
 namespace engine::pipeline {
+
+namespace {
+
+struct SetParamRequest {
+    GstElement* pipeline = nullptr;
+    std::string element_id;
+    std::string property;
+    std::string value;
+    std::promise<bool> promise;
+};
+
+struct GetParamRequest {
+    GstElement* pipeline = nullptr;
+    std::string element_id;
+    std::string property;
+    std::promise<std::string> promise;
+};
+
+std::string normalize_property_name(std::string property) {
+    std::replace(property.begin(), property.end(), '_', '-');
+    return property;
+}
+
+std::string to_lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+bool parse_bool_value(const std::string& raw_value, gboolean& out_value) {
+    const std::string lowered = to_lower_copy(raw_value);
+    if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
+        out_value = TRUE;
+        return true;
+    }
+    if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") {
+        out_value = FALSE;
+        return true;
+    }
+    return false;
+}
+
+bool set_property_from_string(GObject* object, const std::string& property,
+                              const std::string& raw_value) {
+    if (object == nullptr) {
+        return false;
+    }
+
+    GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(object), property.c_str());
+    if (spec == nullptr || (spec->flags & G_PARAM_WRITABLE) == 0) {
+        return false;
+    }
+
+    GValue value = G_VALUE_INIT;
+    g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(spec));
+
+    bool converted = false;
+    try {
+        const GType value_type = G_PARAM_SPEC_VALUE_TYPE(spec);
+        if (value_type == G_TYPE_BOOLEAN) {
+            gboolean parsed = FALSE;
+            converted = parse_bool_value(raw_value, parsed);
+            if (converted) {
+                g_value_set_boolean(&value, parsed);
+            }
+        } else if (value_type == G_TYPE_INT) {
+            g_value_set_int(&value, std::stoi(raw_value));
+            converted = true;
+        } else if (value_type == G_TYPE_UINT) {
+            g_value_set_uint(&value, static_cast<guint>(std::stoul(raw_value)));
+            converted = true;
+        } else if (value_type == G_TYPE_INT64) {
+            g_value_set_int64(&value, std::stoll(raw_value));
+            converted = true;
+        } else if (value_type == G_TYPE_UINT64) {
+            g_value_set_uint64(&value, static_cast<guint64>(std::stoull(raw_value)));
+            converted = true;
+        } else if (value_type == G_TYPE_FLOAT) {
+            g_value_set_float(&value, std::stof(raw_value));
+            converted = true;
+        } else if (value_type == G_TYPE_DOUBLE) {
+            g_value_set_double(&value, std::stod(raw_value));
+            converted = true;
+        } else if (value_type == G_TYPE_STRING) {
+            g_value_set_string(&value, raw_value.c_str());
+            converted = true;
+        } else if (g_type_is_a(value_type, G_TYPE_ENUM)) {
+            g_value_set_enum(&value, std::stoi(raw_value));
+            converted = true;
+        } else if (g_type_is_a(value_type, G_TYPE_FLAGS)) {
+            g_value_set_flags(&value, static_cast<guint>(std::stoul(raw_value)));
+            converted = true;
+        }
+    } catch (const std::exception&) {
+        converted = false;
+    }
+
+    if (converted) {
+        g_object_set_property(object, property.c_str(), &value);
+    }
+
+    g_value_unset(&value);
+    return converted;
+}
+
+std::string get_property_as_string(GObject* object, const std::string& property) {
+    if (object == nullptr) {
+        return {};
+    }
+
+    GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(object), property.c_str());
+    if (spec == nullptr || (spec->flags & G_PARAM_READABLE) == 0) {
+        return {};
+    }
+
+    GValue value = G_VALUE_INIT;
+    g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(spec));
+    g_object_get_property(object, property.c_str(), &value);
+
+    std::string result;
+    const GType value_type = G_PARAM_SPEC_VALUE_TYPE(spec);
+    if (value_type == G_TYPE_BOOLEAN) {
+        result = g_value_get_boolean(&value) ? "true" : "false";
+    } else if (value_type == G_TYPE_INT) {
+        result = std::to_string(g_value_get_int(&value));
+    } else if (value_type == G_TYPE_UINT) {
+        result = std::to_string(g_value_get_uint(&value));
+    } else if (value_type == G_TYPE_INT64) {
+        result = std::to_string(g_value_get_int64(&value));
+    } else if (value_type == G_TYPE_UINT64) {
+        result = std::to_string(g_value_get_uint64(&value));
+    } else if (value_type == G_TYPE_FLOAT) {
+        result = std::to_string(g_value_get_float(&value));
+    } else if (value_type == G_TYPE_DOUBLE) {
+        result = std::to_string(g_value_get_double(&value));
+    } else if (value_type == G_TYPE_STRING) {
+        const gchar* str = g_value_get_string(&value);
+        result = str ? str : "";
+    } else if (g_type_is_a(value_type, G_TYPE_ENUM)) {
+        result = std::to_string(g_value_get_enum(&value));
+    } else if (g_type_is_a(value_type, G_TYPE_FLAGS)) {
+        result = std::to_string(g_value_get_flags(&value));
+    }
+
+    g_value_unset(&value);
+    return result;
+}
+
+gboolean invoke_set_param(gpointer data) {
+    std::unique_ptr<SetParamRequest> request(static_cast<SetParamRequest*>(data));
+    if (request->pipeline == nullptr) {
+        request->promise.set_value(false);
+        return G_SOURCE_REMOVE;
+    }
+
+    GstElement* element =
+        gst_bin_get_by_name(GST_BIN(request->pipeline), request->element_id.c_str());
+    if (element == nullptr) {
+        request->promise.set_value(false);
+        return G_SOURCE_REMOVE;
+    }
+
+    const bool success =
+        set_property_from_string(G_OBJECT(element), request->property, request->value);
+    gst_object_unref(element);
+    request->promise.set_value(success);
+    return G_SOURCE_REMOVE;
+}
+
+gboolean invoke_get_param(gpointer data) {
+    std::unique_ptr<GetParamRequest> request(static_cast<GetParamRequest*>(data));
+    if (request->pipeline == nullptr) {
+        request->promise.set_value({});
+        return G_SOURCE_REMOVE;
+    }
+
+    GstElement* element =
+        gst_bin_get_by_name(GST_BIN(request->pipeline), request->element_id.c_str());
+    if (element == nullptr) {
+        request->promise.set_value({});
+        return G_SOURCE_REMOVE;
+    }
+
+    std::string value = get_property_as_string(G_OBJECT(element), request->property);
+    gst_object_unref(element);
+    request->promise.set_value(std::move(value));
+    return G_SOURCE_REMOVE;
+}
+
+}  // namespace
 
 PipelineManager::PipelineManager(std::unique_ptr<engine::core::builders::IPipelineBuilder> builder)
     : builder_(std::move(builder)) {}
@@ -195,6 +391,60 @@ bool PipelineManager::resume() {
 
 engine::core::pipeline::PipelineState PipelineManager::get_state() const {
     return state_;
+}
+
+bool PipelineManager::set_param(const std::string& element_id, const std::string& property,
+                                const std::string& value) {
+    if (pipeline_ == nullptr || loop_ == nullptr || element_id.empty() || property.empty()) {
+        return false;
+    }
+
+    const std::string normalized_property = normalize_property_name(property);
+    if (!g_main_loop_is_running(loop_)) {
+        GstElement* element = gst_bin_get_by_name(GST_BIN(pipeline_), element_id.c_str());
+        if (element == nullptr) {
+            return false;
+        }
+        const bool success =
+            set_property_from_string(G_OBJECT(element), normalized_property, value);
+        gst_object_unref(element);
+        return success;
+    }
+
+    auto* request = new SetParamRequest{pipeline_, element_id, normalized_property, value};
+    auto future = request->promise.get_future();
+    g_main_context_invoke(g_main_loop_get_context(loop_), invoke_set_param, request);
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        LOG_W("PipelineManager::set_param timeout for {}.{}", element_id, normalized_property);
+        return false;
+    }
+    return future.get();
+}
+
+std::string PipelineManager::get_param(const std::string& element_id, const std::string& property) {
+    if (pipeline_ == nullptr || loop_ == nullptr || element_id.empty() || property.empty()) {
+        return {};
+    }
+
+    const std::string normalized_property = normalize_property_name(property);
+    if (!g_main_loop_is_running(loop_)) {
+        GstElement* element = gst_bin_get_by_name(GST_BIN(pipeline_), element_id.c_str());
+        if (element == nullptr) {
+            return {};
+        }
+        std::string value = get_property_as_string(G_OBJECT(element), normalized_property);
+        gst_object_unref(element);
+        return value;
+    }
+
+    auto* request = new GetParamRequest{pipeline_, element_id, normalized_property};
+    auto future = request->promise.get_future();
+    g_main_context_invoke(g_main_loop_get_context(loop_), invoke_get_param, request);
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        LOG_W("PipelineManager::get_param timeout for {}.{}", element_id, normalized_property);
+        return {};
+    }
+    return future.get();
 }
 
 gboolean PipelineManager::on_bus_message(GstBus* /*bus*/, GstMessage* msg, gpointer data) {

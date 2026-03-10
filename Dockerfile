@@ -7,6 +7,7 @@ FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel
 # Build deps (tuỳ dự án của bạn)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     build-essential cmake ninja-build pkg-config git \
+    librdkafka-dev \
     libyaml-cpp-dev \
     # tiện ích debug/dev
     gdb vim htop less \
@@ -27,7 +28,7 @@ RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh
 # ARG GID=1000
 # RUN groupadd -g ${GID} dev && useradd -m -u ${UID} -g ${GID} dev
 # USER dev
-ARG APP_ROOT_DIR=/opt/lantana
+ARG APP_ROOT_DIR=/opt/vms_engine
 RUN mkdir -p ${APP_ROOT_DIR}
 
 # docker build -t vms-engine-dev:latest .

@@ -20,15 +20,24 @@
 #include "engine/core/messaging/imessage_producer.hpp"
 #include "engine/core/pipeline/ipipeline_manager.hpp"
 #include "engine/core/pipeline/pipeline_state.hpp"
+#include "engine/core/runtime/iruntime_param_manager.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/spdlog_logger.hpp"
 
 // ─── Infrastructure ───────────────────────────────────────────────────────────
 #include "engine/infrastructure/config_parser/yaml_config_parser.hpp"
+#include "engine/infrastructure/rest_api/pistache_server.hpp"
+#include "engine/infrastructure/control/runtime_control_handler.hpp"
+#include "engine/infrastructure/control/runtime_control_message_consumer.hpp"
+#ifdef VMS_ENGINE_WITH_KAFKA
 #include "engine/infrastructure/messaging/kafka_consumer.hpp"
+#include "engine/infrastructure/messaging/kafka_producer.hpp"
+#endif
 #include "engine/infrastructure/messaging/redis_stream_producer.hpp"
 #include "engine/infrastructure/messaging/redis_stream_consumer.hpp"
-#include "engine/infrastructure/messaging/kafka_producer.hpp"
+
+// ─── Domain ───────────────────────────────────────────────────────────────────
+#include "engine/domain/runtime_param_rules.hpp"
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 #include "engine/pipeline/pipeline_manager.hpp"
@@ -182,6 +191,7 @@ std::unique_ptr<engine::core::messaging::IMessageProducer> create_message_produc
     const auto& m = *config.messaging;
 
     if (m.type == "kafka") {
+#ifdef VMS_ENGINE_WITH_KAFKA
         LOG_I("Messaging: creating Kafka producer ({}:{})", m.host, m.port);
         auto p = std::make_unique<engine::infrastructure::messaging::KafkaProducer>();
         if (!p->connect(m.host, m.port)) {
@@ -189,6 +199,10 @@ std::unique_ptr<engine::core::messaging::IMessageProducer> create_message_produc
                   m.host, m.port);
         }
         return p;
+#else
+        LOG_E("Messaging: Kafka requested but this build was configured without Kafka support");
+        return nullptr;
+#endif
     }
 
     // Default: Redis
@@ -220,6 +234,7 @@ std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consum
     }
 
     if (messaging.type == "kafka") {
+#ifdef VMS_ENGINE_WITH_KAFKA
         LOG_I("Messaging: creating Kafka consumer ({}:{}) topic='{}' group='{}'", messaging.host,
               messaging.port, evidence.request_channel, config.pipeline.id);
         auto consumer = std::make_unique<engine::infrastructure::messaging::KafkaConsumer>();
@@ -230,6 +245,10 @@ std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consum
             return nullptr;
         }
         return consumer;
+#else
+        LOG_E("Messaging: Kafka requested but this build was configured without Kafka support");
+        return nullptr;
+#endif
     }
 
     LOG_I("Messaging: creating Redis consumer ({}:{}) stream='{}' scope='{}'", messaging.host,
@@ -238,6 +257,48 @@ std::unique_ptr<engine::core::messaging::IMessageConsumer> create_message_consum
     if (!consumer->connect(messaging.host, messaging.port, evidence.request_channel,
                            config.pipeline.id)) {
         LOG_W("Messaging: Redis consumer connection failed ({}:{})", messaging.host,
+              messaging.port);
+        return nullptr;
+    }
+    return consumer;
+}
+
+std::unique_ptr<engine::core::messaging::IMessageConsumer> create_control_message_consumer(
+    const engine::core::config::PipelineConfig& config) {
+    if (!config.messaging || !config.control_messaging || !config.control_messaging->enable) {
+        return nullptr;
+    }
+
+    const auto& messaging = *config.messaging;
+    const auto& control = *config.control_messaging;
+    if (control.channel.empty()) {
+        LOG_W("Messaging: control_messaging enabled but channel is empty");
+        return nullptr;
+    }
+
+    if (messaging.type == "kafka") {
+#ifdef VMS_ENGINE_WITH_KAFKA
+        LOG_I("Messaging: creating Kafka control consumer ({}:{}) topic='{}' group='{}'",
+              messaging.host, messaging.port, control.channel, config.pipeline.id);
+        auto consumer = std::make_unique<engine::infrastructure::messaging::KafkaConsumer>();
+        if (!consumer->connect(messaging.host, messaging.port, control.channel,
+                               config.pipeline.id)) {
+            LOG_W("Messaging: Kafka control consumer connection failed ({}:{})", messaging.host,
+                  messaging.port);
+            return nullptr;
+        }
+        return consumer;
+#else
+        LOG_E("Messaging: Kafka requested but this build was configured without Kafka support");
+        return nullptr;
+#endif
+    }
+
+    LOG_I("Messaging: creating Redis control consumer ({}:{}) stream='{}' scope='{}'",
+          messaging.host, messaging.port, control.channel, config.pipeline.id);
+    auto consumer = std::make_unique<engine::infrastructure::messaging::RedisStreamConsumer>();
+    if (!consumer->connect(messaging.host, messaging.port, control.channel, config.pipeline.id)) {
+        LOG_W("Messaging: Redis control consumer connection failed ({}:{})", messaging.host,
               messaging.port);
         return nullptr;
     }
@@ -269,6 +330,11 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<engine::core::messaging::IMessageProducer> message_producer;
     // Consumer lifetime must cover the entire pipeline run
     std::unique_ptr<engine::core::messaging::IMessageConsumer> message_consumer;
+    std::unique_ptr<engine::core::messaging::IMessageConsumer> control_message_consumer;
+    std::unique_ptr<engine::infrastructure::rest_api::PistacheServer> control_api_server;
+    std::unique_ptr<engine::infrastructure::control::RuntimeControlMessageConsumer>
+        control_message_server;
+    std::shared_ptr<engine::infrastructure::control::RuntimeControlHandler> control_handler;
 
     try {
         // ── 1. Parse arguments ────────────────────────────────────────────────
@@ -321,6 +387,18 @@ int main(int argc, char* argv[]) {
         } else {
             LOG_I("  Messaging  : disabled");
         }
+        if (config.control_api && config.control_api->enable) {
+            LOG_I("  ControlApi : http://{}:{}", config.control_api->bind_address,
+                  config.control_api->port);
+        } else {
+            LOG_I("  ControlApi : disabled");
+        }
+        if (config.control_messaging && config.control_messaging->enable) {
+            LOG_I("  ControlMsg : {} via '{}'", config.messaging ? config.messaging->type : "none",
+                  config.control_messaging->channel);
+        } else {
+            LOG_I("  ControlMsg : disabled");
+        }
         if (config.evidence) {
             LOG_I("  Evidence   : {} request='{}' ready='{}'",
                   config.evidence->enable ? "enabled" : "disabled",
@@ -371,6 +449,76 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         LOG_I("Pipeline initialized (state=Ready)");
+
+        // ── 7a. Start control API (optional) ─────────────────────────────────
+        if (config.control_api && config.control_api->enable) {
+            auto* runtime_param_manager =
+                dynamic_cast<engine::core::runtime::IRuntimeParamManager*>(pipeline_manager.get());
+            if (runtime_param_manager == nullptr) {
+                LOG_C("Control API enabled but runtime param manager is unavailable");
+                return EXIT_FAILURE;
+            }
+
+            const auto allowed_runtime_params =
+                engine::domain::RuntimeParamRules::create_default().get_all_param_names();
+            control_handler =
+                std::make_shared<engine::infrastructure::control::RuntimeControlHandler>(
+                    pipeline_manager.get(), runtime_param_manager, config.pipeline.id,
+                    allowed_runtime_params);
+            control_api_server = std::make_unique<engine::infrastructure::rest_api::PistacheServer>(
+                control_handler, config.control_api->bind_address, config.control_api->port);
+            if (!control_api_server->start()) {
+                LOG_C("Failed to start control API server");
+                return EXIT_FAILURE;
+            }
+        } else if (config.control_messaging && config.control_messaging->enable) {
+            auto* runtime_param_manager =
+                dynamic_cast<engine::core::runtime::IRuntimeParamManager*>(pipeline_manager.get());
+            if (runtime_param_manager == nullptr) {
+                LOG_C("Control messaging enabled but runtime param manager is unavailable");
+                return EXIT_FAILURE;
+            }
+
+            const auto allowed_runtime_params =
+                engine::domain::RuntimeParamRules::create_default().get_all_param_names();
+            control_handler =
+                std::make_shared<engine::infrastructure::control::RuntimeControlHandler>(
+                    pipeline_manager.get(), runtime_param_manager, config.pipeline.id,
+                    allowed_runtime_params);
+        }
+
+        // ── 7b. Start control messaging (optional) ──────────────────────────
+        control_message_consumer = create_control_message_consumer(config);
+        if (config.control_messaging && config.control_messaging->enable) {
+            if (control_handler == nullptr) {
+                auto* runtime_param_manager =
+                    dynamic_cast<engine::core::runtime::IRuntimeParamManager*>(
+                        pipeline_manager.get());
+                if (runtime_param_manager == nullptr) {
+                    LOG_C("Control messaging enabled but runtime param manager is unavailable");
+                    return EXIT_FAILURE;
+                }
+                const auto allowed_runtime_params =
+                    engine::domain::RuntimeParamRules::create_default().get_all_param_names();
+                control_handler =
+                    std::make_shared<engine::infrastructure::control::RuntimeControlHandler>(
+                        pipeline_manager.get(), runtime_param_manager, config.pipeline.id,
+                        allowed_runtime_params);
+            }
+
+            if (control_message_consumer != nullptr) {
+                control_message_server = std::make_unique<
+                    engine::infrastructure::control::RuntimeControlMessageConsumer>(
+                    control_message_consumer.get(), message_producer.get(), control_handler,
+                    config.control_messaging->channel, config.control_messaging->reply_channel);
+                if (!control_message_server->start()) {
+                    LOG_C("Failed to start control message consumer");
+                    return EXIT_FAILURE;
+                }
+            } else {
+                LOG_W("Control messaging enabled but consumer is not available");
+            }
+        }
 
         // ── 8. Register signal handlers ───────────────────────────────────────
         signal(SIGINT, handle_signal);
@@ -454,6 +602,18 @@ int main(int argc, char* argv[]) {
 
     // ── 12. Unified cleanup ───────────────────────────────────────────────────
     LOG_I("Starting cleanup sequence...");
+
+    if (control_api_server) {
+        LOG_I("Stopping control API server...");
+        control_api_server->stop();
+        control_api_server.reset();
+    }
+
+    if (control_message_server) {
+        LOG_I("Stopping control message consumer...");
+        control_message_server->stop();
+        control_message_server.reset();
+    }
 
     {
         // Use whichever pipeline_manager is valid

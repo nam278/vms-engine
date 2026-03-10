@@ -84,15 +84,31 @@ GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& con
     // uri-list: comma-separated URIs from cameras[] config.
     // Must be set before element reaches READY state (before gst_bin_add / state change).
     if (!src.cameras.empty()) {
-        std::ostringstream oss;
+        std::ostringstream uri_stream;
+        std::ostringstream sensor_id_stream;
+        std::ostringstream sensor_name_stream;
         for (std::size_t i = 0; i < src.cameras.size(); ++i) {
-            if (i > 0)
-                oss << ',';
-            oss << src.cameras[i].uri;
+            if (i > 0) {
+                uri_stream << ',';
+                sensor_id_stream << ',';
+                sensor_name_stream << ',';
+            }
+
+            uri_stream << src.cameras[i].uri;
+            const std::string sensor_id = src.cameras[i].id.empty()
+                                              ? std::string("camera-") + std::to_string(i)
+                                              : src.cameras[i].id;
+            sensor_id_stream << sensor_id;
+            sensor_name_stream << sensor_id;
         }
-        const std::string uri_list = oss.str();
-        g_object_set(G_OBJECT(elem.get()), "uri-list", uri_list.c_str(), nullptr);
+
+        const std::string uri_list = uri_stream.str();
+        const std::string sensor_id_list = sensor_id_stream.str();
+        const std::string sensor_name_list = sensor_name_stream.str();
+        g_object_set(G_OBJECT(elem.get()), "uri-list", uri_list.c_str(), "sensor-id-list",
+                     sensor_id_list.c_str(), "sensor-name-list", sensor_name_list.c_str(), nullptr);
         LOG_D("nvmultiurisrcbin uri-list: {}", uri_list);
+        LOG_D("nvmultiurisrcbin sensor-id-list: {}", sensor_id_list);
     }
 
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {

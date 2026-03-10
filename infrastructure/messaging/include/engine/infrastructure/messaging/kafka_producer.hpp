@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file kafka_producer.hpp
- * @brief Kafka producer implementing IMessageProducer via librdkafka C++ API.
+ * @brief Kafka producer implementing IMessageProducer via system librdkafka C API.
  *
  * Uses PIMPL to avoid leaking librdkafka headers into consumers.
  *
@@ -26,11 +26,11 @@
 namespace engine::infrastructure::messaging {
 
 /**
- * @brief Kafka producer backed by librdkafka (C++ API).
+ * @brief Kafka producer backed by librdkafka C API.
  *
- * Connect flow  : connect(host, port) creates RdKafka::Producer once.
- * Publish flow  : produce() + poll(0); QUEUE_FULL triggers a 500 ms poll+retry.
- * Disconnect flow: flush(10 s) + delete producer.
+ * Connect flow   : connect(host, port) creates one rd_kafka_t producer handle.
+ * Publish flow   : producev() + poll(0); queue full triggers a 500 ms poll+retry.
+ * Disconnect flow: flush(10 s) + destroy producer.
  */
 class KafkaProducer : public engine::core::messaging::IMessageProducer {
    public:

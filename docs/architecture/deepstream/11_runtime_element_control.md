@@ -34,17 +34,23 @@ Tức là:
 
 ### Northbound transport nên dùng
 
-**Ưu tiên HTTP API** nếu nhu cầu chính là:
+Nếu hệ thống của mày có **worker quản lý nhiều pipeline container**, nên tách control plane thành hai lớp:
+
+- `app -> worker`: **HTTP/gRPC** để lấy semantics đồng bộ, auth, timeout, và orchestration
+- `worker -> engine`: **Redis Streams hoặc Kafka** để fan-out command xuống nhiều container
+
+**HTTP API trong engine vẫn hữu ích** cho:
 
 - dashboard bật/tắt tính năng theo thao tác người dùng
 - service backend gọi đồng bộ và cần kết quả ngay
 - cần semantics kiểu `read current state` và `set new state`
+- debug / local admin / fallback path
 
-**Redis Streams hoặc Kafka nên là transport bổ sung** khi:
+**Redis Streams hoặc Kafka nên là transport thực thi giữa worker và engine** khi:
 
-- control đến từ service khác theo kiểu async
-- cần queueing / replay / decoupling
-- engine không trực tiếp host HTTP API
+- worker phải điều phối nhiều pipeline container
+- cần queueing / decoupling / retry ở command plane
+- không muốn app/backend gọi trực tiếp từng engine instance
 
 ---
 
@@ -101,9 +107,10 @@ Nếu control request đi vào từ thread REST consumer hoặc message consumer
 
 ```mermaid
 flowchart LR
-    UI[Dashboard / Backend API] --> HTTP[HTTP Control Endpoint]
-    WORKER[Worker / External Service] --> REDIS[Redis Streams Command]
-    WORKER2[Worker / External Service] --> KAFKA[Kafka Command]
+  APP[Dashboard / Backend API] --> WORKER[Worker Control Plane]
+  WORKER --> HTTP[HTTP Control Endpoint]
+  WORKER --> REDIS[Redis Streams Command]
+  WORKER --> KAFKA[Kafka Command]
 
     HTTP --> CTRL[Control Handler]
     REDIS --> CTRL
@@ -151,6 +158,23 @@ g_object_set(G_OBJECT(elem.get()),
 
 ## 6. API và message contract đề xuất
 
+### 6.0 YAML bật API
+
+```yaml
+control_api:
+  enable: true
+  bind_address: "0.0.0.0"
+  port: 18080
+
+control_messaging:
+  enable: true
+  channel: worker_lsr_runtime_control
+  reply_channel: worker_lsr_runtime_control_reply
+```
+
+Nếu block này không tồn tại hoặc `enable: false` thì HTTP control API không start.
+Nếu `control_messaging.enable: true` thì engine sẽ subscribe một command channel generic bằng consumer abstraction hiện có, nên có thể đổi qua Redis Streams hoặc Kafka chỉ bằng `messaging.type`.
+
 ### 6.1 HTTP API tổng quát
 
 ```http
@@ -167,20 +191,42 @@ Content-Type: application/json
 }
 ```
 
+Các route đang được implement trong engine:
+
+- `GET /health`
+- `GET /api/v1/pipelines/{pipeline_id}/state`
+- `GET /api/v1/pipelines/{pipeline_id}/elements/{element_id}/properties/{property}`
+- `PATCH /api/v1/pipelines/{pipeline_id}/elements/{element_id}/properties`
+
+Ở bản hiện tại, allowlist runtime param mặc định đang mở cho:
+
+- `osd.display_bbox`
+- `osd.display_text`
+
 ### 6.2 Redis Streams hoặc Kafka command tổng quát
 
 ```json
 {
   "type": "set_element_properties",
+  "request_id": "3c9f4a3f",
   "pipeline_id": "de1",
   "element_id": "osd",
   "properties": {
-    "display_bbox": "false",
-    "display_text": "true"
+    "display_bbox": false,
+    "display_text": true
   },
-  "request_id": "3c9f4a3f"
+  "reply_to": "worker_lsr_runtime_control_reply"
 }
 ```
+
+Engine hiện hỗ trợ cùng một handler chung cho các command type:
+
+- `health`
+- `get_pipeline_state`
+- `get_element_property`
+- `set_element_properties`
+
+Response trả về qua broker sẽ giữ `request_id`, `status_code`, `ok`, và payload business tương ứng.
 
 ### 6.3 Preset convenience layer
 
@@ -234,10 +280,9 @@ rules.register_rule("osd.display_text",
 
 ### Bước 5 — Expose control path
 
-Hiện `PistacheServer` còn là stub. Vậy có hai đường thực tế:
+`PistacheServer` hiện đã được thay bằng lightweight HTTP server dựa trên GLib/GIO và được wire trong `app/main.cpp` qua block YAML `control_api:`.
 
-- engine host HTTP API sau khi hoàn thiện REST adapter
-- backend/service ngoài forward command vào engine qua Redis Streams hoặc Kafka
+Song song với đó, engine đã có `control_messaging:` để consume command generic qua cùng abstraction `IMessageConsumer`. Cả HTTP adapter và broker consumer đều gọi vào cùng `RuntimeControlHandler`, rồi handler này mới gọi `IRuntimeParamManager`.
 
 ---
 
@@ -270,13 +315,14 @@ Khi pipeline restart, có hai lựa chọn:
 
 ## 9. Decision matrix
 
-| Nhu cầu | Nên dùng | Lý do |
-|--------|----------|------|
-| UI/operator đổi property ngay | HTTP API + `IRuntimeParamManager` | đồng bộ, semantics rõ |
-| Service khác gửi lệnh async | Redis Streams + `IRuntimeParamManager` | nhẹ, dễ tích hợp với hạ tầng hiện có |
-| Hệ thống command bus chuẩn Kafka | Kafka + `IRuntimeParamManager` | phù hợp khi cần replay/group semantics |
-| Dynamic add/remove camera | DeepStream embedded REST | đúng phạm vi của `nvmultiurisrcbin` |
-| Toggle property bằng cách sửa YAML + restart | Không khuyến nghị | quá nặng cho runtime control |
+| Nhu cầu                                      | Nên dùng                       | Lý do                                  |
+| -------------------------------------------- | ------------------------------ | -------------------------------------- |
+| App gọi worker để đổi property ngay          | HTTP/gRPC app -> worker        | đồng bộ, dễ auth/orchestrate           |
+| Worker fan-out command xuống nhiều pipeline  | Redis Streams + handler chung  | nhẹ, phù hợp command plane             |
+| Hệ thống command bus chuẩn Kafka             | Kafka + `IRuntimeParamManager` | phù hợp khi cần replay/group semantics |
+| Debug hoặc admin gọi thẳng vào engine        | HTTP API + handler chung       | quan sát và can thiệp trực tiếp        |
+| Dynamic add/remove camera                    | DeepStream embedded REST       | đúng phạm vi của `nvmultiurisrcbin`    |
+| Toggle property bằng cách sửa YAML + restart | Không khuyến nghị              | quá nặng cho runtime control           |
 
 ### Kết luận cuối cùng
 
@@ -284,5 +330,5 @@ Nếu muốn runtime control mở rộng được cho nhiều element về sau, 
 
 1. chuẩn hóa **element ids trong config**
 2. dùng `IRuntimeParamManager` làm lõi
-3. để HTTP, Redis, Kafka cùng đi vào một handler chung
+3. để HTTP, Redis, Kafka cùng đi vào một **handler chung**
 4. coi `nvdsosd` chỉ là use case đầu tiên, không phải ngoại lệ đặc biệt
