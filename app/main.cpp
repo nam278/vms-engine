@@ -57,7 +57,7 @@ namespace {
 // ─── Globals (async-signal-safe path needs only atomics) ──────────────────────
 GMainLoop* g_main_loop = nullptr;  ///< sentinel — actual loop owned by PipelineManager
 std::shared_ptr<engine::core::pipeline::IPipelineManager> g_pipeline_manager;
-std::atomic<bool> g_stop_called{false};
+volatile std::sig_atomic_t g_stop_requested = 0;
 
 // ─── Signal handlers ──────────────────────────────────────────────────────────
 
@@ -66,13 +66,13 @@ std::atomic<bool> g_stop_called{false};
  *
  * Only the first delivery acts — subsequent signals are ignored.
  * Does not call stop() directly (not async-signal-safe); the main
- * polling loop calls stop() when it sees g_stop_called == true.
+ * polling loop calls stop() when it sees g_stop_requested == true.
  */
 void handle_signal(int signum) {
-    bool expected = false;
-    if (!g_stop_called.compare_exchange_strong(expected, true)) {
+    if (g_stop_requested != 0) {
         return;  // already handled
     }
+    g_stop_requested = 1;
 
     // Write directly — async-signal-safe
     static const char msg[] = "\n[vms_engine] Signal received — stopping...\n";
@@ -400,7 +400,7 @@ int main(int argc, char* argv[]) {
                 LOG_I("Pipeline reached terminal state: {}", state_to_string(s));
                 break;
             }
-            if (g_stop_called.load()) {
+            if (g_stop_requested != 0) {
                 LOG_I("Stop requested via signal — stopping pipeline...");
                 // Safe to call here (main thread, not signal handler)
                 pipeline_manager->stop();
@@ -459,12 +459,15 @@ int main(int argc, char* argv[]) {
         // Use whichever pipeline_manager is valid
         auto mgr = pipeline_manager ? pipeline_manager : g_pipeline_manager;
 
-        if (mgr && !g_stop_called.load()) {
-            LOG_I("Stopping pipeline during cleanup...");
-            mgr->stop();
-            g_stop_called.store(true);
-        } else if (g_stop_called.load()) {
-            LOG_I("Pipeline already stopped");
+        if (mgr) {
+            const auto state = mgr->get_state();
+            if (state != engine::core::pipeline::PipelineState::Stopped &&
+                state != engine::core::pipeline::PipelineState::Uninitialized) {
+                LOG_I("Stopping pipeline during cleanup (state={})...", state_to_string(state));
+                mgr->stop();
+            } else {
+                LOG_I("Pipeline already stopped before cleanup (state={})", state_to_string(state));
+            }
         }
 
         // Clean up GMainLoop sentinel (PipelineManager owns the real one)
@@ -484,6 +487,10 @@ int main(int argc, char* argv[]) {
     }
 
     LOG_I("All GStreamer objects released.");
+
+    LOG_I("Releasing messaging adapters...");
+    message_consumer.reset();
+    message_producer.reset();
 
     // Cancel watchdog — cleanup succeeded within the timeout window
     alarm(0);

@@ -99,22 +99,30 @@ evidence:
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
+  encode_dedupe_ttl_ms: 30000
+  max_recent_encoded_refs: 256
 ```
 
 ### 3.2 Field reference
 
-| Field                   | Default                          | Ý nghĩa                                                     |
-| ----------------------- | -------------------------------- | ----------------------------------------------------------- |
-| `enable`                | `false`                          | Bật evidence subsystem                                      |
-| `request_channel`       | `""`                             | Stream/topic để engine consume `evidence_request`           |
-| `ready_channel`         | `""`                             | Stream/topic để engine publish `evidence_ready`             |
-| `save_dir`              | `/opt/vms_engine/dev/rec/frames` | Root directory materialize JPEG ra đĩa                      |
-| `frame_cache_ttl_ms`    | `10000`                          | TTL của cached emitted frames                               |
-| `max_frame_gap_ms`      | `250`                            | Fallback nearest-frame tolerance khi exact `frame_key` miss |
-| `overview_jpeg_quality` | `85`                             | JPEG quality dùng cho overview và crop                      |
-| `cache_on_frame_events` | `true`                           | Có cache frame đã emit từ `frame_events` hay không          |
-| `cache_backend`         | `nvbufsurface_copy`              | Backend snapshot hiện tại                                   |
-| `max_frames_per_source` | `16`                             | Hard bound cho mỗi `(pipeline_id, source_name, source_id)`  |
+<!-- markdownlint-disable MD060 -->
+
+| Field                     | Default                          | Ý nghĩa                                                     |
+| ------------------------- | -------------------------------- | ----------------------------------------------------------- |
+| `enable`                  | `false`                          | Bật evidence subsystem                                      |
+| `request_channel`         | `""`                             | Stream/topic để engine consume `evidence_request`           |
+| `ready_channel`           | `""`                             | Stream/topic để engine publish `evidence_ready`             |
+| `save_dir`                | `/opt/vms_engine/dev/rec/frames` | Root directory materialize JPEG ra đĩa                      |
+| `frame_cache_ttl_ms`      | `10000`                          | TTL của cached emitted frames                               |
+| `max_frame_gap_ms`        | `250`                            | Fallback nearest-frame tolerance khi exact `frame_key` miss |
+| `overview_jpeg_quality`   | `85`                             | JPEG quality dùng cho overview và crop                      |
+| `cache_on_frame_events`   | `true`                           | Có cache frame đã emit từ `frame_events` hay không          |
+| `cache_backend`           | `nvbufsurface_copy`              | Backend snapshot hiện tại                                   |
+| `max_frames_per_source`   | `16`                             | Hard bound cho mỗi `(pipeline_id, source_name, source_id)`  |
+| `encode_dedupe_ttl_ms`    | `30000`                          | TTL cho recent dedupe map sau khi artifact đã được encode   |
+| `max_recent_encoded_refs` | `256`                            | Hard bound cho recent dedupe map                            |
+
+<!-- markdownlint-enable MD060 -->
 
 ---
 
@@ -206,6 +214,7 @@ Downstream gửi request theo routing envelope của frame đã nhận từ `fra
   "frame_key": "de1:camera-01:150:1735825200000",
   "frame_ts_ms": 1735825200000,
   "status": "ok",
+  "encode_reason": "encoded",
   "overview_ref": "de1_camera-01_150_1735825200000_overview.jpg",
   "objects": [
     {
@@ -257,6 +266,13 @@ Service sẽ reject các ref có dấu hiệu không an toàn như:
 
 Encode hiện chạy trên cached frame snapshot bằng `FrameImageMaterializer`, không đụng live `NvBufSurface` từ pad probe.
 
+### 7.4 Duplicate request handling
+
+- Engine giữ một recent-materialization map trong memory, keyed theo `(pipeline_id, source_name, source_id, frame_key, ref)`.
+- Entry trong map được stale theo `evidence.encode_dedupe_ttl_ms` và bounded bởi `evidence.max_recent_encoded_refs`, nên không phụ thuộc file local còn tồn tại hay đã bị media service upload/xóa.
+- Nếu toàn bộ artifact trong request đã có recent entry còn sống, completion event vẫn được publish với `status = "ok"` và `encode_reason = "already_encoded"`.
+- Nếu request còn thiếu ít nhất một artifact chưa có recent entry, engine chỉ encode phần thiếu và completion event dùng `encode_reason = "encoded"`.
+
 ---
 
 ## 8. Cache Resolution và Retention
@@ -284,6 +300,7 @@ Cache được prune theo:
 | Tình huống                       | Hành vi                                                                 |
 | -------------------------------- | ----------------------------------------------------------------------- |
 | Không parse được payload request | Bỏ job hoặc publish status lỗi tùy giai đoạn parse                      |
+| Artifact đã encode gần đây       | Publish `evidence_ready(status=ok, encode_reason=already_encoded)`      |
 | Cache miss                       | Publish `evidence_ready(status=not_found)`                              |
 | Ref không hợp lệ                 | Publish `evidence_ready(status=error)` với lỗi như `invalid_output_ref` |
 | Encode fail                      | Publish `evidence_ready(status=error)`                                  |
@@ -314,12 +331,16 @@ PipelineManager: evidence loop started on 'worker_lsr_evidence_request'
 
 ### 10.3 Triệu chứng phổ biến
 
-| Triệu chứng                                       | Nguyên nhân hay gặp                                    |
-| ------------------------------------------------- | ------------------------------------------------------ |
-| Có `frame_events` nhưng không có `evidence_ready` | consumer chưa subscribe hoặc request chưa được publish |
-| `evidence_ready:not_found` nhiều                  | cache TTL ngắn hoặc downstream gửi quá muộn            |
-| `invalid_output_ref`                              | downstream gửi absolute path hoặc ref chứa `..`        |
-| RAM tăng                                          | `max_frames_per_source` lớn hoặc TTL dài               |
+<!-- markdownlint-disable MD060 -->
+
+| Triệu chứng                                       | Nguyên nhân hay gặp                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------- |
+| Có `frame_events` nhưng không có `evidence_ready` | consumer chưa subscribe hoặc request chưa được publish                      |
+| `evidence_ready:not_found` nhiều                  | cache TTL ngắn hoặc downstream gửi quá muộn                                 |
+| `invalid_output_ref`                              | downstream gửi absolute path hoặc ref chứa `..`                             |
+| RAM tăng                                          | `max_frames_per_source` hoặc `max_recent_encoded_refs` lớn, hay TTL quá dài |
+
+<!-- markdownlint-enable MD060 -->
 
 ---
 

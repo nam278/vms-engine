@@ -86,7 +86,7 @@ event_handlers:
       min_interval_sec: 5 # Throttle per (source:tracker_id:label)
       rules:
         - label: face
-          endpoint: "http://192.168.1.99:8765/api/recognize/upload"
+          endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
           result_path: "match.external_id" # Dot-notation JSON path
           display_path: "match.face_name" # Dot-notation JSON path
           params:
@@ -259,7 +259,7 @@ ext_processor:
   min_interval_sec: 5
   rules:
     - label: face
-      endpoint: "http://192.168.1.99:8765/api/recognize/upload"
+      endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
       result_path: "match.external_id"
       display_path: "match.face_name"
       params:

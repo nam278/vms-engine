@@ -113,6 +113,8 @@ evidence:
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
+  encode_dedupe_ttl_ms: 30000
+  max_recent_encoded_refs: 256
 
 event_handlers:
   - id: frame_events
@@ -146,7 +148,7 @@ event_handlers:
         include_overview_ref: true
         rules:
           - label: face
-            endpoint: "http://192.168.1.99:8765/api/recognize/upload"
+            endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
             result_path: "match.external_id"
             display_path: "match.face_name"
             params:
@@ -174,18 +176,20 @@ event_handlers:
 
 <!-- markdownlint-disable MD060 -->
 
-| Field                   | Default                          | Mô tả                                                     |
-| ----------------------- | -------------------------------- | --------------------------------------------------------- |
-| `enable`                | `false`                          | Bật workflow request-driven evidence                      |
-| `request_channel`       | `""`                             | Redis Stream name hoặc Kafka topic cho `evidence_request` |
-| `ready_channel`         | `""`                             | Redis Stream name hoặc Kafka topic cho `evidence_ready`   |
-| `save_dir`              | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized            |
-| `frame_cache_ttl_ms`    | `10000`                          | TTL của cached emitted frames                             |
-| `max_frame_gap_ms`      | `250`                            | Fallback nearest-frame tolerance theo `frame_ts_ms`       |
-| `overview_jpeg_quality` | `85`                             | JPEG quality hiện được dùng cho cả overview và crop       |
-| `cache_on_frame_events` | `true`                           | Cache các frame đã emit khi evidence subsystem bật        |
-| `cache_backend`         | `nvbufsurface_copy`              | Backend snapshot hiện tại                                 |
-| `max_frames_per_source` | `16`                             | Bound per `(pipeline_id, source_name, source_id)`         |
+| Field                     | Default                          | Mô tả                                                     |
+| ------------------------- | -------------------------------- | --------------------------------------------------------- |
+| `enable`                  | `false`                          | Bật workflow request-driven evidence                      |
+| `request_channel`         | `""`                             | Redis Stream name hoặc Kafka topic cho `evidence_request` |
+| `ready_channel`           | `""`                             | Redis Stream name hoặc Kafka topic cho `evidence_ready`   |
+| `save_dir`                | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized            |
+| `frame_cache_ttl_ms`      | `10000`                          | TTL của cached emitted frames                             |
+| `max_frame_gap_ms`        | `250`                            | Fallback nearest-frame tolerance theo `frame_ts_ms`       |
+| `overview_jpeg_quality`   | `85`                             | JPEG quality hiện được dùng cho cả overview và crop       |
+| `cache_on_frame_events`   | `true`                           | Cache các frame đã emit khi evidence subsystem bật        |
+| `cache_backend`           | `nvbufsurface_copy`              | Backend snapshot hiện tại                                 |
+| `max_frames_per_source`   | `16`                             | Bound per `(pipeline_id, source_name, source_id)`         |
+| `encode_dedupe_ttl_ms`    | `30000`                          | TTL cho recent-map tránh re-encode duplicate request      |
+| `max_recent_encoded_refs` | `256`                            | Hard bound cho recent-map dedupe sau materialization      |
 
 <!-- markdownlint-enable MD060 -->
 
@@ -692,6 +696,7 @@ Rules hiện tại của service:
   "frame_key": "de1:camera-01:1234:1741593005123",
   "frame_ts_ms": 1741593005123,
   "status": "ok",
+  "encode_reason": "encoded",
   "generated_at_ms": 1741593006314,
   "overview_ref": "de1_camera-01_1234_1741593005123_overview.jpg",
   "crop_refs": ["de1_camera-01_1234_1741593005123_crop_42.jpg"]
@@ -703,6 +708,8 @@ Rules cho `evidence_ready` hiện tại:
 - `overview_ref` và `crop_refs[]` là filename/ref đã publish từ semantic contract, không phải absolute filesystem path.
 - File thật vẫn được engine ghi dưới `evidence.save_dir`.
 - Downstream nào cần full path hoặc URL thì tự join thêm `save_dir` hoặc materialize sang storage layer của riêng nó.
+- `encode_reason = "encoded"` nghĩa là request này vừa materialize mới ít nhất một artifact.
+- `encode_reason = "already_encoded"` nghĩa là artifact đã nằm trong recent dedupe ledger nên engine chỉ publish completion idempotent, không encode lại.
 
 ### 7.4 `evidence_ready` — cache miss
 

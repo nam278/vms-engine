@@ -10,10 +10,12 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace engine::core::messaging {
@@ -65,6 +67,10 @@ class EvidenceRequestService {
     bool enqueue_request(const std::string& payload);
 
    private:
+    struct RecentEncodedRef {
+        int64_t encoded_at_ms = 0;
+    };
+
     // Parse and validate the broker payload before it enters the worker queue.
     bool parse_request_payload(const std::string& payload, EvidenceRequestJob& out_job) const;
     // Owns NvDsObjEnc context and performs encode work off the pipeline thread.
@@ -72,14 +78,19 @@ class EvidenceRequestService {
     // Resolve the cached frame, encode requested artifacts, then publish completion.
     void process_job(const EvidenceRequestJob& job);
     bool encode_overview(const CachedFrameEntry& entry, const EvidenceRequestJob& job,
-                         std::string& out_ref, std::string& failure_reason);
+                         std::string& out_ref, std::string& failure_reason, bool& out_encoded);
     bool encode_crops(const CachedFrameEntry& entry, const EvidenceRequestJob& job,
-                      std::vector<std::string>& out_refs, std::string& failure_reason);
+                      std::vector<std::string>& out_refs, std::string& failure_reason,
+                      bool& out_encoded);
     bool resolve_output_path(const std::string& ref, std::string& out_path,
                              std::string& failure_reason) const;
+    std::string build_recent_ref_key(const EvidenceRequestJob& job, const std::string& ref) const;
+    bool was_recently_encoded(const EvidenceRequestJob& job, const std::string& ref);
+    void mark_recently_encoded(const EvidenceRequestJob& job, const std::string& ref);
+    void prune_recently_encoded_locked(int64_t now_ms);
     void publish_ready(const EvidenceRequestJob& job, const std::string& status,
                        const std::string& overview_ref, const std::vector<std::string>& crop_refs,
-                       const std::string& failure_reason) const;
+                       const std::string& failure_reason, const std::string& encode_reason) const;
 
     engine::core::config::EvidenceConfig config_;
     engine::core::messaging::IMessageProducer* producer_ = nullptr;
@@ -89,6 +100,9 @@ class EvidenceRequestService {
     std::condition_variable cv_;
     mutable std::mutex queue_mutex_;
     std::queue<EvidenceRequestJob> jobs_;
+    std::mutex recent_refs_mutex_;
+    std::unordered_map<std::string, RecentEncodedRef> recent_encoded_refs_;
+    std::deque<std::string> recent_ref_order_;
     NvDsObjEncCtxHandle enc_ctx_ = nullptr;
 };
 

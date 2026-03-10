@@ -135,25 +135,37 @@ bool PipelineManager::start() {
 bool PipelineManager::stop() {
     if (state_ == engine::core::pipeline::PipelineState::Stopped ||
         state_ == engine::core::pipeline::PipelineState::Uninitialized) {
+        LOG_I(
+            "PipelineManager::stop(): no-op for state={} ",
+            state_ == engine::core::pipeline::PipelineState::Stopped ? "Stopped" : "Uninitialized");
         return true;
     }
 
+    LOG_I("PipelineManager::stop(): begin (state={})",
+          state_ == engine::core::pipeline::PipelineState::Playing  ? "Playing"
+          : state_ == engine::core::pipeline::PipelineState::Paused ? "Paused"
+                                                                    : "Other");
+
+    LOG_I("PipelineManager::stop(): stopping evidence loop");
     stop_evidence_loop();
 
     if (loop_ && g_main_loop_is_running(loop_)) {
+        LOG_I("PipelineManager::stop(): quitting GMainLoop");
         g_main_loop_quit(loop_);
     }
 
     if (loop_thread_.joinable()) {
+        LOG_I("PipelineManager::stop(): joining loop thread");
         loop_thread_.join();
     }
 
     if (pipeline_) {
+        LOG_I("PipelineManager::stop(): setting pipeline to NULL");
         gst_element_set_state(pipeline_, GST_STATE_NULL);
     }
 
     state_ = engine::core::pipeline::PipelineState::Stopped;
-    LOG_I("Pipeline stopped");
+    LOG_I("PipelineManager::stop(): complete");
     return true;
 }
 
@@ -289,13 +301,12 @@ void PipelineManager::cleanup() {
     frame_evidence_cache_.reset();
 
     if (pipeline_) {
-        // Remove bus watch before unref
+        // Pipeline ownership stays with PipelineBuilder; only remove the bus watch here.
         engine::core::utils::GstBusPtr bus(gst_pipeline_get_bus(GST_PIPELINE(pipeline_)),
                                            gst_object_unref);
         if (bus) {
             gst_bus_remove_watch(bus.get());
         }
-        gst_object_unref(pipeline_);
         pipeline_ = nullptr;
     }
 

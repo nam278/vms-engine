@@ -276,43 +276,93 @@ void EvidenceRequestService::process_job(const EvidenceRequestJob& job) {
         return;
     }
 
-    auto entry = cache_->resolve(job.pipeline_id, job.source_name, job.source_id, job.frame_key,
-                                 job.frame_ts_ms);
-    if (!entry) {
-        publish_ready(job, "not_found", "", {}, "frame_not_in_cache");
-        return;
-    }
+    const bool needs_overview = wants_type(job.evidence_types, "overview");
+    const bool needs_crops = wants_type(job.evidence_types, "crop");
 
     std::string overview_ref;
     std::vector<std::string> crop_refs;
     std::string failure_reason;
 
-    if (wants_type(job.evidence_types, "overview")) {
-        if (!encode_overview(*entry, job, overview_ref, failure_reason)) {
+    bool overview_already_materialized = !needs_overview;
+    if (needs_overview && !job.overview_ref.empty()) {
+        if (was_recently_encoded(job, job.overview_ref)) {
+            overview_ref = job.overview_ref;
+            overview_already_materialized = true;
+        }
+    }
+
+    bool crops_already_materialized = !needs_crops;
+    if (needs_crops && !job.objects.empty()) {
+        crops_already_materialized = true;
+        for (const auto& request_object : job.objects) {
+            if (request_object.crop_ref.empty()) {
+                crops_already_materialized = false;
+                crop_refs.clear();
+                break;
+            }
+
+            if (!was_recently_encoded(job, request_object.crop_ref)) {
+                crops_already_materialized = false;
+                crop_refs.clear();
+                break;
+            }
+
+            crop_refs.push_back(request_object.crop_ref);
+        }
+    }
+
+    if (overview_already_materialized && crops_already_materialized) {
+        publish_ready(job, "ok", overview_ref, crop_refs, "", "already_encoded");
+        return;
+    }
+
+    auto entry = cache_->resolve(job.pipeline_id, job.source_name, job.source_id, job.frame_key,
+                                 job.frame_ts_ms);
+    if (!entry) {
+        publish_ready(job, "not_found", "", {}, "frame_not_in_cache", "");
+        return;
+    }
+
+    bool overview_encoded = false;
+    bool crops_encoded = false;
+
+    if (needs_overview) {
+        if (!encode_overview(*entry, job, overview_ref, failure_reason, overview_encoded)) {
             publish_ready(job, "error", "", {},
-                          failure_reason.empty() ? "overview_encode_failed" : failure_reason);
+                          failure_reason.empty() ? "overview_encode_failed" : failure_reason, "");
             return;
         }
     }
 
-    if (wants_type(job.evidence_types, "crop")) {
-        if (!encode_crops(*entry, job, crop_refs, failure_reason)) {
-            publish_ready(job, "error", overview_ref, {}, failure_reason);
+    if (needs_crops) {
+        if (!encode_crops(*entry, job, crop_refs, failure_reason, crops_encoded)) {
+            publish_ready(job, "error", overview_ref, {}, failure_reason, "");
             return;
         }
     }
 
-    publish_ready(job, "ok", overview_ref, crop_refs, "");
+    const std::string encode_reason =
+        (needs_overview || needs_crops) && !overview_encoded && !crops_encoded
+            ? std::string("already_encoded")
+            : std::string("encoded");
+    publish_ready(job, "ok", overview_ref, crop_refs, "", encode_reason);
 }
 
 bool EvidenceRequestService::encode_overview(const CachedFrameEntry& entry,
                                              const EvidenceRequestJob& job, std::string& out_ref,
-                                             std::string& failure_reason) {
+                                             std::string& failure_reason, bool& out_encoded) {
     const std::string output_ref =
         !job.overview_ref.empty() ? job.overview_ref : entry.meta.overview_ref;
     std::string file_path;
     if (!resolve_output_path(output_ref, file_path, failure_reason)) {
         return false;
+    }
+
+    if (was_recently_encoded(job, output_ref)) {
+        out_ref = output_ref;
+        out_encoded = false;
+        LOG_D("EvidenceRequestService: skip overview re-encode for '{}'", output_ref);
+        return true;
     }
 
     if (!FrameImageMaterializer::encode_overview_to_file(
@@ -321,13 +371,15 @@ bool EvidenceRequestService::encode_overview(const CachedFrameEntry& entry,
     }
 
     out_ref = output_ref;
+    out_encoded = true;
+    mark_recently_encoded(job, output_ref);
     return true;
 }
 
 bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
                                           const EvidenceRequestJob& job,
                                           std::vector<std::string>& out_refs,
-                                          std::string& failure_reason) {
+                                          std::string& failure_reason, bool& out_encoded) {
     std::vector<EvidenceRequestObject> request_objects = job.objects;
     if (request_objects.empty()) {
         // No explicit object filter means "materialize crops for everything visible on that frame".
@@ -347,6 +399,16 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
     }
     int crop_index = 0;
     for (const auto& request_object : request_objects) {
+        std::string output_ref = request_object.crop_ref;
+        if (!output_ref.empty()) {
+            if (was_recently_encoded(job, output_ref)) {
+                out_refs.push_back(output_ref);
+                ++crop_index;
+                LOG_D("EvidenceRequestService: skip crop re-encode for '{}'", output_ref);
+                continue;
+            }
+        }
+
         float left = request_object.left;
         float top = request_object.top;
         float width = request_object.width;
@@ -369,7 +431,6 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
             return false;
         }
 
-        std::string output_ref = request_object.crop_ref;
         if (output_ref.empty() && cached_object && !cached_object->crop_ref.empty()) {
             output_ref = cached_object->crop_ref;
         }
@@ -383,6 +444,12 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
         }
         ++crop_index;
 
+        if (was_recently_encoded(job, output_ref)) {
+            out_refs.push_back(output_ref);
+            LOG_D("EvidenceRequestService: skip crop re-encode for '{}'", output_ref);
+            continue;
+        }
+
         if (!FrameImageMaterializer::encode_crop_to_file(
                 enc_ctx_, entry, left, top, width, height, class_id, object_id, file_path,
                 config_.overview_jpeg_quality, failure_reason)) {
@@ -390,6 +457,8 @@ bool EvidenceRequestService::encode_crops(const CachedFrameEntry& entry,
         }
 
         out_refs.push_back(output_ref);
+        out_encoded = true;
+        mark_recently_encoded(job, output_ref);
     }
     return true;
 }
@@ -429,10 +498,81 @@ bool EvidenceRequestService::resolve_output_path(const std::string& ref, std::st
     return true;
 }
 
+std::string EvidenceRequestService::build_recent_ref_key(const EvidenceRequestJob& job,
+                                                         const std::string& ref) const {
+    return job.pipeline_id + "|" + job.source_name + "|" + std::to_string(job.source_id) + "|" +
+           job.frame_key + "|" + ref;
+}
+
+bool EvidenceRequestService::was_recently_encoded(const EvidenceRequestJob& job,
+                                                  const std::string& ref) {
+    if (ref.empty() || config_.encode_dedupe_ttl_ms <= 0) {
+        return false;
+    }
+
+    const int64_t now_ms = now_epoch_ms();
+    const std::string key = build_recent_ref_key(job, ref);
+
+    std::lock_guard<std::mutex> lk(recent_refs_mutex_);
+    prune_recently_encoded_locked(now_ms);
+
+    const auto it = recent_encoded_refs_.find(key);
+    if (it == recent_encoded_refs_.end()) {
+        return false;
+    }
+
+    return (now_ms - it->second.encoded_at_ms) <= config_.encode_dedupe_ttl_ms;
+}
+
+void EvidenceRequestService::mark_recently_encoded(const EvidenceRequestJob& job,
+                                                   const std::string& ref) {
+    if (ref.empty() || config_.encode_dedupe_ttl_ms <= 0) {
+        return;
+    }
+
+    const int64_t now_ms = now_epoch_ms();
+    const std::string key = build_recent_ref_key(job, ref);
+
+    std::lock_guard<std::mutex> lk(recent_refs_mutex_);
+    prune_recently_encoded_locked(now_ms);
+
+    auto [it, inserted] = recent_encoded_refs_.emplace(key, RecentEncodedRef{now_ms});
+    if (!inserted) {
+        it->second.encoded_at_ms = now_ms;
+    } else {
+        recent_ref_order_.push_back(key);
+    }
+
+    prune_recently_encoded_locked(now_ms);
+}
+
+void EvidenceRequestService::prune_recently_encoded_locked(int64_t now_ms) {
+    while (!recent_ref_order_.empty()) {
+        const std::string& oldest_key = recent_ref_order_.front();
+        const auto it = recent_encoded_refs_.find(oldest_key);
+        if (it == recent_encoded_refs_.end()) {
+            recent_ref_order_.pop_front();
+            continue;
+        }
+
+        const bool expired = (now_ms - it->second.encoded_at_ms) > config_.encode_dedupe_ttl_ms;
+        const bool over_limit =
+            config_.max_recent_encoded_refs > 0 &&
+            recent_encoded_refs_.size() > static_cast<size_t>(config_.max_recent_encoded_refs);
+        if (!expired && !over_limit) {
+            break;
+        }
+
+        recent_encoded_refs_.erase(it);
+        recent_ref_order_.pop_front();
+    }
+}
+
 void EvidenceRequestService::publish_ready(const EvidenceRequestJob& job, const std::string& status,
                                            const std::string& overview_ref,
                                            const std::vector<std::string>& crop_refs,
-                                           const std::string& failure_reason) const {
+                                           const std::string& failure_reason,
+                                           const std::string& encode_reason) const {
     if (!producer_ || config_.ready_channel.empty()) {
         return;
     }
@@ -453,6 +593,9 @@ void EvidenceRequestService::publish_ready(const EvidenceRequestJob& job, const 
     }
     if (!crop_refs.empty()) {
         ready["crop_refs"] = crop_refs;
+    }
+    if (!encode_reason.empty()) {
+        ready["encode_reason"] = encode_reason;
     }
     if (!failure_reason.empty()) {
         ready["failure_reason"] = failure_reason;

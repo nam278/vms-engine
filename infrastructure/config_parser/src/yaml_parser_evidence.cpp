@@ -28,14 +28,17 @@ void YamlConfigParser::parse_evidence(const void* node_ptr,
     out.cache_on_frame_events = yaml_bool(node, "cache_on_frame_events", true);
     out.cache_backend = yaml_str(node, "cache_backend", "nvbufsurface_copy");
     out.max_frames_per_source = yaml_int(node, "max_frames_per_source", 16);
+    out.encode_dedupe_ttl_ms = yaml_int(node, "encode_dedupe_ttl_ms", 30000);
+    out.max_recent_encoded_refs = yaml_int(node, "max_recent_encoded_refs", 256);
 
     LOG_D(
         "Parsed evidence section: enable={} request='{}' ready='{}' save_dir='{}' ttl_ms={} "
         "gap_ms={} quality={} cache_on_frame_events={} cache_backend='{}' "
-        "max_frames_per_source={}",
+        "max_frames_per_source={} dedupe_ttl_ms={} max_recent_encoded_refs={}",
         out.enable, out.request_channel, out.ready_channel, out.save_dir, out.frame_cache_ttl_ms,
         out.max_frame_gap_ms, out.overview_jpeg_quality, out.cache_on_frame_events,
-        out.cache_backend, out.max_frames_per_source);
+        out.cache_backend, out.max_frames_per_source, out.encode_dedupe_ttl_ms,
+        out.max_recent_encoded_refs);
 }
 
 }  // namespace engine::infrastructure::config_parser

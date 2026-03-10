@@ -111,10 +111,13 @@ def stream_consumer(
         target_stream: Target stream name to write to
         batch_size: Read batch size per iteration
     """
-    last_id = "0"
+    # Start from the latest stream position so restarts do not replay backlog.
+    last_id = "$"
     message_count = 0
 
-    logger.info(f"Starting consumer: {source_stream} → {target_stream}")
+    logger.info(
+        f"Starting consumer: {source_stream} → {target_stream} (new messages only)"
+    )
 
     try:
         while True:
@@ -125,7 +128,7 @@ def stream_consumer(
 
             if not messages:
                 if message_count > 0:
-                    logger.debug(f"Waiting for new data...")
+                    logger.debug("Waiting for new data...")
                 continue
 
             # Process each message
@@ -140,7 +143,8 @@ def stream_consumer(
 
                     # Publish to target stream
                     try:
-                        result_id = redis_client.xadd(target_stream, evidence_req)
+                        redis_client.xadd(target_stream, evidence_req)
+                        redis_client.xadd(target_stream, evidence_req)
                         message_count += 1
                         logger.info(
                             f"Forwarded {msg_id.decode() if isinstance(msg_id, bytes) else msg_id} | "

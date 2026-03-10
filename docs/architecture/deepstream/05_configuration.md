@@ -265,6 +265,8 @@ evidence:
   cache_on_frame_events: true
   cache_backend: nvbufsurface_copy
   max_frames_per_source: 16
+  encode_dedupe_ttl_ms: 30000
+  max_recent_encoded_refs: 256
 ```
 
 | Broker                 | Reconnect                                 | Message handling khi broker down |
@@ -278,18 +280,20 @@ evidence:
 
 <!-- markdownlint-disable MD060 -->
 
-| Field                   | Type   | Default                          | Notes                                             |
-| ----------------------- | ------ | -------------------------------- | ------------------------------------------------- |
-| `enable`                | bool   | false                            | Bật request-driven evidence subsystem             |
-| `request_channel`       | string | `""`                             | Stream/topic nhận `evidence_request`              |
-| `ready_channel`         | string | `""`                             | Stream/topic publish `evidence_ready`             |
-| `save_dir`              | string | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized    |
-| `frame_cache_ttl_ms`    | int    | 10000                            | TTL cho emitted frame snapshots                   |
-| `max_frame_gap_ms`      | int    | 250                              | Nearest-frame fallback tolerance                  |
-| `overview_jpeg_quality` | int    | 85                               | JPEG quality hiện dùng cho overview và crop       |
-| `cache_on_frame_events` | bool   | true                             | Cache emitted frames khi evidence bật             |
-| `cache_backend`         | string | `nvbufsurface_copy`              | Backend snapshot hiện tại                         |
-| `max_frames_per_source` | int    | 16                               | Bound per `(pipeline_id, source_name, source_id)` |
+| Field                     | Type   | Default                          | Notes                                             |
+| ------------------------- | ------ | -------------------------------- | ------------------------------------------------- |
+| `enable`                  | bool   | false                            | Bật request-driven evidence subsystem             |
+| `request_channel`         | string | `""`                             | Stream/topic nhận `evidence_request`              |
+| `ready_channel`           | string | `""`                             | Stream/topic publish `evidence_ready`             |
+| `save_dir`                | string | `/opt/vms_engine/dev/rec/frames` | Root directory chứa overview/crop materialized    |
+| `frame_cache_ttl_ms`      | int    | 10000                            | TTL cho emitted frame snapshots                   |
+| `max_frame_gap_ms`        | int    | 250                              | Nearest-frame fallback tolerance                  |
+| `overview_jpeg_quality`   | int    | 85                               | JPEG quality hiện dùng cho overview và crop       |
+| `cache_on_frame_events`   | bool   | true                             | Cache emitted frames khi evidence bật             |
+| `cache_backend`           | string | `nvbufsurface_copy`              | Backend snapshot hiện tại                         |
+| `max_frames_per_source`   | int    | 16                               | Bound per `(pipeline_id, source_name, source_id)` |
+| `encode_dedupe_ttl_ms`    | int    | 30000                            | TTL cho recent dedupe map sau materialization     |
+| `max_recent_encoded_refs` | int    | 256                              | Hard bound cho recent dedupe map                  |
 
 <!-- markdownlint-enable MD060 -->
 

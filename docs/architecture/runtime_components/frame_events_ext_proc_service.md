@@ -91,7 +91,7 @@ event_handlers:
         include_overview_ref: true
         rules:
           - label: face
-            endpoint: "http://192.168.1.99:8765/api/recognize/upload"
+            endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
             result_path: "match.external_id"
             display_path: "match.face_name"
             params:

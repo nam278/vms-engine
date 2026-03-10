@@ -1115,14 +1115,14 @@ void CropObjectHandler::publish_pending_messages(const std::vector<PendingMessag
             msg["tracker_id"] = m.tracker_id;
 
             producer_->publish_json(broker_channel_, msg.dump());
-            LOG_D(
-                "CropObjectHandler: published crop_bb mid={} src={} tid={} oid={} object_key={} "
-                "parent={} parent_object_key={} "
-                "type={} "
-                "class='{}' labels='{}' fname='{}'",
-                m.message_id, m.source_id, m.tracker_id, m.tracker_id, m.object_key,
-                m.parent_id_str, m.parent_object_key, pub_type_name(m.pub_type), m.label, m.labels,
-                m.fname);
+            // LOG_D(
+            //     "CropObjectHandler: published crop_bb mid={} src={} tid={} oid={} object_key={} "
+            //     "parent={} parent_object_key={} "
+            //     "type={} "
+            //     "class='{}' labels='{}' fname='{}'",
+            //     m.message_id, m.source_id, m.tracker_id, m.tracker_id, m.object_key,
+            //     m.parent_id_str, m.parent_object_key, pub_type_name(m.pub_type), m.label,
+            //     m.labels, m.fname);
         } catch (const std::exception& e) {
             LOG_W("CropObjectHandler: publish failed for tid={}: {}", m.tracker_id, e.what());
         }

@@ -125,7 +125,7 @@ struct FrameEventsExtProcService::Impl {
     }
 
     void perform_api_call(const RegisteredHandler& handler, std::vector<unsigned char> jpeg_bytes,
-                          const engine::core::config::FrameEventsExtProcRule* rule, int source_id,
+                          engine::core::config::FrameEventsExtProcRule rule, int source_id,
                           const std::string& source_name, const std::string& frame_key,
                           int64_t frame_ts_ms, const std::string& overview_ref,
                           const std::string& crop_ref, const std::string& object_key,
@@ -142,11 +142,11 @@ struct FrameEventsExtProcService::Impl {
             return;
         }
 
-        std::string url = rule->endpoint;
-        if (!rule->params.empty()) {
+        std::string url = rule.endpoint;
+        if (!rule.params.empty()) {
             url.push_back('?');
             bool first = true;
-            for (const auto& [key, value] : rule->params) {
+            for (const auto& [key, value] : rule.params) {
                 if (!first) {
                     url.push_back('&');
                 }
@@ -198,8 +198,8 @@ struct FrameEventsExtProcService::Impl {
         FrameEventsExtProcResult result;
         try {
             const auto parsed = json::parse(response_body);
-            result.result = json_get_by_path(parsed, rule->result_path);
-            result.display = json_get_by_path(parsed, rule->display_path);
+            result.result = json_get_by_path(parsed, rule.result_path);
+            result.display = json_get_by_path(parsed, rule.display_path);
         } catch (const std::exception& ex) {
             LOG_W("FrameEventsExtProcService: JSON parse error object_key='{}': {}", object_key,
                   ex.what());
@@ -326,10 +326,11 @@ void FrameEventsExtProcService::process_object(
         handler = handler_it->second;
     }
 
-    const auto* rule = find_rule(handler.config, object_type);
-    if (!rule) {
+    const auto* rule_ptr = find_rule(handler.config, object_type);
+    if (!rule_ptr) {
         return;
     }
+    const auto rule = *rule_ptr;
 
     auto jpeg_bytes =
         pimpl_->encode_object_jpeg(obj_meta, frame_meta, batch_surf, handler.config.jpeg_quality);
@@ -340,6 +341,8 @@ void FrameEventsExtProcService::process_object(
     }
 
     auto impl_ref = pimpl_;
+    // Copy the matched rule into the detached worker thread; the local handler copy dies when
+    // process_object() returns, so handing off a raw pointer here would dangle.
     std::thread([impl_ref = std::move(impl_ref), handler, rule, jpeg = std::move(jpeg_bytes),
                  source_id, source_name, frame_key, frame_ts_ms, overview_ref, crop_ref, object_key,
                  instance_key, tracker_id, class_id, object_type, confidence]() mutable {

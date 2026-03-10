@@ -347,4 +347,4 @@ event_handlers:
           display_path: match.face_name # JSON path for OSD display label
           params:
             threshold: "0.65"
-            skip_anti_spoofing: "false"
+            skip_anti_spoofing: "true"

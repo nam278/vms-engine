@@ -325,6 +325,10 @@ struct EvidenceConfig {
     std::string cache_backend = "nvbufsurface_copy";
     ///< Hard bound per `(pipeline_id, source_name, source_id)` cache queue.
     int max_frames_per_source = 16;
+    ///< TTL for the in-memory dedupe ledger of recently materialized refs.
+    int encode_dedupe_ttl_ms = 30000;
+    ///< Hard bound for recently materialized refs tracked by the dedupe ledger.
+    int max_recent_encoded_refs = 256;
 };
 
 struct EventHandlerConfig {
