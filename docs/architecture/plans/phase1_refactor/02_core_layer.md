@@ -260,7 +260,7 @@ struct EventHandlerConfig {
     bool enable                = true;
     std::string type;                        ///< "on_detect" | "on_eos" | ...
     std::string probe_element;               ///< element id to attach probe
-    std::string source_element;              ///< for smart_record: "sources"
+    std::string source_element;              ///< for smart_record: source element id/name, defaulting to sources.id
     std::string trigger;                     ///< "smart_record" | "crop_object" | ...
     std::vector<std::string> label_filter;
 

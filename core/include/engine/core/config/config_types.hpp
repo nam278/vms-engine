@@ -41,6 +41,7 @@ struct CameraConfig {
 };
 
 struct SourcesConfig {
+    std::string id = "sources";  ///< stable element id/name for the source bin
     std::string type = "nvmultiurisrcbin";
 
     // Group 1 — nvmultiurisrcbin direct
@@ -337,7 +338,8 @@ struct EventHandlerConfig {
     std::string type;              ///< "on_detect" | "on_eos" | ...
     std::string probe_element;     ///< element id to attach probe
     std::string pad_name = "src";  ///< pad to probe: "src" (default) or "sink"
-    std::string source_element;    ///< for smart_record: nvmultiurisrcbin element name
+    std::string
+        source_element;  ///< for smart_record: source element id/name (defaults to sources.id)
     std::string
         trigger;  ///< "smart_record" | "crop_objects" | "class_id_offset" | "class_id_restore"
     std::string channel;  ///< message broker channel/topic to publish to (e.g. "worker_lsr")

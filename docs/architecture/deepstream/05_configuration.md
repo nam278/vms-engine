@@ -114,6 +114,7 @@ flowchart LR
 
 ```yaml
 sources:
+  id: sources                 # stable element id used by runtime control / smart_record
   type: nvmultiurisrcbin
 
   # Group 1 — nvmultiurisrcbin direct
@@ -307,7 +308,7 @@ event_handlers:
     enable: true
     type: on_detect
     probe_element: tracker
-    source_element: nvmultiurisrcbin0
+    source_element: sources
     trigger: smart_record
     channel: worker_lsr
     label_filter: [bike, bus, car, person, truck]

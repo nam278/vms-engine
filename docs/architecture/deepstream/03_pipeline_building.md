@@ -122,7 +122,8 @@ bool SourceBlockBuilder::build(const PipelineConfig& config) {
 ```cpp
 GstElement* SourceBuilder::build(const PipelineConfig& config, int) {
     const auto& src = config.sources;
-    auto elem = make_gst_element("nvmultiurisrcbin", "nvmultiurisrcbin0");
+    const std::string id = src.id.empty() ? std::string("sources") : src.id;
+    auto elem = make_gst_element("nvmultiurisrcbin", id.c_str());
 
     // Group 1 — Direct properties
     const std::string rest_port_str = std::to_string(src.rest_api_port);

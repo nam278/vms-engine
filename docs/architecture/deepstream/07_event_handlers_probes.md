@@ -395,7 +395,7 @@ event_handlers:
     enable: true
     type: on_detect
     probe_element: tracker
-    source_element: nvmultiurisrcbin0
+        source_element: sources
     trigger: smart_record
     label_filter: [car, person, truck]
     pre_event_sec: 2
@@ -471,7 +471,7 @@ event_handlers:
 
 | Field                       | Type   | Default | Notes                                |
 | --------------------------- | ------ | ------- | ------------------------------------ |
-| `source_element`            | string | —       | ✅ Required — tên `nvmultiurisrcbin` |
+| `source_element`            | string | `sources.id` | Source element id/name; nếu bỏ trống sẽ fallback sang `sources.id` |
 | `pre_event_sec`             | int    | 2       | Buffer pre-event (giây)              |
 | `post_event_sec`            | int    | 20      | Thời gian record sau trigger         |
 | `min_interval_sec`          | int    | 2       | Min giây giữa recordings per source  |

@@ -19,6 +19,7 @@
 | 08 | [08_analytics.md](08_analytics.md) | Analytics: ROI, line crossing, `nvdsanalytics` |
 | 09 | [09_outputs_smart_record.md](09_outputs_smart_record.md) | Output sinks & Smart Record |
 | 10 | [10_rest_api.md](10_rest_api.md) | DeepStream REST API — quản lý stream động (add/remove camera lúc runtime) |
+| 11 | [11_runtime_element_control.md](11_runtime_element_control.md) | Runtime control tổng quát cho element properties; use case đầu tiên là `nvdsosd` |
 
 ---
 

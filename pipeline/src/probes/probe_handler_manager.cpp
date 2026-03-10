@@ -44,12 +44,22 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
         if (cfg.trigger == "smart_record") {
             // Resolve the source element (nvmultiurisrcbin)
             GstElement* multiuribin = nullptr;
-            if (!cfg.source_element.empty()) {
-                multiuribin = find_element(cfg.source_element);
+            const std::string configured_source_element =
+                cfg.source_element.empty() ? config.sources.id : cfg.source_element;
+            if (!configured_source_element.empty()) {
+                multiuribin = find_element(configured_source_element);
+            }
+            if (!multiuribin && !config.sources.id.empty() &&
+                configured_source_element != config.sources.id) {
+                LOG_W(
+                    "ProbeHandlerManager: source_element '{}' not found for smart_record '{}' - "
+                    "falling back to sources.id='{}'",
+                    configured_source_element, cfg.id, config.sources.id);
+                multiuribin = find_element(config.sources.id);
             }
             if (!multiuribin) {
                 LOG_E("ProbeHandlerManager: source_element '{}' not found for smart_record '{}'",
-                      cfg.source_element, cfg.id);
+                      configured_source_element, cfg.id);
                 gst_object_unref(pad);
                 return false;
             }

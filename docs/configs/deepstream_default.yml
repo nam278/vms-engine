@@ -87,6 +87,7 @@ evidence:
 # Handles RTSP decode + batch mux internally (no separate nvstreammux needed)
 # =============================================================================
 sources:
+  id: sources
   type: nvmultiurisrcbin
 
   # --- Section 1: nvmultiurisrcbin direct properties ---
@@ -323,7 +324,7 @@ event_handlers:
     enable: true
     type: on_detect
     probe_element: tracker # attach pad probe to tracker's src pad
-    source_element: nvmultiurisrcbin0 # actual element name assigned by SourceBuilder
+    source_element: sources # stable source element id from sources.id
     trigger: smart_record
     channel: worker_lsr # Redis Stream / Kafka topic to publish smart-record events
     label_filter: [bike, bus, car, person, truck]

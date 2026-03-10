@@ -11,7 +11,7 @@ SourceBuilder::SourceBuilder(GstElement* bin) : bin_(bin) {}
 GstElement* SourceBuilder::build(const engine::core::config::PipelineConfig& config,
                                  int /*index*/) {
     const auto& src = config.sources;
-    const std::string id = "nvmultiurisrcbin0";
+    const std::string id = src.id.empty() ? std::string("sources") : src.id;
 
     auto elem = engine::core::utils::make_gst_element("nvmultiurisrcbin", id.c_str());
     if (!elem) {

@@ -71,6 +71,7 @@ nvmultiurisrcbin → muxer → PGIE → tracker ──[probe:src]──→ ...
 
 ```yaml
 sources:
+  id: sources
   type: nvmultiurisrcbin
   smart_record: 2              # 0=off, 1=cloud-only, 2=multi (recommended)
   smart_rec_dir_path: "/opt/engine/data/rec"
@@ -91,15 +92,14 @@ event_handlers:
     type: on_detect
     probe_element: tracker
     pad_name: src
-    source_element: nvmultiurisrcbin0   # tên element trong pipeline
+    source_element: sources              # nên trỏ vào sources.id, không dùng tên hardcode
     trigger: smart_record
     label_filter: [car, person, truck]
     pre_event_sec: 5
     post_event_sec: 20
     min_interval_sec: 2
     max_concurrent_recordings: 4
-    broker:
-      channel: "smart_record:events"     # Redis/Kafka channel
+    channel: "smart_record:events"       # Redis/Kafka channel
 ```
 
 ### 2.3 Field Reference
@@ -111,8 +111,8 @@ event_handlers:
 | `min_interval_sec`         | uint32   | `2`     | Khoảng cách tối thiểu giữa 2 actual_start (giây)        |
 | `max_concurrent_recordings`| uint32   | `4`     | Số recording đồng thời tối đa (tất cả source cộng lại)  |
 | `label_filter`             | string[] | `[]`    | Labels cho phép trigger; rỗng = accept all               |
-| `source_element`           | string   | `""`    | Tên `nvmultiurisrcbin` element — bắt buộc               |
-| `broker.channel`           | string   | `""`    | Channel publish events; rỗng = không publish             |
+| `source_element`           | string   | `sources.id` | Id/name của source element; bỏ trống sẽ fallback sang `sources.id` |
+| `channel`                  | string   | `""`    | Channel publish events; rỗng = không publish             |
 
 > ⚠️ `smart_rec_cache` (sources block) phải ≥ `pre_event_sec` (handler block). Nếu cache nhỏ hơn, DeepStream chỉ back-fill được phần cache có sẵn.
 
@@ -318,7 +318,7 @@ T=32  Detect → 32-8=24 ≥ 2 → ALLOW
 
 ```mermaid
 flowchart LR
-    A["nvmultiurisrcbin0"] --> B["nvmultiurisrcbin0_creator<br/>(child sub-bin)"]
+  A["sources"] --> B["sources_creator<br/>(child sub-bin)"]
     B --> C["dsnvurisrcbin0<br/>dsnvurisrcbin1<br/>dsnvurisrcbin2"]
     C --> D["g_signal_emit_by_name('start-sr')"]
 ```
@@ -418,7 +418,7 @@ Fallback: linear search trong `source_bins_` nếu qdata missing.
 | -------------------------------------- | ---------------------- | ------------------------------------------ |
 | `sources.smart_record > 0`            | YAML `sources:`        | `2` = multi (recommended)                  |
 | `smart_rec_dir_path` writable         | YAML + host filesystem | Thư mục phải tồn tại + có quyền ghi       |
-| `source_element` trỏ đúng element     | YAML `event_handlers:` | Tên `nvmultiurisrcbin` trong pipeline      |
+| `source_element` trỏ đúng element     | YAML `event_handlers:` | Nên trỏ vào `sources.id` để tránh hardcode nội bộ |
 | `enable: true`                         | YAML `event_handlers:` |                                            |
 | `label_filter` khớp PGIE model labels | YAML `event_handlers:` | Rỗng = accept all                          |
 | `libnvdsgst_smartrecord.so`           | DeepStream install     | `/opt/nvidia/deepstream/deepstream/lib/`   |
@@ -428,7 +428,7 @@ Fallback: linear search trong `source_bins_` nếu qdata missing.
 
 | Log Message                              | Nguyên Nhân                                        | Giải Pháp                                     |
 | ---------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
-| `nvurisrcbin not found for source N`     | `source_element` sai tên / stream chưa connect    | Kiểm tra element name; inspect DOT graph      |
+| `nvurisrcbin not found for source N`     | `source_element` sai id / stream chưa connect    | Kiểm tra `sources.id`, `source_element`, DOT graph |
 | `max concurrent recordings (4) reached`  | Global limit đạt                                  | Tăng `max_concurrent_recordings` / giảm `post_event_sec` |
 | `session N expired without sr-done`      | Source disconnect khi đang ghi / pipeline error    | Handler tự clear sau grace period — auto-recover |
 | `cached nvurisrcbin stale, re-discovering`| Source hot-swap tạo element mới                   | Auto-handled — không cần can thiệp            |
