@@ -11,7 +11,7 @@ namespace engine::pipeline {
 /**
  * @brief Concrete IPipelineBuilder for DeepStream pipelines.
  *
- * Orchestrates the 5-phase build sequence:
+ * Orchestrates the 4-phase build sequence:
  *   Phase 1 – Source block  (nvmultiurisrcbin)
  *   Phase 2 – Processing    (nvinfer, nvtracker, nvdsanalytics, …)
  *   Phase 3 – Visuals       (nvmultistreamtiler, nvdsosd)

@@ -1,477 +1,371 @@
-# 03. Xây dựng Pipeline — 5 Phases
+# 03. Xây dựng Pipeline - 4 Phases
 
 ## Mục lục
 
-- [1. Tổng quan](#1-tổng-quan)
-- [2. `tails_` Map Pattern](#2-tails_-map-pattern)
-- [3. Phase 1 — Sources](#3-phase-1--sources)
-- [4. Phase 2 — Processing](#4-phase-2--processing)
-- [5. Phase 3 — Visuals](#5-phase-3--visuals)
-- [6. Phase 4 — Outputs](#6-phase-4--outputs)
-- [7. Phase 5 — Standalone](#7-phase-5--standalone)
-- [8. DOT Graph Export](#8-dot-graph-export)
-- [9. Error Handling](#9-error-handling)
-- [Tổng hợp 5 Phases](#tổng-hợp-5-phases)
-- [Tài liệu liên quan](#tài-liệu-liên-quan)
+- [1. Tổng quan](#1-tong-quan)
+- [2. Block topology hiện tại](#2-block-topology-hien-tai)
+- [3. `tails_` map hiện tại](#3-tails_-map-hien-tai)
+- [4. Phase 1 - Sources](#4-phase-1---sources)
+- [5. Phase 2 - Processing](#5-phase-2---processing)
+- [6. Phase 3 - Visuals](#6-phase-3---visuals)
+- [7. Phase 4 - Outputs](#7-phase-4---outputs)
+- [8. Hai topology đầu ra phổ biến](#8-hai-topology-dau-ra-pho-bien)
+- [9. DOT graph export](#9-dot-graph-export)
+- [10. Error handling](#10-error-handling)
+- [Tổng hợp 4 phases](#tong-hop-4-phases)
+- [Tài liệu liên quan](#tai-lieu-lien-quan)
 
 ---
 
 ## 1. Tổng quan
 
-Pipeline building được thực hiện bởi `PipelineBuilder` theo **5 phases tuần tự**. Mỗi phase được delegate cho một **block builder** chuyên biệt. `PipelineBuilder` đóng vai trò **orchestrator** — nó không tạo trực tiếp GstElement, mà điều phối qua factory + block builders.
+`PipelineBuilder` hiện build pipeline theo **4 phases tuần tự**. Mỗi phase delegate cho một block builder riêng, còn `PipelineBuilder` chỉ làm nhiệm vụ orchestration, cleanup, và DOT dump.
 
 ```mermaid
 graph LR
-    PB["PipelineBuilder<br/>(orchestrator)"]
-
-    subgraph PHASES["5 Build Phases"]
-        P1["Phase 1<br/>Sources"]
-        P2["Phase 2<br/>Processing"]
-        P3["Phase 3<br/>Visuals"]
-        P4["Phase 4<br/>Outputs"]
-        P5["Phase 5<br/>Standalone"]
-    end
-
-    PB --> P1 --> P2 --> P3 --> P4 --> P5
+    PB["PipelineBuilder"] --> P1["Phase 1<br/>SourceBlockBuilder"]
+    P1 --> P2["Phase 2<br/>ProcessingBlockBuilder"]
+    P2 --> P3["Phase 3<br/>VisualsBlockBuilder"]
+    P3 --> P4["Phase 4<br/>OutputsBlockBuilder"]
 
     style PB fill:#fff3e0,stroke:#e65100,stroke-width:2px
     style P1 fill:#e3f2fd,stroke:#1565c0
     style P2 fill:#e8f5e9,stroke:#2e7d32
     style P3 fill:#f3e5f5,stroke:#7b1fa2
     style P4 fill:#fce4ec,stroke:#c62828
-    style P5 fill:#e0f2f1,stroke:#00695c
 ```
 
-> 📋 **Pattern quan trọng**: `tails_` map — track **cuối cùng của mỗi upstream path** để biết link tới element tiếp theo ở đâu.
+Thứ tự này được hard-code trong `pipeline/src/pipeline_builder.cpp`, và hiện tại **không còn Phase 5 standalone** trong block-building flow nữa.
 
 ---
 
-## 2. `tails_` Map Pattern
+## 2. Block topology hiện tại
 
-`tails_` là trái tim của linking system. Sau khi refactor sang **GstBin architecture**, mỗi phase tạo ra một sub-bin và lưu con trỏ bin đó vào `tails_`. Linking giữa các phase dùng `gst_element_link(bin_a, bin_b)` thông qua ghost pads.
+Ở mức top-level `GstPipeline`, các block đang link với nhau như sau:
+
+```mermaid
+flowchart LR
+    SRC["sources_bin"] --> PROC["processing_bin"]
+    PROC --> VIS["visuals_bin<br/>(optional)"]
+    VIS --> OUT["output_bin_*"]
+
+    style SRC fill:#4a9eff,color:#fff
+    style PROC fill:#00b894,color:#fff
+    style VIS fill:#6c5ce7,color:#fff
+    style OUT fill:#ff7675,color:#fff
+```
+
+Khi `visuals` bị tắt hoặc không có element nào, `OutputsBlockBuilder` sẽ lấy upstream trực tiếp từ `processing_bin`. Khi có nhiều output, một `tee` sẽ được chèn giữa upstream cuối cùng và các `output_bin_*`.
+
+Điểm quan trọng của kiến trúc hiện tại:
+
+- `sources_bin`, `processing_bin`, `visuals_bin` là các `GstBin` có ghost pads để block-level linking chỉ cần `gst_element_link()`.
+- Mỗi `output_bin_{id}` chỉ expose **ghost sink pad**, vì output là đầu cuối của pipeline.
+- Internal elements được link bên trong từng bin; external linking chỉ diễn ra giữa các bin hoặc giữa upstream block và `tee`.
+
+---
+
+## 3. `tails_` map hiện tại
+
+`tails_` không còn là một tail duy nhất bị overwrite sau mỗi phase. Implementation hiện tại dùng các key cố định theo block:
 
 ```cpp
 std::unordered_map<std::string, GstElement*> tails_;
 
-// Sau Phase 1: sources_bin với ghost src pad
 tails_["src"] = sources_bin;
-
-// Sau Phase 2: processing_bin với ghost sink + src pads
-tails_["src"] = processing_bin;  // cập nhật tail về bin mới nhất
-
-// Sau Phase 3: visuals_bin với ghost sink + src pads
-tails_["src"] = visuals_bin;
-
-// Sau Phase 4: outputs là đuôi pipeline — không cần update
+tails_["proc"] = processing_bin;
+tails_["vis"] = visuals_bin;
 ```
 
-> 📋 **Tại sao GstBin?** Wrapping mỗi stage trong GstBin giúp:
->
-> - Isolate internal linking (elements chỉ link trong cùng bin)
-> - DOT graph rõ ràng hơn (group elements theo stage)
-> - Ghost pads cung cấp consistent interface giữa phases
+Các quy tắc đang áp dụng trong code:
 
-### Update flow
+- `SourceBlockBuilder` luôn ghi `tails_["src"]`.
+- `ProcessingBlockBuilder` ghi `tails_["proc"]`; nếu không có processing elements thì pass-through bằng `tails_["proc"] = tails_["src"]`.
+- `VisualsBlockBuilder` ghi `tails_["vis"]`; nếu visuals bị skip thì pass-through bằng `tails_["vis"] = tails_["proc"]`.
+- `OutputsBlockBuilder` chỉ **đọc** `vis` hoặc `proc`; phase này không ghi tail mới vì outputs là terminal branches.
+
+Nói ngắn gọn, logic chọn upstream cho phase 4 là:
 
 ```cpp
-bool PipelineBuilder::build_sources(const PipelineConfig& config) {
-    auto builder = std::make_unique<SourceBlockBuilder>(pipeline_, tails_);
-    if (!builder->build(config)) return false;
-    // tails_["src"] = sources_bin  (set inside SourceBlockBuilder)
-    return true;
-}
-
-bool PipelineBuilder::build_processing(const PipelineConfig& config) {
-    auto builder = std::make_unique<ProcessingBlockBuilder>(pipeline_, tails_);
-    if (!builder->build(config)) return false;
-    // tails_["src"] updated to processing_bin
-    return true;
+GstElement* upstream = nullptr;
+if (tails_.count("vis")) {
+    upstream = tails_["vis"];
+} else if (tails_.count("proc")) {
+    upstream = tails_["proc"];
 }
 ```
 
 ---
 
-## 3. Phase 1 — Sources
+## 4. Phase 1 - Sources
 
 **Block builder**: `SourceBlockBuilder`
 
-Phase 1 tạo đúng **một** `sources_bin` outer wrapper với 2 mode theo `config.sources.type`:
-
-- `nvmultiurisrcbin`: DeepStream tự quản lý `nvurisrcbin + nvstreammux` nội bộ.
-- `nvurisrcbin`: engine tự tạo nhiều `nvurisrcbin_N` và một `nvstreammux` standalone.
-
-Ở cả hai mode, block luôn expose một batched `src` ghost pad để downstream bins link.
+Phase 1 luôn tạo đúng một block đầu vào ở top-level tên `sources_bin` hoặc dùng `config.sources.id` khi manual mode yêu cầu tên cụ thể.
 
 ```cpp
-bool SourceBlockBuilder::build(const PipelineConfig& config) {
-    // 1. Tạo sources_bin
-    GstElement* sources_bin = gst_bin_new("sources_bin");
+GstElement* sources_bin = gst_bin_new(sources_bin_name.c_str());
 
-    // 2. Build mode tương ứng
-    if (config.sources.type == "nvurisrcbin") {
-        build_manual_sources_block(sources_bin, config);
-    } else {
-        build_multiurisrc_block(sources_bin, config);
-    }
+const bool ok = uses_manual_sources(config.sources.type)
+                    ? build_manual_sources_block(sources_bin, config)
+                    : build_multiurisrc_block(sources_bin, config);
 
-    // 3. Add sources_bin vào pipeline
-    gst_bin_add(GST_BIN(pipeline_), sources_bin);
-    tails_["src"] = sources_bin;
-    return true;
-}
+gst_bin_add(GST_BIN(pipeline_), sources_bin);
+tails_["src"] = sources_bin;
 ```
 
-### 3.1 Legacy mode — `nvmultiurisrcbin`
+### 4.1 `nvmultiurisrcbin` mode
 
-`NvMultiUriSrcBinBuilder` cấu hình `nvmultiurisrcbin`:
+Trong mode này, `sources_bin` chứa một `nvmultiurisrcbin` duy nhất. Block chỉ expose ghost `src` trỏ tới static `src` pad của element đó.
 
-```cpp
-GstElement* NvMultiUriSrcBinBuilder::build(const PipelineConfig& config, int) {
-    const auto& src = config.sources;
-    const std::string id = src.id.empty() ? std::string("sources") : src.id;
-    auto elem = make_gst_element("nvmultiurisrcbin", id.c_str());
-
-    // Group 1 — Direct properties
-    const std::string rest_port_str = std::to_string(src.rest_api_port);
-    g_object_set(G_OBJECT(elem.get()),
-        "port",           rest_port_str.c_str(),  // string! "0"=disable
-        "max-batch-size", (gint) src.max_batch_size,
-        "mode",           (gint) src.mode,
-        nullptr);
-
-    // Group 2 — nvurisrcbin pass-through
-    g_object_set(G_OBJECT(elem.get()),
-        "gpu-id",                  (gint) src.gpu_id,
-        "select-rtp-protocol",     (gint) src.select_rtp_protocol,
-        "rtsp-reconnect-interval", (gint) src.rtsp_reconnect_interval,
-        "drop-pipeline-eos",       (gboolean) src.drop_pipeline_eos,
-        nullptr);
-
-    // Group 3 — nvstreammux pass-through
-    g_object_set(G_OBJECT(elem.get()),
-        "width",  (gint) src.width,
-        "height", (gint) src.height,
-        "live-source", (gboolean) src.live_source,
-        nullptr);
-
-    gst_bin_add(GST_BIN(bin_), elem.get());
-    return elem.release();
-}
+```mermaid
+flowchart LR
+    subgraph SB1["sources_bin"]
+        M["nvmultiurisrcbin"]
+    end
+    M --> G1["ghost src"]
 ```
 
-### 3.2 Manual mode — `nvurisrcbin_N -> nvstreammux`
+### 4.2 Manual `nvurisrcbin -> nvstreammux` mode
 
-Manual mode attach trực tiếp các element vào `sources_bin`:
+Trong mode manual, `sources_bin` chứa:
 
-- app bật `USE_NEW_NVSTREAMMUX=yes` trước `gst_init()` để standalone mux resolve sang plugin nvstreammux mới
-- `sources.mux.id` được dùng làm element id của `nvstreammux`
-- nhiều `srcbin_<camera_id>` là sibling của mux trong cùng source layer bin
-- request pads `sink_0`, `sink_1`, ... trên mux
+- một `nvstreammux` standalone do `MuxerBuilder` tạo,
+- nhiều `source_bin_<camera_id>` do `RuntimeStreamManager` thêm vào,
+- mỗi source bin có thể chứa `nvurisrcbin` và optional branch elements như `nvvideoconvert`, `capsfilter`, `queue`.
 
-```cpp
-bool build_manual_sources_block(GstElement* sources_bin,
-                                const PipelineConfig& config) {
-    GstElement* muxer = builders::MuxerBuilder(sources_bin).build(config, 0);
-
-    RuntimeStreamManager stream_manager(sources_bin, muxer, config.sources);
-    for (const auto& camera : config.sources.cameras) {
-        stream_manager.add_stream(camera);
-    }
-
-    expose_ghost(sources_bin, muxer, "src", "src");
-    return true;
-}
+```mermaid
+flowchart LR
+    subgraph SB2["sources_bin"]
+        C1["source_bin_cam_1"] --> MUX["nvstreammux"]
+        C2["source_bin_cam_2"] --> MUX
+        C3["source_bin_cam_n"] --> MUX
+    end
+    MUX --> G2["ghost src"]
 ```
 
-`RuntimeStreamManager` không tự dựng raw `nvurisrcbin` nữa; nó đi qua `NvUriSrcBinBuilder` để path cấu hình của source runtime và source static giữ cùng một contract. Manual source bin có thể được build theo chuỗi `nvurisrcbin -> nvvideoconvert -> capsfilter -> queue` trước khi ghost `src` sang mux.
+`SourceBlockBuilder` không tự link từng camera vào mux. Việc đó được giao cho `RuntimeStreamManager`, nơi mỗi camera:
 
-`RuntimeStreamManager::add_stream()` request một `nvstreammux` sink pad trước khi link source:
+1. request một mux sink pad `sink_N`,
+2. build `source_bin_<camera_id>`,
+3. link source branch vào mux,
+4. sync state với parent nếu pipeline đã có parent.
 
-```cpp
-const uint32_t source_index = allocate_source_index();
-const std::string sink_pad_name = "sink_" + std::to_string(source_index);
-GstPad* mux_sink_pad = gst_element_request_pad_simple(muxer_, sink_pad_name.c_str());
-
-g_object_set(G_OBJECT(source.get()), "uri", camera.uri.c_str(), nullptr);
-g_signal_connect(source.get(), "pad-added", G_CALLBACK(on_source_pad_added), link_context);
-```
-
-> 📋 **Batching rule**: manual mode dùng `sources.mux.batch_size` làm batch-size thực tế của standalone `nvstreammux`; `sources.max_batch_size` chỉ còn là compatibility fallback. Nếu cần dynamic add/remove, phải pre-size `sources.mux.max_sources` và `sources.mux.batch_size` theo số camera concurrent lớn nhất. Add vượt quá giới hạn đó sẽ không request thêm mux pad được.
-
-> 📋 **Identity rule**: `camera.id` là identity ổn định ở mức config, element name, event payload và runtime API. DeepStream vẫn yêu cầu `frame_meta->source_id` là integer slot index, nên manual mode vẫn giữ một internal `sink_%u` / source slot mapping bên trong `RuntimeStreamManager`.
-
-> ⚠️ **New mux caveat**: nvstreammux mới không còn dùng `width`, `height`, `live-source`, hay `gpu-id` như mux cũ. Nếu cần ép homogeneous caps trước mux mới, phải xử lý ở từng source branch trước khi vào `sink_%u`.
-
-> ⚠️ **Live RTSP caveat**: `sources.mux.config_file_path` có thể override batching và pacing của new `nvstreammux`. Trong case live RTSP của repo này, file mẫu ép `overall-min/max-fps=30` đã gây start chậm, lag và vỡ hình ở `rtspclientsink`. Giữ `config_file_path` tắt mặc định, chỉ bật lại khi file mux được tune đúng theo FPS thực tế của nguồn.
-
-> ⚠️ **DS8 SIGSEGV Bug**: `ip-address` **KHÔNG** được set — gọi `g_object_set("ip-address", ...)` gây crash trong DeepStream 8.0. Server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
+Ở cuối phase, top-level chỉ nhìn thấy một block `sources_bin` với đúng một ghost `src` batched pad.
 
 ---
 
-## 4. Phase 2 — Processing
+## 5. Phase 2 - Processing
 
-**Block builder**: `ProcessingBuilder`
+**Block builder**: `ProcessingBlockBuilder`
 
-Xử lý **tuần tự** theo thứ tự elements trong `config.processing`:
-
-```yaml
-processing:
-  elements:
-    - id: "pgie"
-      role: "primary_inference"
-      queue: {} # Auto-insert GstQueue
-      type: "nvinfer"
-      config_file_path: "configs/nvinfer/pgie_config.txt"
-      unique_id: 1
-      process_mode: 1 # 1=primary
-      batch_size: 4
-
-    - id: "tracker"
-      role: "tracker"
-      queue: {}
-      ll_lib_file: "/.../libnvds_nvmultiobjecttracker.so"
-
-    - id: "sgie_lpr"
-      role: "secondary_inference"
-      queue: {}
-      type: "nvinfer"
-      process_mode: 2 # 2=secondary
-      operate_on_gie_id: 1
-      operate_on_class_ids: "2"
-
-    - id: "demuxer"
-      role: "demuxer"
-      queue: {}
-```
+Phase này tạo `processing_bin`, build toàn bộ chain `config.processing.elements[]` bên trong bin, rồi link block này với `sources_bin`.
 
 ```cpp
-bool ProcessingBuilder::build_phase(const PipelineConfig& config, ...) {
-    GstElement* tail = tails["source"];
+GstElement* proc_bin = gst_bin_new("processing_bin");
+GstElement* first_elem = nullptr;
+GstElement* prev = nullptr;
 
-    for (const auto& elem : config.processing) {
-        // Queue insertion (nếu elem có queue: {})
-        if (elem.has_queue_config()) {
-            auto* q = build_queue_for(elem, config.queue_defaults, pipeline);
-            link_manager_->link_elements(tail, q);
-            tail = q;
-        }
-
-        // Tạo builder từ factory theo role
-        auto builder = factory_->create_processing_builder(elem.role);
-        auto* gst_elem = builder->build(config, elem.id, pipeline);
-        if (!gst_elem) return false;
-
-        link_manager_->link_elements(tail, gst_elem);
-        tail = gst_elem;
+for (const auto& elem_cfg : proc.elements) {
+    if (elem_cfg.has_queue) {
+        GstElement* q = q_builder.build(elem_cfg.queue, elem_cfg.id + "_queue");
+        if (!first_elem) first_elem = q;
+        if (prev) gst_element_link(prev, q);
+        prev = q;
     }
 
-    tails["processing_tail"] = tail;
-    return true;
+    GstElement* elem = build_processing_element(elem_cfg);
+    if (!first_elem) first_elem = elem;
+    if (prev) gst_element_link(prev, elem);
+    prev = elem;
 }
+
+expose_ghost(proc_bin, first_elem, "sink", "sink");
+expose_ghost(proc_bin, prev, "src", "src");
+gst_bin_add(GST_BIN(pipeline_), proc_bin);
+gst_element_link(tails_["src"], proc_bin);
+tails_["proc"] = proc_bin;
 ```
 
-### Special Case: `nvstreamdemux`
+Topology nội bộ của block này luôn là **linear chain**. Queue, nếu có, được chèn **ngay trước element tương ứng**.
 
-`nvstreamdemux` tạo **dynamic source pads** (1 per stream). Dùng `pad-added` signal:
-
-```cpp
-g_signal_connect(demux, "pad-added",
-    G_CALLBACK([](GstElement*, GstPad* pad, gpointer data) {
-        // Xác định stream ID từ pad name "src_0", "src_1"...
-        // Lưu pad owner vào tails_["stream_0"], tails_["stream_1"]...
-    }), pipeline);
+```mermaid
+flowchart LR
+    IN["ghost sink"] --> Q1["optional queue"] --> E1["nvinfer"]
+    E1 --> Q2["optional queue"] --> E2["nvtracker"]
+    E2 --> Q3["optional queue"] --> E3["nvdsanalytics"]
+    E3 --> OUT["ghost src"]
 ```
 
-> 📖 Chi tiết dynamic pads → [04_linking_system.md](04_linking_system.md)
+Nếu `config.processing.elements` rỗng thì phase này không tạo `processing_bin`; code hiện tại chỉ pass-through bằng `tails_["proc"] = tails_["src"]`.
 
 ---
 
-## 5. Phase 3 — Visuals
+## 6. Phase 3 - Visuals
 
-**Block builder**: `VisualsBuilder`
+**Block builder**: `VisualsBlockBuilder`
 
-> 📋 **Tùy chọn** — skip nếu `config.visuals.enabled = false`.
+Phase này hoạt động tương tự processing nhưng chỉ dành cho `config.visuals.elements[]`, thường là `nvmultistreamtiler` và `nvdsosd`.
 
 ```cpp
-bool VisualsBuilder::build_phase(const PipelineConfig& config, ...) {
-    if (!config.visuals.enabled) return true;
-
-    for (const auto& stream_id : get_stream_ids(config)) {
-        GstElement* tail = tails["stream_" + stream_id];
-
-        // Tiler (optional)
-        if (config.visuals.tiler.enabled) {
-            auto* tiler = factory_->create_visual_builder("tiler")
-                ->build(config, "tiler", pipeline);
-            link_manager_->link(tail, tiler);
-            tail = tiler;
-        }
-
-        // OSD (optional)
-        if (config.visuals.osd.enabled) {
-            auto* q = build_queue("osd_queue_" + stream_id, ...);
-            link_manager_->link(tail, q);
-            auto* osd = factory_->create_visual_builder("osd")
-                ->build(config, "osd_" + stream_id, pipeline);
-            link_manager_->link(q, osd);
-            tail = osd;
-        }
-
-        tails["vis_" + stream_id] = tail;
-    }
+if (!config.visuals.enable) {
+    tails_["vis"] = tails_["proc"];
     return true;
 }
+
+GstElement* vis_bin = gst_bin_new("visuals_bin");
+...
+gst_bin_add(GST_BIN(pipeline_), vis_bin);
+gst_element_link(tails_["proc"], vis_bin);
+tails_["vis"] = vis_bin;
+```
+
+Điểm cần lưu ý:
+
+- `visuals` bị disable: không tạo `visuals_bin`, chỉ pass-through.
+- `visuals.enable = true` nhưng `elements` rỗng: cũng pass-through.
+- Khi build thật, block expose cả ghost `sink` và `src` giống processing.
+
+```mermaid
+flowchart LR
+    PROC["processing_bin"] --> VIS["visuals_bin"] --> NEXT["upstream cho outputs"]
 ```
 
 ---
 
-## 6. Phase 4 — Outputs
+## 7. Phase 4 - Outputs
 
-**Block builder**: `OutputsBuilder`
+**Block builder**: `OutputsBlockBuilder`
 
-Tạo `tee` → nhiều sinks cho mỗi stream:
+Phase này không tạo một `outputs_bin` chung. Thay vào đó, nó tạo **một `output_bin_{id}` cho mỗi output** trong config.
+
+### 7.1 Chọn upstream đầu vào
+
+`OutputsBlockBuilder` lấy upstream theo thứ tự ưu tiên:
+
+1. `tails_["vis"]` nếu tồn tại,
+2. ngược lại `tails_["proc"]`.
+
+### 7.2 Một output
+
+Nếu chỉ có một output, block-level link rất thẳng:
 
 ```cpp
-bool OutputsBuilder::build_phase(const PipelineConfig& config, ...) {
-    for (const auto& output : config.outputs) {
-        GstElement* tail = tails["vis_" + output.stream_id];
+GstElement* out_bin = build_output_bin(config, 0);
+gst_element_link(upstream, out_bin);
+```
 
-        // Tee nếu multiple outputs cho cùng stream
-        if (output.requires_tee) {
-            auto* tee = gst_element_factory_make("tee", ...);
-            gst_bin_add(GST_BIN(pipeline), tee);
-            link_manager_->link(tail, tee);
-            tail = tee;
-        }
+### 7.3 Nhiều output
 
-        for (const auto& sink_cfg : output.sinks) {
-            auto* q = build_queue("enc_q_" + sink_cfg.id, ...);
+Nếu có nhiều output, phase 4 chèn thêm:
 
-            // Encoder (nếu cần)
-            GstElement* encode_tail = q;
-            if (sink_cfg.needs_encoding()) {
-                auto* enc = factory_->create_encoder_builder(sink_cfg.codec)
-                    ->build(config, sink_cfg.id + "_enc", pipeline);
-                link_manager_->link(q, enc);
-                encode_tail = enc;
-            }
+- một `tee` tên `output_tee` ở top-level pipeline,
+- một queue tên `<output_id>_tee_queue` cho mỗi nhánh,
+- rồi mới link vào `output_bin_{id}` tương ứng.
 
-            // Sink
-            auto* sink = factory_->create_sink_builder(sink_cfg.type)
-                ->build(config, sink_cfg.id, pipeline);
-            link_manager_->link(encode_tail, sink);
-        }
-    }
-    return true;
+```cpp
+tee = make_gst_element("tee", "output_tee");
+gst_bin_add(GST_BIN(pipeline_), tee);
+gst_element_link(upstream, tee);
+
+for (auto& output : config.outputs) {
+    GstElement* q = q_builder.build(default_q, output.id + "_tee_queue");
+    gst_element_link(tee, q);
+
+    GstElement* out_bin = build_output_bin(...);
+    gst_element_link(q, out_bin);
 }
 ```
+
+### 7.4 Bên trong mỗi `output_bin_{id}`
+
+`build_output_bin()` tạo linear chain của output đó. Queue, nếu có, tiếp tục được chèn **trước** element tương ứng.
+
+Một điểm quan trọng của implementation hiện tại:
+
+- `output_bin_{id}` chỉ expose ghost `sink` pad.
+- Không có ghost `src` vì output branch kết thúc ở sink hoặc broker.
+- Không có `tails_["out"]` vì outputs là terminal blocks.
 
 ---
 
-## 7. Phase 5 — Standalone
+## 8. Hai topology đầu ra phổ biến
 
-**Block builder**: `StandaloneBuilder`
+### 8.1 Single output
 
-Các elements **không nằm trong main pipeline chain** — cấu hình sau khi linking hoàn tất:
-
-```cpp
-bool StandaloneBuilder::build_phase(const PipelineConfig& config, ...) {
-    // Smart Record (embedded trong nvmultiurisrcbin)
-    if (config.smart_record.has_value()) {
-        const auto& sr = config.smart_record.value();
-        auto* src_elem = tails["source"];
-        g_object_set(G_OBJECT(src_elem),
-            "smart-record",               sr.mode,
-            "smart-rec-dir-path",         sr.output_dir.c_str(),
-            "smart-rec-file-prefix",      sr.file_prefix.c_str(),
-            "smart-rec-cache",            sr.post_event_duration_sec,
-            "smart-rec-default-duration", sr.default_duration_sec,
-            nullptr);
-    }
-
-    // Message Broker (linked từ probe handler, không từ main chain)
-    if (config.message_broker.has_value()) {
-        factory_->create_msgbroker_builder()
-            ->build(config, "msgconv", pipeline);
-    }
-
-    return true;
-}
+```mermaid
+flowchart LR
+    SRC["sources_bin"] --> PROC["processing_bin"] --> VIS["visuals_bin or proc passthrough"] --> OUT1["output_bin_main"]
 ```
+
+### 8.2 Multiple outputs
+
+```mermaid
+flowchart LR
+    SRC["sources_bin"] --> PROC["processing_bin"] --> VIS["visuals_bin or proc passthrough"] --> TEE["output_tee"]
+    TEE --> Q1["out_a_tee_queue"] --> O1["output_bin_out_a"]
+    TEE --> Q2["out_b_tee_queue"] --> O2["output_bin_out_b"]
+    TEE --> Q3["out_n_tee_queue"] --> O3["output_bin_out_n"]
+
+    style TEE fill:#ff9f43,color:#fff
+```
+
+Trong implementation hiện tại **không có block-level `nvstreamdemux`** và cũng không có per-stream tails như `stream_0`, `vis_0`.
 
 ---
 
-## 8. DOT Graph Export
+## 9. DOT graph export
 
-Sau khi build hoàn tất, nếu `config.pipeline.dot_file_dir` được set:
+Sau khi build xong, `PipelineBuilder` dump DOT graph nếu `config.pipeline.dot_file_dir` khác rỗng:
 
 ```cpp
-if (!config.pipeline.dot_file_dir.empty()) {
-    setenv("GST_DEBUG_DUMP_DOT_DIR",
-           config.pipeline.dot_file_dir.c_str(), 1);
-
-    GST_DEBUG_BIN_TO_DOT_FILE(
-        GST_BIN(pipeline_),
-        GST_DEBUG_GRAPH_SHOW_ALL,
-        "vms_engine_pipeline");
-}
+gst_debug_bin_to_dot_file(
+    GST_BIN(pipeline_),
+    GST_DEBUG_GRAPH_SHOW_ALL,
+    (pipeline_id + "_build_graph").c_str());
 ```
+
+Lệnh convert:
 
 ```bash
-# Convert DOT → PNG
-dot -Tpng dev/logs/vms_engine_pipeline.dot -o pipeline.png
+dot -Tpng <dot-file>.dot -o pipeline.png
 ```
 
 ---
 
-## 9. Error Handling
+## 10. Error handling
 
-Mỗi phase trả về `bool`. Build dừng ngay khi bất kỳ phase nào fail:
+Mỗi phase trả về `bool`. Nếu phase nào fail thì `PipelineBuilder::build()` sẽ cleanup toàn bộ `pipeline_` và `tails_` rồi dừng.
 
 ```cpp
-bool PipelineBuilder::build(const PipelineConfig& config, GMainLoop* loop) {
-    pipeline_ = gst_pipeline_new(config.pipeline.id.c_str());
-    if (!pipeline_) { LOG_E("gst_pipeline_new failed"); return false; }
-
-    if (!build_sources(config))     { cleanup(); return false; }
-    if (!build_processing(config))  { cleanup(); return false; }
-    if (!build_visuals(config))     { cleanup(); return false; }
-    if (!build_outputs(config))     { cleanup(); return false; }
-    if (!build_standalone(config))  { cleanup(); return false; }
-
-    LOG_I("Pipeline '{}' built successfully", config.pipeline.name);
-    return true;
-}
-
-void PipelineBuilder::cleanup() {
-    if (pipeline_) {
-        gst_object_unref(pipeline_);
-        pipeline_ = nullptr;
-    }
-    tails_.clear();
+if (!blk.build(config)) {
+    LOG_E("Phase X failed");
+    cleanup_pipeline();
+    return false;
 }
 ```
 
+Điều này đảm bảo không có pipeline half-built bị trả ra ngoài `PipelineManager`.
+
 ---
 
-## Tổng hợp 5 Phases
+## Tổng hợp 4 phases
 
-| Phase             | Block Builder        | Input                            | Output                        | Optional?   |
-| ----------------- | -------------------- | -------------------------------- | ----------------------------- | ----------- |
-| **1. Sources**    | `SourceBlockBuilder` | `config.sources`                 | `tails_["src"]` = sources_bin | ❌ Bắt buộc |
-| **2. Processing** | `ProcessingBuilder`  | `config.processing[]`            | `tails_["processing_tail"]`   | ❌ Bắt buộc |
-| **3. Visuals**    | `VisualsBuilder`     | `config.visuals`                 | `tails_["vis_*"]`             | ✅ Optional |
-| **4. Outputs**    | `OutputsBuilder`     | `config.outputs[]`               | Sinks (terminal)              | ❌ Bắt buộc |
-| **5. Standalone** | `StandaloneBuilder`  | `smart_record`, `message_broker` | Side-effects only             | ✅ Optional |
+| Phase         | Block builder            | Input chính                    | Link với upstream                  | Tail ghi ra                       |
+| ------------- | ------------------------ | ------------------------------ | ---------------------------------- | --------------------------------- |
+| 1. Sources    | `SourceBlockBuilder`     | `config.sources`               | top-level add only                 | `tails_["src"]`                   |
+| 2. Processing | `ProcessingBlockBuilder` | `config.processing.elements[]` | `sources_bin -> processing_bin`    | `tails_["proc"]`                  |
+| 3. Visuals    | `VisualsBlockBuilder`    | `config.visuals.elements[]`    | `processing_bin -> visuals_bin`    | `tails_["vis"]` hoặc pass-through |
+| 4. Outputs    | `OutputsBlockBuilder`    | `config.outputs[]`             | `vis/proc -> tee? -> output_bin_*` | không ghi tail mới                |
 
 ---
 
 ## Tài liệu liên quan
 
-| Tài liệu                                                 | Mô tả                                              |
-| -------------------------------------------------------- | -------------------------------------------------- |
-| [02_core_interfaces.md](02_core_interfaces.md)           | IPipelineBuilder, IBuilderFactory, IElementBuilder |
-| [04_linking_system.md](04_linking_system.md)             | Static/dynamic linking, ghost pads                 |
-| [05_configuration.md](05_configuration.md)               | YAML schema cho processing/outputs/visuals         |
-| [09_outputs_smart_record.md](09_outputs_smart_record.md) | Smart Record architecture                          |
-| [../RAII.md](../RAII.md)                                 | RAII guards cho GstElement\*                       |
+| Tài liệu                                       | Mô tả                                                           |
+| ---------------------------------------------- | --------------------------------------------------------------- |
+| [02_core_interfaces.md](02_core_interfaces.md) | IPipelineBuilder và các interface liên quan                     |
+| [04_linking_system.md](04_linking_system.md)   | Chi tiết cách link giữa bins, queues, tee và manual source pads |
+| [05_configuration.md](05_configuration.md)     | Schema YAML cho `sources`, `processing`, `visuals`, `outputs`   |
+| [10_rest_api.md](10_rest_api.md)               | Runtime add/remove streams cho manual source mode               |
+| [../RAII.md](../RAII.md)                       | RAII wrappers cho `GstElement*`, `GstPad*`, `GstCaps*`          |
