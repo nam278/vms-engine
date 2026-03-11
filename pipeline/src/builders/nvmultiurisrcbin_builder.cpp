@@ -13,6 +13,8 @@ GstElement* NvMultiUriSrcBinBuilder::build(const engine::core::config::PipelineC
                                            int /*index*/) {
     const auto& src = config.sources;
     const std::string id = src.id.empty() ? std::string("sources") : src.id;
+    const std::string smart_record_prefix =
+        config.pipeline.id.empty() ? src.smart_rec_file_prefix : config.pipeline.id;
 
     auto elem = engine::core::utils::make_gst_element("nvmultiurisrcbin", id.c_str());
     if (!elem) {
@@ -60,7 +62,7 @@ GstElement* NvMultiUriSrcBinBuilder::build(const engine::core::config::PipelineC
     if (src.smart_record > 0) {
         g_object_set(G_OBJECT(elem.get()), "smart-record", static_cast<gint>(src.smart_record),
                      "smart-rec-dir-path", src.smart_rec_dir_path.c_str(), "smart-rec-file-prefix",
-                     src.smart_rec_file_prefix.c_str(), "smart-rec-cache",
+                     smart_record_prefix.c_str(), "smart-rec-cache",
                      static_cast<gint>(src.smart_rec_cache), "smart-rec-default-duration",
                      static_cast<gint>(src.smart_rec_default_duration), "smart-rec-mode",
                      static_cast<gint>(src.smart_rec_mode), "smart-rec-container",

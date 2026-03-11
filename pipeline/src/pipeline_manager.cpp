@@ -317,8 +317,13 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         GstElement* source_root = gst_bin_get_by_name(GST_BIN(pipeline_), source_root_name.c_str());
         GstElement* muxer = gst_bin_get_by_name(GST_BIN(pipeline_), mux_name.c_str());
         if (source_root != nullptr && muxer != nullptr) {
+            auto sources_config = config.sources;
+            if (!config.pipeline.id.empty()) {
+                sources_config.smart_rec_file_prefix = config.pipeline.id;
+            }
+
             runtime_stream_manager_ =
-                std::make_unique<RuntimeStreamManager>(source_root, muxer, config.sources);
+                std::make_unique<RuntimeStreamManager>(source_root, muxer, sources_config);
             LOG_I("PipelineManager: runtime stream manager enabled for manual sources");
         } else {
             LOG_W(

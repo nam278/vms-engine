@@ -210,12 +210,15 @@ sources:
   # preallocated mux slots but cannot grow beyond mux.max_sources.
   # Camera id is the stable external identity; DeepStream still uses an integer
   # internal source slot for frame_meta->source_id and nvstreammux sink_%u pads.
+  # Smart-record filenames use pipeline.id as the effective prefix.
+  # In manual nvurisrcbin mode, the engine also sets source-id explicitly so
+  # filenames become de1_0_00000_... instead of lsr_-1_00000_....
 
   # Smart Record — applied to nvmultiurisrcbin or to each nvurisrcbin
   # NOTE: smart_rec_video_cache is DEPRECATED — use smart_rec_cache instead
   smart_record: 2 # 0=disable  1=cloud-only (no local)  2=multi(cloud+local)
   smart_rec_dir_path: "/opt/vms_engine/dev/rec"
-  smart_rec_file_prefix: "lsr"
+  smart_rec_file_prefix: "de1" # fallback when pipeline.id is empty; keep aligned with pipeline.id for debugging
   smart_rec_cache: 10 # pre-event circular buffer in seconds (audio + video)
   smart_rec_default_duration: 20 # post-event recording length in seconds
   smart_rec_mode: 0 # 0=audio+video  1=video-only  2=audio-only

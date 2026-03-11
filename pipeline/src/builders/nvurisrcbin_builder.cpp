@@ -160,11 +160,18 @@ GstElement* NvUriSrcBinBuilder::build(const engine::core::config::PipelineConfig
         return nullptr;
     }
 
-    return build(config.sources, config.sources.cameras[static_cast<std::size_t>(index)]);
+    auto sources = config.sources;
+    if (!config.pipeline.id.empty()) {
+        sources.smart_rec_file_prefix = config.pipeline.id;
+    }
+
+    return build(sources, config.sources.cameras[static_cast<std::size_t>(index)],
+                 static_cast<uint32_t>(index));
 }
 
 GstElement* NvUriSrcBinBuilder::build(const engine::core::config::SourcesConfig& sources,
-                                      const engine::core::config::CameraConfig& camera) {
+                                      const engine::core::config::CameraConfig& camera,
+                                      uint32_t source_id) {
     if (camera.id.empty() || camera.uri.empty()) {
         LOG_E("NvUriSrcBinBuilder: camera id and uri are required");
         return nullptr;
@@ -195,7 +202,8 @@ GstElement* NvUriSrcBinBuilder::build(const engine::core::config::SourcesConfig&
                  static_cast<gint>(sources.rtsp_reconnect_interval), "rtsp-reconnect-attempts",
                  static_cast<gint>(sources.rtsp_reconnect_attempts), "latency",
                  static_cast<guint>(sources.latency), "udp-buffer-size",
-                 static_cast<guint>(sources.udp_buffer_size), "disable-audio",
+                 static_cast<guint>(sources.udp_buffer_size), "source-id",
+                 static_cast<gint>(source_id), "disable-audio",
                  static_cast<gboolean>(sources.disable_audio), "disable-passthrough",
                  static_cast<gboolean>(sources.disable_passthrough), "file-loop",
                  static_cast<gboolean>(sources.file_loop), "async-handling",
@@ -224,6 +232,9 @@ GstElement* NvUriSrcBinBuilder::build(const engine::core::config::SourcesConfig&
                      static_cast<gint>(sources.smart_rec_default_duration), "smart-rec-mode",
                      static_cast<gint>(sources.smart_rec_mode), "smart-rec-container",
                      static_cast<gint>(sources.smart_rec_container), nullptr);
+
+        LOG_D("NvUriSrcBinBuilder: smart-record uses prefix '{}' and source-id {} for '{}'",
+              sources.smart_rec_file_prefix, source_id, camera.id);
     }
 
     if (!gst_bin_add(GST_BIN(source_bin.get()), source.get())) {

@@ -134,7 +134,7 @@ bool RuntimeStreamManager::add_stream(const engine::core::config::CameraConfig& 
     }
 
     builders::NvUriSrcBinBuilder source_builder(source_root_);
-    GstElement* source = source_builder.build(sources_config_, camera);
+    GstElement* source = source_builder.build(sources_config_, camera, source_index);
     if (source == nullptr) {
         gst_element_release_request_pad(muxer_, mux_sink_pad);
         gst_object_unref(mux_sink_pad);

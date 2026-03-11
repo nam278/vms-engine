@@ -53,7 +53,12 @@ bool build_manual_sources_block(GstElement* sources_bin,
     }
 
     {
-        engine::pipeline::RuntimeStreamManager stream_manager(sources_bin, muxer, config.sources);
+        auto sources_config = config.sources;
+        if (!config.pipeline.id.empty()) {
+            sources_config.smart_rec_file_prefix = config.pipeline.id;
+        }
+
+        engine::pipeline::RuntimeStreamManager stream_manager(sources_bin, muxer, sources_config);
         for (const auto& camera : config.sources.cameras) {
             if (!stream_manager.add_stream(camera)) {
                 LOG_E("SourceBlockBuilder: failed to add manual source '{}'", camera.id);

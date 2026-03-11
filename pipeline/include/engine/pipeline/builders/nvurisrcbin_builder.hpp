@@ -21,7 +21,7 @@ class NvUriSrcBinBuilder : public engine::core::builders::IElementBuilder {
     GstElement* build(const engine::core::config::PipelineConfig& config, int index = 0) override;
 
     GstElement* build(const engine::core::config::SourcesConfig& sources,
-                      const engine::core::config::CameraConfig& camera);
+                      const engine::core::config::CameraConfig& camera, uint32_t source_id);
 
    private:
     GstElement* bin_ = nullptr;
