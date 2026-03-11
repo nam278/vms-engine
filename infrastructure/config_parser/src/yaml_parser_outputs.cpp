@@ -48,6 +48,9 @@ void YamlConfigParser::parse_outputs(const void* node_ptr,
                 }
                 elem.location = yaml_str(elem_node, "location");
                 elem.protocols = yaml_str(elem_node, "protocols");
+                if (elem_node["latency"]) {
+                    elem.latency = static_cast<std::uint32_t>(yaml_int(elem_node, "latency", 0));
+                }
                 if (elem_node["sync"]) {
                     elem.sync = yaml_bool(elem_node, "sync", false);
                 }

@@ -68,7 +68,8 @@ messaging:
 
 # -----------------------------------------------------------------------------
 # Runtime control API
-# HTTP API cho state query và runtime property updates theo element id.
+# HTTP API cho state query, runtime property updates, và manual nvurisrcbin
+# source control (`GET/POST/DELETE /api/v1/pipelines/{pipeline_id}/sources`).
 # -----------------------------------------------------------------------------
 control_api:
   enable: true
@@ -78,7 +79,8 @@ control_api:
 # -----------------------------------------------------------------------------
 # Runtime control messaging
 # Worker có thể publish command generic vào channel này; engine sẽ consume và
-# trả reply qua reply_channel nếu producer đang được cấu hình.
+# trả reply qua reply_channel nếu producer đang được cấu hình. Message type mới
+# cho manual source control: `list_sources`, `add_source`, `remove_source`.
 # -----------------------------------------------------------------------------
 control_messaging:
   enable: true
@@ -188,7 +190,7 @@ sources:
     batch_size: 4
     max_sources: 4
     batched_push_timeout_us: 40000
-    sync_inputs: true
+    sync_inputs: false
     max_latency_ns: 100000000
     attach_sys_ts: true # whether to attach a system timestamp to the batch meta (nvstreammux attach-sys-ts property)
     frame_duration: -1 # 33 if 30 FPS in milliseconds; -1 disables frame-rate correction
@@ -329,7 +331,12 @@ outputs:
         # dest_crop: "0:0:1920:1080"
         # src_crop: "0:0:0:0"
         # dest_crop: "0:0:0:0"
-        queue: {} # → entry queue before videoconvert (thread boundary from visuals)
+        queue: # → keep this queue small so add/remove resync does not accumulate stale frames
+          max_size_buffers: 4
+          max_size_bytes_mb: 8
+          max_size_time_sec: 0.15
+          leaky: 2
+          silent: true
 
       - id: preencode_caps
         type: capsfilter
@@ -346,18 +353,25 @@ outputs:
       - id: parser
         type: h264parse # h264parse | h265parse
         config_interval: -1 # repeat codec config on every IDR for late RTSP clients
-        queue: # → queue after encoder; absorbs I-frame bitrate bursts
-          max_size_buffers: 20
-          max_size_bytes_mb: 40
-          max_size_time_sec: 1.5
+        queue: # → keep a short cushion for IDR bursts without adding multi-second lag
+          max_size_buffers: 8
+          max_size_bytes_mb: 16
+          max_size_time_sec: 0.25
           leaky: 2 # 2=downstream
+          silent: true
 
       - id: sink
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
         protocols: tcp # tcp | udp
+        latency: 150 # plugin default is 2000ms; keep this low for runtime source churn
         async: false # NVIDIA recommends async=false on sinks with new nvstreammux
-        queue: {} # → queue after parser, before sink (use defaults)
+        queue: # → short queue before sink so downstream RTSP buffering stays bounded
+          max_size_buffers: 4
+          max_size_bytes_mb: 8
+          max_size_time_sec: 0.15
+          leaky: 2
+          silent: true
 
 # =============================================================================
 # EVENT HANDLERS — GStreamer probe callbacks

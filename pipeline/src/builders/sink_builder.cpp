@@ -48,6 +48,10 @@ GstElement* SinkBuilder::build(const engine::core::config::PipelineConfig& confi
             // string → flags conversion, unlike g_object_set() which expects a guint.
             gst_util_set_object_arg(G_OBJECT(elem.get()), "protocols", elem_cfg.protocols.c_str());
         }
+        if (elem_cfg.latency.has_value() && has_property(elem.get(), "latency")) {
+            g_object_set(G_OBJECT(elem.get()), "latency", static_cast<guint>(*elem_cfg.latency),
+                         nullptr);
+        }
     } else if (type == "filesink") {
         if (!elem_cfg.location.empty()) {
             g_object_set(G_OBJECT(elem.get()), "location", elem_cfg.location.c_str(), nullptr);

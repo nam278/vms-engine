@@ -213,19 +213,20 @@ struct OutputElementConfig {
     // Common GStreamer properties (flat — parsed from YAML key-value)
     // Each element type has different properties; store as key-value pairs
     // for flexibility. Builders extract what they need.
-    std::string caps;                    ///< for capsfilter
-    std::string nvbuf_memory_type;       ///< for nvvideoconvert
-    std::string src_crop;                ///< for nvvideoconvert
-    std::string dest_crop;               ///< for nvvideoconvert
-    int bitrate = 0;                     ///< for encoder (bps)
-    std::string control_rate;            ///< for encoder
-    std::string profile;                 ///< for encoder
-    int iframeinterval = 0;              ///< for encoder
-    std::optional<int> config_interval;  ///< for h264parse/h265parse
-    std::string location;                ///< for sink (RTSP URL, file path)
-    std::string protocols;               ///< for rtspclientsink
-    std::optional<bool> sync;            ///< for sink elements
-    std::optional<bool> async;           ///< for sink elements
+    std::string caps;                      ///< for capsfilter
+    std::string nvbuf_memory_type;         ///< for nvvideoconvert
+    std::string src_crop;                  ///< for nvvideoconvert
+    std::string dest_crop;                 ///< for nvvideoconvert
+    int bitrate = 0;                       ///< for encoder (bps)
+    std::string control_rate;              ///< for encoder
+    std::string profile;                   ///< for encoder
+    int iframeinterval = 0;                ///< for encoder
+    std::optional<int> config_interval;    ///< for h264parse/h265parse
+    std::string location;                  ///< for sink (RTSP URL, file path)
+    std::string protocols;                 ///< for rtspclientsink
+    std::optional<std::uint32_t> latency;  ///< for rtspclientsink
+    std::optional<bool> sync;              ///< for sink elements
+    std::optional<bool> async;             ///< for sink elements
 
     // Inline queue
     bool has_queue = false;
