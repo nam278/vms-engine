@@ -14,33 +14,35 @@ GstElement* CapsFilterBuilder::build(const engine::core::config::PipelineConfig&
     const int element_idx = index % 100;
 
     const auto& elem_cfg = config.outputs[output_idx].elements[element_idx];
-    const auto& id = elem_cfg.id;
+    return build(elem_cfg.id, elem_cfg.caps);
+}
 
-    auto elem = engine::core::utils::make_gst_element("capsfilter", id.c_str());
+GstElement* CapsFilterBuilder::build(const std::string& name, const std::string& caps_string) {
+    auto elem = engine::core::utils::make_gst_element("capsfilter", name.c_str());
     if (!elem) {
-        LOG_E("Failed to create capsfilter '{}'", id);
+        LOG_E("Failed to create capsfilter '{}'", name);
         return nullptr;
     }
 
-    if (!elem_cfg.caps.empty()) {
+    if (!caps_string.empty()) {
         // Keep caps in an RAII wrapper until g_object_set() has taken its own reference.
-        engine::core::utils::GstCapsPtr caps(gst_caps_from_string(elem_cfg.caps.c_str()),
+        engine::core::utils::GstCapsPtr caps(gst_caps_from_string(caps_string.c_str()),
                                              gst_caps_unref);
         if (!caps) {
-            LOG_E("Failed to parse caps '{}' for '{}'", elem_cfg.caps, id);
+            LOG_E("Failed to parse caps '{}' for '{}'", caps_string, name);
             return nullptr;
         }
         g_object_set(G_OBJECT(elem.get()), "caps", caps.get(), nullptr);
     } else {
-        LOG_W("CapsFilterBuilder: no caps configured for '{}'", id);
+        LOG_W("CapsFilterBuilder: no caps configured for '{}'", name);
     }
 
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
-        LOG_E("Failed to add capsfilter '{}' to bin", id);
+        LOG_E("Failed to add capsfilter '{}' to bin", name);
         return nullptr;
     }
 
-    LOG_I("Built capsfilter '{}'", id);
+    LOG_I("Built capsfilter '{}'", name);
     return elem.release();
 }
 

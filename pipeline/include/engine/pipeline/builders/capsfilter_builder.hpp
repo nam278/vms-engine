@@ -18,6 +18,7 @@ class CapsFilterBuilder : public engine::core::builders::IElementBuilder {
     explicit CapsFilterBuilder(GstElement* bin);
 
     GstElement* build(const engine::core::config::PipelineConfig& config, int index = 0) override;
+    GstElement* build(const std::string& name, const std::string& caps);
 
    private:
     GstElement* bin_ = nullptr;

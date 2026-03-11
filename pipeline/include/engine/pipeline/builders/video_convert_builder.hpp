@@ -18,6 +18,8 @@ class VideoConvertBuilder : public engine::core::builders::IElementBuilder {
     explicit VideoConvertBuilder(GstElement* bin);
 
     GstElement* build(const engine::core::config::PipelineConfig& config, int index = 0) override;
+    GstElement* build(const std::string& name, int gpu_id, const std::string& nvbuf_memory_type,
+                      const std::string& src_crop, const std::string& dest_crop);
 
    private:
     GstElement* bin_ = nullptr;

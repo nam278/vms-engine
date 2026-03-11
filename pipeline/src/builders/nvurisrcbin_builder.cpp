@@ -1,32 +1,16 @@
 #include "engine/pipeline/builders/nvurisrcbin_builder.hpp"
 
+#include "engine/pipeline/builders/capsfilter_builder.hpp"
 #include "engine/pipeline/builders/queue_builder.hpp"
+#include "engine/pipeline/builders/video_convert_builder.hpp"
 
 #include "engine/pipeline/source_naming.hpp"
 #include "engine/core/utils/gst_utils.hpp"
 #include "engine/core/utils/logger.hpp"
 
-#include <cstdio>
-
 namespace engine::pipeline::builders {
 
 namespace {
-
-bool should_apply_crop(const std::string& crop) {
-    if (crop.empty()) {
-        return false;
-    }
-
-    int left = 0;
-    int top = 0;
-    int width = 0;
-    int height = 0;
-    if (std::sscanf(crop.c_str(), "%d:%d:%d:%d", &left, &top, &width, &height) == 4) {
-        return width > 0 && height > 0;
-    }
-
-    return true;
-}
 
 struct SourcePadAddedContext {
     GstPad* downstream_sink_pad = nullptr;
@@ -88,56 +72,14 @@ GstElement* build_source_branch_element(GstElement* source_bin, const std::strin
     const std::string element_name = make_source_branch_element_name(camera_id, cfg.id, cfg.type);
 
     if (cfg.type == "nvvideoconvert") {
-        auto elem = engine::core::utils::make_gst_element("nvvideoconvert", element_name.c_str());
-        if (!elem) {
-            LOG_E("Failed to create nvvideoconvert '{}'", element_name);
-            return nullptr;
-        }
-
-        const int gpu_id = cfg.gpu_id > 0 ? cfg.gpu_id : default_gpu_id;
-        g_object_set(G_OBJECT(elem.get()), "gpu-id", static_cast<gint>(gpu_id), nullptr);
-        if (!cfg.nvbuf_memory_type.empty()) {
-            gst_util_set_object_arg(G_OBJECT(elem.get()), "nvbuf-memory-type",
-                                    cfg.nvbuf_memory_type.c_str());
-        }
-        if (should_apply_crop(cfg.src_crop)) {
-            g_object_set(G_OBJECT(elem.get()), "src-crop", cfg.src_crop.c_str(), nullptr);
-        }
-        if (should_apply_crop(cfg.dest_crop)) {
-            g_object_set(G_OBJECT(elem.get()), "dest-crop", cfg.dest_crop.c_str(), nullptr);
-        }
-
-        if (!gst_bin_add(GST_BIN(source_bin), elem.get())) {
-            LOG_E("Failed to add nvvideoconvert '{}' to source bin", element_name);
-            return nullptr;
-        }
-
-        return elem.release();
+        VideoConvertBuilder builder(source_bin);
+        return builder.build(element_name, cfg.gpu_id > 0 ? cfg.gpu_id : default_gpu_id,
+                             cfg.nvbuf_memory_type, cfg.src_crop, cfg.dest_crop);
     }
 
     if (cfg.type == "capsfilter") {
-        auto elem = engine::core::utils::make_gst_element("capsfilter", element_name.c_str());
-        if (!elem) {
-            LOG_E("Failed to create capsfilter '{}'", element_name);
-            return nullptr;
-        }
-
-        if (!cfg.caps.empty()) {
-            engine::core::utils::GstCapsPtr caps(gst_caps_from_string(cfg.caps.c_str()),
-                                                 gst_caps_unref);
-            if (!caps) {
-                LOG_E("Failed to parse caps '{}' for '{}'", cfg.caps, element_name);
-                return nullptr;
-            }
-            g_object_set(G_OBJECT(elem.get()), "caps", caps.get(), nullptr);
-        }
-
-        if (!gst_bin_add(GST_BIN(source_bin), elem.get())) {
-            LOG_E("Failed to add capsfilter '{}' to source bin", element_name);
-            return nullptr;
-        }
-
-        return elem.release();
+        CapsFilterBuilder builder(source_bin);
+        return builder.build(element_name, cfg.caps);
     }
 
     if (cfg.type == "queue") {
