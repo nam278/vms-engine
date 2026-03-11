@@ -2,6 +2,7 @@
 #include "engine/pipeline/evidence/evidence_request_service.hpp"
 #include "engine/pipeline/evidence/frame_evidence_cache.hpp"
 #include "engine/pipeline/probes/probe_handler_manager.hpp"
+#include "engine/pipeline/runtime_stream_manager.hpp"
 #include "engine/core/messaging/imessage_consumer.hpp"
 #include "engine/core/utils/logger.hpp"
 #include "engine/core/utils/gst_utils.hpp"
@@ -21,6 +22,18 @@ struct SetParamRequest {
     std::string element_id;
     std::string property;
     std::string value;
+    std::promise<bool> promise;
+};
+
+struct AddSourceRequest {
+    RuntimeStreamManager* manager = nullptr;
+    engine::core::config::CameraConfig camera;
+    std::promise<bool> promise;
+};
+
+struct RemoveSourceRequest {
+    RuntimeStreamManager* manager = nullptr;
+    std::string camera_id;
     std::promise<bool> promise;
 };
 
@@ -202,6 +215,20 @@ gboolean invoke_get_param(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+gboolean invoke_add_source(gpointer data) {
+    std::unique_ptr<AddSourceRequest> request(static_cast<AddSourceRequest*>(data));
+    request->promise.set_value(request->manager != nullptr &&
+                               request->manager->add_stream(request->camera));
+    return G_SOURCE_REMOVE;
+}
+
+gboolean invoke_remove_source(gpointer data) {
+    std::unique_ptr<RemoveSourceRequest> request(static_cast<RemoveSourceRequest*>(data));
+    request->promise.set_value(request->manager != nullptr &&
+                               request->manager->remove_stream(request->camera_id));
+    return G_SOURCE_REMOVE;
+}
+
 }  // namespace
 
 PipelineManager::PipelineManager(std::unique_ptr<engine::core::builders::IPipelineBuilder> builder)
@@ -279,6 +306,32 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         if (!probe_manager_->attach_probes(config, producer_, frame_evidence_cache_.get())) {
             LOG_E("Failed to attach one or more pad probes");
             // Non-fatal — continue with reduced functionality
+        }
+    }
+
+    if (config.sources.type == "nvurisrcbin") {
+        const std::string source_root_name =
+            config.sources.id.empty() ? std::string("sources_bin") : config.sources.id;
+        const std::string mux_name =
+            config.sources.mux.id.empty() ? std::string("batch_mux") : config.sources.mux.id;
+        GstElement* source_root = gst_bin_get_by_name(GST_BIN(pipeline_), source_root_name.c_str());
+        GstElement* muxer = gst_bin_get_by_name(GST_BIN(pipeline_), mux_name.c_str());
+        if (source_root != nullptr && muxer != nullptr) {
+            runtime_stream_manager_ =
+                std::make_unique<RuntimeStreamManager>(source_root, muxer, config.sources);
+            LOG_I("PipelineManager: runtime stream manager enabled for manual sources");
+        } else {
+            LOG_W(
+                "PipelineManager: manual source runtime manager unavailable (source_root={}, "
+                "muxer={})",
+                source_root != nullptr ? "ok" : "missing", muxer != nullptr ? "ok" : "missing");
+        }
+
+        if (source_root != nullptr) {
+            gst_object_unref(source_root);
+        }
+        if (muxer != nullptr) {
+            gst_object_unref(muxer);
         }
     }
 
@@ -387,6 +440,50 @@ bool PipelineManager::resume() {
         return false;
     }
     return start();
+}
+
+bool PipelineManager::add_source(const engine::core::config::CameraConfig& camera) {
+    if (!runtime_stream_manager_) {
+        LOG_W("PipelineManager::add_source unavailable for sources.type='{}'",
+              config_.sources.type);
+        return false;
+    }
+
+    if (loop_ == nullptr || !g_main_loop_is_running(loop_)) {
+        return runtime_stream_manager_->add_stream(camera);
+    }
+
+    auto* request = new AddSourceRequest{runtime_stream_manager_.get(), camera};
+    auto future = request->promise.get_future();
+    g_main_context_invoke(g_main_loop_get_context(loop_), invoke_add_source, request);
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        LOG_W("PipelineManager::add_source timeout for '{}'", camera.id);
+        return false;
+    }
+
+    return future.get();
+}
+
+bool PipelineManager::remove_source(const std::string& camera_id) {
+    if (!runtime_stream_manager_) {
+        LOG_W("PipelineManager::remove_source unavailable for sources.type='{}'",
+              config_.sources.type);
+        return false;
+    }
+
+    if (loop_ == nullptr || !g_main_loop_is_running(loop_)) {
+        return runtime_stream_manager_->remove_stream(camera_id);
+    }
+
+    auto* request = new RemoveSourceRequest{runtime_stream_manager_.get(), camera_id};
+    auto future = request->promise.get_future();
+    g_main_context_invoke(g_main_loop_get_context(loop_), invoke_remove_source, request);
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        LOG_W("PipelineManager::remove_source timeout for '{}'", camera_id);
+        return false;
+    }
+
+    return future.get();
 }
 
 engine::core::pipeline::PipelineState PipelineManager::get_state() const {
@@ -542,6 +639,8 @@ void PipelineManager::cleanup() {
         probe_manager_->detach_all();
         probe_manager_.reset();
     }
+
+    runtime_stream_manager_.reset();
 
     stop_evidence_loop();
 

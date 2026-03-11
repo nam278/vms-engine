@@ -25,6 +25,8 @@ namespace probes {
 class ProbeHandlerManager;
 }
 
+class RuntimeStreamManager;
+
 /**
  * @brief Concrete IPipelineManager implementation.
  *
@@ -44,6 +46,8 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager,
     bool stop() override;
     bool pause() override;
     bool resume() override;
+    bool add_source(const engine::core::config::CameraConfig& camera) override;
+    bool remove_source(const std::string& camera_id) override;
     engine::core::pipeline::PipelineState get_state() const override;
     bool set_param(const std::string& element_id, const std::string& property,
                    const std::string& value) override;
@@ -92,6 +96,7 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager,
 
     std::unique_ptr<evidence::FrameEvidenceCache> frame_evidence_cache_;
     std::unique_ptr<evidence::EvidenceRequestService> evidence_request_service_;
+    std::unique_ptr<RuntimeStreamManager> runtime_stream_manager_;
 
     static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer data);
     void handle_eos();

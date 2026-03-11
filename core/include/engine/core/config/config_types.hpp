@@ -1,8 +1,9 @@
 #pragma once
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <optional>
 
 namespace engine::core::config {
 
@@ -40,18 +41,49 @@ struct CameraConfig {
     std::string uri;
 };
 
+struct SourceBranchElementConfig {
+    std::string id;
+    std::string type;  ///< "nvvideoconvert" | "capsfilter"
+    bool enabled = true;
+    int gpu_id = 0;
+    QueueConfig queue;
+    std::string caps;
+    std::string nvbuf_memory_type;
+    std::string src_crop;
+    std::string dest_crop;
+};
+
+struct SourceBranchConfig {
+    std::vector<SourceBranchElementConfig> elements;
+};
+
+struct SourceMuxConfig {
+    std::string id = "batch_mux";
+    std::string implementation = "new";  ///< "new" | "legacy"
+    int batch_size = 0;                  ///< 0 = fallback to max_batch_size
+    int max_sources = 0;                 ///< 0 = fallback to batch_size/max_batch_size
+    int batched_push_timeout_us = 40000;
+    bool sync_inputs = false;
+    std::uint64_t max_latency_ns = 40000000;
+    bool drop_pipeline_eos = true;
+    std::optional<bool> attach_sys_ts;
+    std::optional<std::int64_t> frame_duration;
+    std::string config_file_path;
+};
+
 struct SourcesConfig {
-    std::string id = "sources";  ///< stable element id/name for the source bin
-    std::string type = "nvmultiurisrcbin";
+    std::string id = "sources";             ///< logical source layer id in manual mode
+    std::string type = "nvmultiurisrcbin";  ///< "nvmultiurisrcbin" | "nvurisrcbin"
 
     // Group 1 — nvmultiurisrcbin direct
+    // Ignored when type=nvurisrcbin.
     // NOTE: ip_address is never set — DS8 ip-address property causes SIGSEGV.
     // rest_api_port controls the built-in CivetWeb REST API port (0 = disable).
     int rest_api_port = 0;  ///< 0=disable REST API, >0 = bind on that port (default DS9000)
     int max_batch_size = 4;
     int mode = 0;  ///< 0=video, 1=audio
 
-    // Group 2 — nvurisrcbin per-source passthrough
+    // Group 2 — nvurisrcbin per-source properties
     int gpu_id = 0;
     int num_extra_surfaces = 9;
     int cudadec_memtype = 0;  ///< 0=device, 1=pinned, 2=unified
@@ -66,21 +98,28 @@ struct SourcesConfig {
     bool file_loop = false;  ///< loop file:// sources after EOS
     bool disable_audio = false;
     bool disable_passthrough = false;
+    std::optional<bool> drop_on_latency;
     bool drop_pipeline_eos = true;
     bool async_handling = true;     ///< handle async state changes (default: true)
     bool low_latency_mode = false;  ///< low-latency mode for I/IPPP bitstreams
 
-    // Group 3 — nvstreammux passthrough
+    // Optional pre-mux branch for manual source bins.
+    SourceBranchConfig branch;
+
+    // Group 3 — nvstreammux properties
     int width = 1920;
     int height = 1080;
     int batched_push_timeout = 40000;  ///< µs
     bool live_source = true;
     bool sync_inputs = false;
 
+    // Structured standalone mux config for manual mode.
+    SourceMuxConfig mux;
+
     // Cameras
     std::vector<CameraConfig> cameras;
 
-    // Smart Record — flat properties on nvmultiurisrcbin
+    // Smart Record — applied to nvmultiurisrcbin or each nvurisrcbin
     int smart_record = 0;  ///< 0=disable, 1=cloud-only, 2=multi
     std::string smart_rec_dir_path;
     std::string smart_rec_file_prefix = "lsr";
@@ -174,16 +213,19 @@ struct OutputElementConfig {
     // Common GStreamer properties (flat — parsed from YAML key-value)
     // Each element type has different properties; store as key-value pairs
     // for flexibility. Builders extract what they need.
-    std::string caps;               ///< for capsfilter
-    std::string nvbuf_memory_type;  ///< for nvvideoconvert
-    std::string src_crop;           ///< for nvvideoconvert
-    std::string dest_crop;          ///< for nvvideoconvert
-    int bitrate = 0;                ///< for encoder (bps)
-    std::string control_rate;       ///< for encoder
-    std::string profile;            ///< for encoder
-    int iframeinterval = 0;         ///< for encoder
-    std::string location;           ///< for sink (RTSP URL, file path)
-    std::string protocols;          ///< for rtspclientsink
+    std::string caps;                    ///< for capsfilter
+    std::string nvbuf_memory_type;       ///< for nvvideoconvert
+    std::string src_crop;                ///< for nvvideoconvert
+    std::string dest_crop;               ///< for nvvideoconvert
+    int bitrate = 0;                     ///< for encoder (bps)
+    std::string control_rate;            ///< for encoder
+    std::string profile;                 ///< for encoder
+    int iframeinterval = 0;              ///< for encoder
+    std::optional<int> config_interval;  ///< for h264parse/h265parse
+    std::string location;                ///< for sink (RTSP URL, file path)
+    std::string protocols;               ///< for rtspclientsink
+    std::optional<bool> sync;            ///< for sink elements
+    std::optional<bool> async;           ///< for sink elements
 
     // Inline queue
     bool has_queue = false;

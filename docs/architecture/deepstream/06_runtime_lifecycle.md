@@ -8,16 +8,24 @@
 
 ## Mục lục
 
-- [1. Tổng quan](#1-tổng-quan)
-- [2. PipelineState Machine](#2-pipelinestate-machine)
-- [3. GstBus — Message Routing](#3-gstbus--message-routing)
-- [4. Signal Handling — Graceful Shutdown](#4-signal-handling--graceful-shutdown)
-- [5. RTSP Source Reconnection](#5-rtsp-source-reconnection)
-- [6. Dynamic Stream Add/Remove](#6-dynamic-stream-addremove)
-- [7. Restart Logic](#7-restart-logic)
-- [8. PipelineInfo Query](#8-pipelineinfo-query)
-- [9. Debugging Runtime Issues](#9-debugging-runtime-issues)
-- [Tham chiếu chéo](#tham-chiếu-chéo)
+- [06. Runtime Lifecycle — GstBus \& Pipeline State Machine](#06-runtime-lifecycle--gstbus--pipeline-state-machine)
+  - [Mục lục](#mục-lục)
+  - [1. Tổng quan](#1-tổng-quan)
+  - [2. PipelineState Machine](#2-pipelinestate-machine)
+    - [State Transitions](#state-transitions)
+  - [3. GstBus — Message Routing](#3-gstbus--message-routing)
+    - [Message Types](#message-types)
+    - [`handle_bus_message()` — Core Handler](#handle_bus_message--core-handler)
+  - [4. Signal Handling — Graceful Shutdown](#4-signal-handling--graceful-shutdown)
+  - [5. RTSP Source Reconnection](#5-rtsp-source-reconnection)
+  - [6. Dynamic Stream Add/Remove](#6-dynamic-stream-addremove)
+    - [6.1 `nvmultiurisrcbin` path](#61-nvmultiurisrcbin-path)
+    - [6.2 Manual `nvurisrcbin + nvstreammux` path](#62-manual-nvurisrcbin--nvstreammux-path)
+  - [7. Restart Logic](#7-restart-logic)
+  - [8. PipelineInfo Query](#8-pipelineinfo-query)
+  - [9. Debugging Runtime Issues](#9-debugging-runtime-issues)
+    - [Common Runtime Errors](#common-runtime-errors)
+  - [Tham chiếu chéo](#tham-chiếu-chéo)
 
 ---
 
@@ -262,6 +270,13 @@ sources:
 
 ## 6. Dynamic Stream Add/Remove
 
+VMS Engine hiện có **2 đường runtime source management**:
+
+- `type: nvmultiurisrcbin` -> DeepStream CivetWeb REST server quản lý camera động.
+- `type: nvurisrcbin` -> engine tự quản lý source bins + mux request pads qua `PipelineManager` và `RuntimeStreamManager`.
+
+### 6.1 `nvmultiurisrcbin` path
+
 `nvmultiurisrcbin` tích hợp CivetWeb HTTP server cho **runtime camera management** mà không restart pipeline.
 
 ```yaml
@@ -288,6 +303,29 @@ curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
 ```
 
 > ⚠️ **DS8 SIGSEGV**: `ip-address` property gây crash — server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
+
+### 6.2 Manual `nvurisrcbin + nvstreammux` path
+
+Manual mode không dùng DeepStream REST của `nvmultiurisrcbin`. Thay vào đó, `PipelineManager` gọi `RuntimeStreamManager` để:
+
+- tạo `srcbin_<camera_id>` bằng cùng builder contract như source static
+- request `nvstreammux.sink_%u`
+- link/unlink source ghost pad vào mux
+- giữ mapping `camera.id <-> source slot index`
+
+```cpp
+bool PipelineManager::add_source(const CameraConfig& camera) {
+    return runtime_stream_manager_ && runtime_stream_manager_->add_stream(camera);
+}
+
+bool PipelineManager::remove_source(const std::string& camera_id) {
+    return runtime_stream_manager_ && runtime_stream_manager_->remove_stream(camera_id);
+}
+```
+
+> 📋 **Capacity rule**: manual runtime add/remove vẫn bị chặn bởi `sources.mux.max_sources` và `sources.mux.batch_size` đã allocate lúc build pipeline. Không có auto-grow cho standalone mux sau khi pipeline đã chạy.
+
+> 📋 **Operational rule**: nếu đang dùng live RTSP ở manual mode, hãy ưu tiên giữ `sources.mux.config_file_path` tắt cho tới khi file mux được tune đúng theo FPS thực tế. Runtime add/remove vẫn hoạt động khi không dùng file config ngoài cho mux.
 
 ---
 
@@ -341,7 +379,7 @@ GST_DEBUG="GST_STATES:4" ./build/bin/vms_engine -c configs/default.yml
 GST_DEBUG="GST_BUS:4" ./build/bin/vms_engine -c configs/default.yml
 
 # DeepStream elements (verbose)
-GST_DEBUG="nvinfer:5,nvtracker:4,nvmultiurisrcbin:3" ./build/bin/vms_engine ...
+GST_DEBUG="nvinfer:5,nvtracker:4,nvmultiurisrcbin:3,nvurisrcbin:4,nvstreammux:4" ./build/bin/vms_engine ...
 
 # GDB pipeline state
 (gdb) p gst_element_get_state(pipeline_, nullptr, nullptr, 0)

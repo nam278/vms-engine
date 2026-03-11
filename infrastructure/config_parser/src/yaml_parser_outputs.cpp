@@ -43,8 +43,17 @@ void YamlConfigParser::parse_outputs(const void* node_ptr,
                 elem.control_rate = yaml_str(elem_node, "control_rate");
                 elem.profile = yaml_str(elem_node, "profile");
                 elem.iframeinterval = yaml_int(elem_node, "iframeinterval", 0);
+                if (elem_node["config_interval"]) {
+                    elem.config_interval = yaml_int(elem_node, "config_interval", 0);
+                }
                 elem.location = yaml_str(elem_node, "location");
                 elem.protocols = yaml_str(elem_node, "protocols");
+                if (elem_node["sync"]) {
+                    elem.sync = yaml_bool(elem_node, "sync", false);
+                }
+                if (elem_node["async"]) {
+                    elem.async = yaml_bool(elem_node, "async", false);
+                }
 
                 // Inline queue
                 if (elem_node["queue"]) {

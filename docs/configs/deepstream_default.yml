@@ -6,7 +6,8 @@
 # PIPELINE TOPOLOGY (mirrors gst-launch-1.0 left-to-right reading):
 #
 #   [sources_bin]
-#     nvmultiurisrcbin
+#     nvurisrcbin_N
+#     sources (nvstreammux)
 #
 #   [processing_bin]     ← ghost sink pad
 #     queue → nvinfer (pgie)
@@ -58,12 +59,12 @@ queue_defaults:
 # Handlers publish to a channel specified by the `channel` field (falls back to handler `id` if omitted).
 # -----------------------------------------------------------------------------
 messaging:
-  # type: redis
-  # host: "192.168.1.99"
-  # port: 6319
-  type: kafka
+  type: redis
   host: "192.168.1.99"
-  port: 9094
+  port: 6319
+  # type: kafka
+  # host: "192.168.1.99"
+  # port: 9094
 
 # -----------------------------------------------------------------------------
 # Runtime control API
@@ -105,21 +106,31 @@ evidence:
 
 # =============================================================================
 # STAGE 1 — Sources Block  (→ sources_bin)
-# Element: nvmultiurisrcbin
-# Handles RTSP decode + batch mux internally (no separate nvstreammux needed)
+# Elements:
+#   type: nvmultiurisrcbin  -> DeepStream-managed source + internal mux
+#   type: nvurisrcbin       -> manual nvurisrcbin_N + standalone new nvstreammux
+#
+# Current doc example uses the manual graph because it makes nvstreammux
+# batch-size behavior explicit. In manual mode, `sources_bin` is the only
+# wrapper bin and `sources.id` becomes the standalone nvstreammux element id.
+# The app enables `USE_NEW_NVSTREAMMUX=yes` before gst_init() only for this
+# manual mode. `nvmultiurisrcbin` stays on DeepStream's internal legacy mux path.
+# Switch `type` back to `nvmultiurisrcbin` if you want the legacy DeepStream
+# REST-managed path.
 # =============================================================================
 sources:
   id: sources
-  type: nvmultiurisrcbin
+  type: nvurisrcbin
 
-  # --- Section 1: nvmultiurisrcbin direct properties ---
+  # --- Section 1: nvmultiurisrcbin-only properties ---
+  # Ignored when type: nvurisrcbin.
   # NOTE: ip_address is NOT configurable here — DS8 ip-address setter causes SIGSEGV.
   #       The REST API always binds to 0.0.0.0 (all interfaces).
   # rest_api_port: 0 = disable CivetWeb REST API entirely (avoids port conflicts)
   #                >0 = enable on that port (DS default is 9000)
   # Use the REST API to add/remove streams at runtime via HTTP POST.
-  rest_api_port: 9876 # enable DeepStream REST API on this port
-  max_batch_size: 4 # max number of sources to mux (NOT batch_size)
+  rest_api_port: 9876 # DeepStream REST API port when type: nvmultiurisrcbin
+  max_batch_size: 4 # compatibility fallback; prefer sources.mux.batch_size below
   mode: 0 # 0=video-only  1=audio-only
 
   # --- Section 2: per-source nvurisrcbin properties ---
@@ -135,15 +146,56 @@ sources:
   udp_buffer_size: 4194304 # UDP receive buffer bytes = 4MB (default: 524288)
   disable_audio: true # keep audio for smart record; true = skip audio decode
   disable_passthrough: false
+  drop_on_latency: false # keep jitterbuffer from dropping late RTP packets too aggressively
   drop_pipeline_eos: true # prevent a single-source EOS from killing the pipeline
 
-  # --- Section 3: nvstreammux passthrough properties ---
-  # (these pass through nvmultiurisrcbin to the embedded nvstreammux)
-  width: 1920
-  height: 1080
-  batched_push_timeout: 40000 # µs to wait for a full batch (40ms = comfortable at 4 sources)
-  live_source: true
-  sync_inputs: false
+  # --- Section 3: standalone source-bin branch + nvstreammux (new) ---
+  # branch.elements build the per-camera source bin:
+  #   nvurisrcbin -> [nvvideoconvert] -> [capsfilter] -> [queue]
+  # mux drives the standalone new nvstreammux batch layer.
+  # For type: nvmultiurisrcbin the legacy pass-through path still uses width,
+  # height, and live_source on the embedded nvstreammux.
+  # If you plan to add cameras at runtime, set mux.max_sources to the maximum
+  # concurrent source count up front.
+  width: 1920 # legacy/internal mux only; ignored by standalone new nvstreammux
+  height: 1080 # legacy/internal mux only; ignored by standalone new nvstreammux
+  batched_push_timeout: 40000 # compatibility fallback; prefer sources.mux below
+  live_source: true # legacy/internal mux only; ignored by standalone new nvstreammux
+  sync_inputs: false # compatibility fallback; prefer sources.mux below
+
+  branch:
+    elements:
+      - id: pre_convert
+        type: nvvideoconvert
+        enabled: true
+        gpu_id: 0
+      - id: pre_caps
+        type: capsfilter
+        enabled: true
+        caps: video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080
+      - id: pre_mux_queue
+        type: queue
+        enabled: true
+        max_size_buffers: 10
+        max_size_bytes_mb: 20
+        max_size_time_sec: 0.5
+        leaky: 2
+        silent: true
+
+  mux:
+    id: batch_mux
+    implementation: new
+    batch_size: 4
+    max_sources: 4
+    batched_push_timeout_us: 40000
+    sync_inputs: true
+    max_latency_ns: 100000000
+    attach_sys_ts: true # whether to attach a system timestamp to the batch meta (nvstreammux attach-sys-ts property)
+    frame_duration: -1 # 33 if 30 FPS in milliseconds; -1 disables frame-rate correction
+    drop_pipeline_eos: true
+    # Leave config_file_path disabled for live RTSP unless the mux file is tuned to the real source FPS.
+    # The sample nvstreammux_live_adaptive.txt forces 30/30 FPS pacing and caused slow start + broken RTSP output here.
+    # config_file_path: "/opt/vms_engine/dev/configs/nvstreammux_live_adaptive.txt"
 
   cameras:
     - id: camera-ah
@@ -154,8 +206,12 @@ sources:
       uri: rtsp://192.168.1.99:18554/test_video
     - id: san
       uri: rtsp://192.168.1.99:18554/traffic2
+  # Keep initial cameras <= mux.max_sources. Runtime add/remove reuses those
+  # preallocated mux slots but cannot grow beyond mux.max_sources.
+  # Camera id is the stable external identity; DeepStream still uses an integer
+  # internal source slot for frame_meta->source_id and nvstreammux sink_%u pads.
 
-  # Smart Record — flat integer enum properties on nvmultiurisrcbin
+  # Smart Record — applied to nvmultiurisrcbin or to each nvurisrcbin
   # NOTE: smart_rec_video_cache is DEPRECATED — use smart_rec_cache instead
   smart_record: 2 # 0=disable  1=cloud-only (no local)  2=multi(cloud+local)
   smart_rec_dir_path: "/opt/vms_engine/dev/rec"
@@ -286,6 +342,7 @@ outputs:
 
       - id: parser
         type: h264parse # h264parse | h265parse
+        config_interval: -1 # repeat codec config on every IDR for late RTSP clients
         queue: # → queue after encoder; absorbs I-frame bitrate bursts
           max_size_buffers: 20
           max_size_bytes_mb: 40
@@ -296,6 +353,7 @@ outputs:
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
         protocols: tcp # tcp | udp
+        async: false # NVIDIA recommends async=false on sinks with new nvstreammux
         queue: {} # → queue after parser, before sink (use defaults)
 
 # =============================================================================

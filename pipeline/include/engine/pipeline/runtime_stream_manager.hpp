@@ -1,21 +1,28 @@
 #pragma once
 #include "engine/core/config/config_types.hpp"
+
 #include <gst/gst.h>
-#include <string>
-#include <vector>
+
 #include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace engine::pipeline {
 
 /**
- * @brief Runtime stream management — add/remove camera URIs.
+ * @brief Runtime stream management for manual nvurisrcbin + nvstreammux graphs.
  *
- * Wraps the nvmultiurisrcbin REST API or direct GstBin manipulation
- * for runtime stream addition/removal without restarting the pipeline.
+ * The manager creates one nvurisrcbin per camera and requests a matching
+ * nvstreammux sink pad so DeepStream keeps batched inference active while
+ * cameras are added or removed at runtime.
  */
 class RuntimeStreamManager {
    public:
-    explicit RuntimeStreamManager(GstElement* source_bin);
+    RuntimeStreamManager(GstElement* source_root, GstElement* muxer,
+                         engine::core::config::SourcesConfig sources_config);
+
+    ~RuntimeStreamManager();
 
     /**
      * @brief Add a camera stream at runtime.
@@ -37,9 +44,25 @@ class RuntimeStreamManager {
     int get_active_stream_count() const;
 
    private:
-    GstElement* source_bin_ = nullptr;
+    struct StreamSlot {
+        uint32_t source_index = 0;
+        GstElement* source = nullptr;
+        GstElement* pad_signal_source = nullptr;
+        GstPad* mux_sink_pad = nullptr;
+        gulong pad_added_handler_id = 0;
+    };
+
+    GstElement* source_root_ = nullptr;
+    GstElement* muxer_ = nullptr;
+    engine::core::config::SourcesConfig sources_config_;
     mutable std::mutex mtx_;
-    std::vector<std::string> active_streams_;
+    std::unordered_map<std::string, StreamSlot> streams_;
+    std::vector<uint32_t> free_source_indexes_;
+    uint32_t next_source_index_ = 0;
+
+    uint32_t allocate_source_index();
+    void release_source_index(uint32_t source_index);
+    void seed_existing_streams();
 };
 
 }  // namespace engine::pipeline

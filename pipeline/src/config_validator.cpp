@@ -35,12 +35,46 @@ bool ConfigValidator::validate_pipeline_meta(
 
 bool ConfigValidator::validate_sources(const engine::core::config::SourcesConfig& sources) const {
     bool ok = true;
-    if (sources.max_batch_size < 1) {
-        errors_.push_back("sources.max_batch_size must be >= 1");
+    if (sources.type != "nvmultiurisrcbin" && sources.type != "nvurisrcbin") {
+        errors_.push_back("sources.type must be 'nvmultiurisrcbin' or 'nvurisrcbin'");
+        ok = false;
+    }
+    const int batch_size =
+        sources.mux.batch_size > 0 ? sources.mux.batch_size : sources.max_batch_size;
+    const int max_sources = sources.mux.max_sources > 0 ? sources.mux.max_sources : batch_size;
+    if (batch_size < 1) {
+        errors_.push_back("sources.mux.batch_size (or sources.max_batch_size) must be >= 1");
         ok = false;
     }
     if (sources.width <= 0 || sources.height <= 0) {
         errors_.push_back("sources.width and sources.height must be > 0");
+        ok = false;
+    }
+    if (sources.cameras.size() > static_cast<std::size_t>(max_sources)) {
+        errors_.push_back("sources.cameras cannot exceed sources.mux.max_sources");
+        ok = false;
+    }
+    if (sources.type == "nvurisrcbin") {
+        if (sources.mux.implementation != "new" && sources.mux.implementation != "legacy") {
+            errors_.push_back("sources.mux.implementation must be 'new' or 'legacy'");
+            ok = false;
+        }
+        for (const auto& elem : sources.branch.elements) {
+            if (elem.type != "nvvideoconvert" && elem.type != "capsfilter" &&
+                elem.type != "queue") {
+                errors_.push_back(
+                    "sources.branch.elements only support 'nvvideoconvert', 'capsfilter', or "
+                    "'queue'");
+                ok = false;
+            }
+            if (elem.type == "capsfilter" && elem.enabled && elem.caps.empty()) {
+                errors_.push_back("enabled sources.branch capsfilter requires a caps string");
+                ok = false;
+            }
+        }
+    }
+    if (sources.mux.max_latency_ns == 0 && sources.type == "nvurisrcbin") {
+        errors_.push_back("sources.mux.max_latency_ns should be > 0 for standalone nvstreammux");
         ok = false;
     }
     return ok;

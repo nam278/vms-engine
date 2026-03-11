@@ -114,12 +114,12 @@ flowchart LR
 
 ```yaml
 sources:
-  id: sources                 # stable element id used by runtime control / smart_record
-  type: nvmultiurisrcbin
+  id: sources # manual-mode source layer id
+  type: nvurisrcbin # "nvmultiurisrcbin" | "nvurisrcbin"
 
-  # Group 1 — nvmultiurisrcbin direct
+  # Group 1 — nvmultiurisrcbin direct (ignored when type: nvurisrcbin)
   rest_api_port: 9000 # 0=disable REST API, >0=enable CivetWeb
-  max_batch_size: 4
+  max_batch_size: 4 # compatibility fallback; prefer mux.batch_size below
   mode: 0 # 0=video  1=audio
 
   # Group 2 — nvurisrcbin passthrough
@@ -135,14 +135,47 @@ sources:
   udp_buffer_size: 4194304
   disable_audio: false
   disable_passthrough: false
+  drop_on_latency: false # giữ jitterbuffer không drop late RTP quá gắt
   drop_pipeline_eos: true
 
-  # Group 3 — nvstreammux passthrough
-  width: 1920
-  height: 1080
-  batched_push_timeout: 40000 # µs
-  live_source: true
-  sync_inputs: false
+  # Group 3 — source-bin branch + standalone mux
+  width: 1920 # nvmultiurisrcbin legacy/internal mux path only
+  height: 1080 # nvmultiurisrcbin legacy/internal mux path only
+  batched_push_timeout: 40000 # compatibility fallback; prefer mux.batched_push_timeout_us
+  live_source: true # nvmultiurisrcbin legacy/internal mux path only
+  sync_inputs: false # compatibility fallback; prefer mux.sync_inputs
+
+  branch:
+    elements:
+      - id: pre_convert
+        type: nvvideoconvert
+        enabled: true
+        gpu_id: 0
+      - id: pre_caps
+        type: capsfilter
+        enabled: true
+        caps: video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080
+      - id: pre_mux_queue
+        type: queue
+        enabled: true
+        max_size_buffers: 10
+        max_size_bytes_mb: 20
+        max_size_time_sec: 0.5
+        leaky: 2
+        silent: true
+
+  mux:
+    id: batch_mux
+    implementation: new
+    batch_size: 4
+    max_sources: 4
+    batched_push_timeout_us: 40000
+    sync_inputs: true
+    max_latency_ns: 100000000
+    attach_sys_ts: true
+    frame_duration: -1 # milliseconds; -1 = disable frame-rate correction
+    drop_pipeline_eos: true
+    # config_file_path: "/opt/vms_engine/dev/configs/nvstreammux_live_adaptive.txt"
 
   cameras:
     - id: camera-01
@@ -159,6 +192,23 @@ sources:
   smart_rec_mode: 0 # 0=audio+video  1=video  2=audio
   smart_rec_container: 0 # 0=mp4  1=mkv
 ```
+
+> 📋 **Batch sizing rule**: `sources.max_batch_size` là compatibility ceiling của Stage 1; với manual mode, giá trị thực tế nên đọc từ `sources.mux.batch_size` và `sources.mux.max_sources`.
+>
+> - `type: nvmultiurisrcbin` → map sang `max-batch-size` của DeepStream source bin.
+> - `type: nvurisrcbin` → map sang `sources.mux.batch_size` của mux standalone, với mux element id lấy từ `sources.mux.id`.
+>
+> Nếu pipeline hỗ trợ dynamic add/remove camera, hãy set giá trị này theo số camera đồng thời lớn nhất cần support ngay từ lúc build pipeline. Add camera vượt quá giới hạn đó sẽ bị từ chối.
+
+> ⚠️ **`config_file_path` cho live RTSP**: không nên bật mặc định. Trong repo này, file mẫu `nvstreammux_live_adaptive.txt` ép `overall-min/max-fps=30` và đã gây slow start, lag và broken frames ở RTSP output khi nguồn live không ổn định đúng 30 FPS. Chỉ dùng `config_file_path` khi đã tune file mux đúng theo FPS ingress thực tế.
+>
+> `camera.id` là source identity phía ứng dụng. DeepStream vẫn giữ `frame_meta->source_id` dạng integer để match `nvstreammux sink_%u` pads.
+>
+> `sources.branch.elements` mô tả pre-mux branch của từng camera theo kiểu element list. Hiện implementation support `nvvideoconvert`, `capsfilter`, và `queue`, đều có thể bật/tắt bằng `enabled`.
+>
+> Với `type: nvurisrcbin`, app bật `USE_NEW_NVSTREAMMUX=yes` trước `gst_init()` để dùng plugin nvstreammux mới. Theo tài liệu NVIDIA hiện tại, `nvmultiurisrcbin` vẫn là path legacy riêng và không nên ép sang mux mới.
+
+> ⚠️ **New mux behavior**: standalone nvstreammux mới không còn scale toàn batch về một resolution chung. Các field `width`, `height`, và `live_source` trong schema này chỉ còn ý nghĩa cho path internal/legacy của `nvmultiurisrcbin`.
 
 > ⚠️ **DS8 SIGSEGV**: `ip_address` **KHÔNG ĐƯỢC** config — setter gây crash. Server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
 
@@ -237,6 +287,7 @@ outputs:
         iframeinterval: 30
       - id: parser
         type: h264parse
+        config_interval: -1
         queue:
           max_size_buffers: 20
           leaky: 2
@@ -244,8 +295,13 @@ outputs:
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
         protocols: tcp
+        async: false
         queue: {}
 ```
+
+> 📋 **RTSP output tuning**: với path `nvurisrcbin + new nvstreammux`, cấu hình `h264parse.config_interval=-1` giúp client vào muộn vẫn nhận lại codec config theo IDR, còn `rtspclientsink.async=false` bám theo khuyến nghị NVIDIA để tránh hành vi bất ổn của sink khi pipeline dùng new mux.
+
+> 📋 **Observed live tuning**: ngoài parser/sink tuning, `drop_on_latency: false` ở `nvurisrcbin` là knob hữu ích để tránh jitterbuffer drop late RTP quá mạnh khi debug live RTSP. Đây là input-side tuning, độc lập với `rtspclientsink`.
 
 ### Messaging
 

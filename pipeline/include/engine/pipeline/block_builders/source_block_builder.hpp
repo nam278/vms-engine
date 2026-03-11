@@ -7,13 +7,17 @@
 namespace engine::pipeline::block_builders {
 
 /**
- * @brief Phase 1 — Build source block (sources_bin wrapping nvmultiurisrcbin).
+ * @brief Phase 1 — Build source block.
  *
- * Creates a GstBin named "sources_bin", adds nvmultiurisrcbin to it,
- * exposes a ghost src pad, and adds the bin to the top-level pipeline.
- * No queue is inserted — the first element of the next block provides
- * the inter-block thread boundary via its own queue: {} entry.
- * Updates the tails map with "src" → sources_bin.
+ * Creates a single outer GstBin named "sources_bin" and then chooses one of
+ * two source architectures from `config.sources.type`:
+ * - `nvmultiurisrcbin`: legacy DeepStream-managed multi-source path
+ * - `nvurisrcbin`: manual `nvurisrcbin_N -> nvstreammux` path
+ *
+ * In manual mode, the mux and all source bins are attached directly under
+ * `sources_bin`; there is no second nested source bin.
+ * The resulting block always exposes a single batched `src` ghost pad and
+ * updates the tails map with `"src" -> sources_bin`.
  */
 class SourceBlockBuilder {
    public:

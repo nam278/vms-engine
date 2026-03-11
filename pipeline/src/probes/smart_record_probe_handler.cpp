@@ -1,4 +1,5 @@
 #include "engine/pipeline/probes/smart_record_probe_handler.hpp"
+#include "engine/pipeline/source_naming.hpp"
 #include "engine/core/utils/logger.hpp"
 
 #include <gst-nvdssr.h>
@@ -80,6 +81,16 @@ static GstElement* find_nvurisrcbin_in_bin(GstElement* multiuribin, uint32_t sou
     return urisrcbin;  // Caller owns the reference (gst_bin_get_by_name adds a ref)
 }
 
+static GstElement* find_nvurisrcbin_in_manual_bin(GstElement* source_root,
+                                                  const std::string& camera_id) {
+    if (!source_root || !GST_IS_BIN(source_root) || camera_id.empty()) {
+        return nullptr;
+    }
+
+    return gst_bin_get_by_name(GST_BIN(source_root),
+                               engine::pipeline::make_source_element_name(camera_id).c_str());
+}
+
 /**
  * @brief Wall-clock milliseconds since Unix epoch (for JSON timestamps).
  */
@@ -114,7 +125,7 @@ SmartRecordProbeHandler::~SmartRecordProbeHandler() {
 
 void SmartRecordProbeHandler::configure(const engine::core::config::PipelineConfig& config,
                                         const engine::core::config::EventHandlerConfig& handler,
-                                        GstElement* multiuribin,
+                                        GstElement* source_root,
                                         engine::core::messaging::IMessageProducer* producer) {
     pipeline_id_ = config.pipeline.id;
     label_filter_ = handler.label_filter;
@@ -122,7 +133,8 @@ void SmartRecordProbeHandler::configure(const engine::core::config::PipelineConf
     post_event_sec_ = handler.post_event_sec;
     min_interval_sec_ = handler.min_interval_sec;
     max_concurrent_recordings_ = handler.max_concurrent_recordings;
-    multiuribin_ = multiuribin;
+    source_root_ = source_root;
+    source_type_ = config.sources.type;
     producer_ = producer;
     broker_channel_ = handler.channel;  // empty = no publish
 
@@ -133,10 +145,10 @@ void SmartRecordProbeHandler::configure(const engine::core::config::PipelineConf
 
     LOG_I(
         "SmartRecord: configured — labels={}, pre={}s, post={}s, "
-        "interval={}s, max_concurrent={}, multiuribin={}, broker='{}'",
+        "interval={}s, max_concurrent={}, source_root={}, type='{}', broker='{}'",
         label_filter_.size(), pre_event_sec_, post_event_sec_, min_interval_sec_,
-        max_concurrent_recordings_, multiuribin_ ? GST_ELEMENT_NAME(multiuribin_) : "null",
-        broker_channel_);
+        max_concurrent_recordings_, source_root_ ? GST_ELEMENT_NAME(source_root_) : "null",
+        source_type_, broker_channel_);
 }
 
 // ── Static Probe Callback ──────────────────────────────────────────
@@ -207,10 +219,9 @@ GstElement* SmartRecordProbeHandler::find_nvurisrcbin(uint32_t source_id) {
     if (it != source_bins_.end() && it->second) {
         GstElement* cached = it->second;
 
-        if (multiuribin_ && GST_IS_BIN(multiuribin_)) {
-            // gst_bin_get_by_name recurses into child bins automatically
+        if (source_root_ && GST_IS_BIN(source_root_)) {
             GstElement* probe =
-                gst_bin_get_by_name(GST_BIN(multiuribin_), GST_ELEMENT_NAME(cached));
+                gst_bin_get_by_name(GST_BIN(source_root_), GST_ELEMENT_NAME(cached));
             if (probe) {
                 const bool still_same = (probe == cached);
                 gst_object_unref(probe);  // extra ref from gst_bin_get_by_name
@@ -227,10 +238,16 @@ GstElement* SmartRecordProbeHandler::find_nvurisrcbin(uint32_t source_id) {
         source_bins_.erase(it);
     }
 
-    if (!multiuribin_)
+    if (!source_root_)
         return nullptr;
 
-    GstElement* urisrcbin = find_nvurisrcbin_in_bin(multiuribin_, source_id);
+    GstElement* urisrcbin = nullptr;
+    if (source_type_ == "nvmultiurisrcbin") {
+        urisrcbin = find_nvurisrcbin_in_bin(source_root_, source_id);
+    } else {
+        urisrcbin = find_nvurisrcbin_in_manual_bin(source_root_, get_source_name(source_id));
+    }
+
     if (!urisrcbin) {
         LOG_W("SmartRecord: nvurisrcbin not found for source {}", source_id);
         return nullptr;

@@ -1,6 +1,7 @@
 #include "engine/pipeline/builder_factory.hpp"
-#include "engine/pipeline/builders/source_builder.hpp"
 #include "engine/pipeline/builders/muxer_builder.hpp"
+#include "engine/pipeline/builders/nvmultiurisrcbin_builder.hpp"
+#include "engine/pipeline/builders/nvurisrcbin_builder.hpp"
 #include "engine/pipeline/builders/infer_builder.hpp"
 #include "engine/pipeline/builders/tracker_builder.hpp"
 #include "engine/pipeline/builders/analytics_builder.hpp"
@@ -31,7 +32,10 @@ std::unique_ptr<engine::core::builders::IElementBuilder> BuilderFactory::create(
 
 void BuilderFactory::register_defaults() {
     creators_["nvmultiurisrcbin"] = [](GstElement* b) {
-        return std::make_unique<builders::SourceBuilder>(b);
+        return std::make_unique<builders::NvMultiUriSrcBinBuilder>(b);
+    };
+    creators_["nvurisrcbin"] = [](GstElement* b) {
+        return std::make_unique<builders::NvUriSrcBinBuilder>(b);
     };
     creators_["nvstreammux"] = [](GstElement* b) {
         return std::make_unique<builders::MuxerBuilder>(b);

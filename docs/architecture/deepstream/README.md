@@ -57,7 +57,7 @@
 
 ### Quản lý camera động (add/remove lúc runtime)?
 
-> 🔌 `10` (REST API) + `06` (lifecycle)
+> 🔌 `10` (REST API cho `nvmultiurisrcbin`) + `06` (lifecycle, gồm cả manual `nvurisrcbin + nvstreammux`)
 
 ### Debug runtime issues?
 

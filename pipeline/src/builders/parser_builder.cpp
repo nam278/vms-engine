@@ -23,6 +23,11 @@ GstElement* ParserBuilder::build(const engine::core::config::PipelineConfig& con
         return nullptr;
     }
 
+    if (elem_cfg.config_interval.has_value()) {
+        g_object_set(G_OBJECT(elem.get()), "config-interval",
+                     static_cast<gint>(*elem_cfg.config_interval), nullptr);
+    }
+
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {
         LOG_E("Failed to add parser '{}' to bin", id);
         return nullptr;

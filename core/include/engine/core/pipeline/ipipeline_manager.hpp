@@ -16,6 +16,8 @@ class IPipelineManager {
     virtual bool stop() = 0;
     virtual bool pause() = 0;
     virtual bool resume() = 0;
+    virtual bool add_source(const engine::core::config::CameraConfig& camera) = 0;
+    virtual bool remove_source(const std::string& camera_id) = 0;
     virtual PipelineState get_state() const = 0;
 };
 

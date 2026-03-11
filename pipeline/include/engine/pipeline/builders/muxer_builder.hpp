@@ -6,11 +6,11 @@
 namespace engine::pipeline::builders {
 
 /**
- * @brief Builds nvstreammux element from pipeline config.
+ * @brief Builds the standalone nvstreammux used by manual nvurisrcbin mode.
  *
- * Reads config.sources for muxer dimensions and batch settings.
- * Normally nvmultiurisrcbin creates its own internal muxer, but this builder
- * is available if the pipeline requires a standalone nvstreammux.
+ * When the process enables `USE_NEW_NVSTREAMMUX=yes` before `gst_init()`, this
+ * builder resolves to DeepStream's newer nvstreammux implementation. The
+ * nvmultiurisrcbin path keeps using DeepStream's internal legacy mux path.
  */
 class MuxerBuilder : public engine::core::builders::IElementBuilder {
    public:

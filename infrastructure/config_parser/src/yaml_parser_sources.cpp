@@ -8,6 +8,85 @@
 
 namespace engine::infrastructure::config_parser {
 
+namespace {
+
+void parse_source_branch(const YAML::Node& branch_node,
+                         engine::core::config::SourceBranchConfig& out,
+                         const engine::core::config::QueueConfig& defaults) {
+    if (!branch_node || !branch_node.IsMap()) {
+        return;
+    }
+
+    using helpers::yaml_bool;
+    using helpers::yaml_int;
+    using helpers::yaml_str;
+
+    out.elements.clear();
+    const YAML::Node elements = branch_node["elements"];
+    if (!elements || !elements.IsSequence()) {
+        return;
+    }
+
+    for (const auto& elem_node : elements) {
+        engine::core::config::SourceBranchElementConfig elem;
+        elem.id = yaml_str(elem_node, "id");
+        elem.type = yaml_str(elem_node, "type");
+        elem.enabled = yaml_bool(elem_node, "enabled", true);
+
+        const YAML::Node props =
+            elem_node["props"] && elem_node["props"].IsMap() ? elem_node["props"] : elem_node;
+        elem.gpu_id = yaml_int(props, "gpu_id", 0);
+        elem.caps = yaml_str(elem_node, "caps", yaml_str(props, "caps"));
+        elem.nvbuf_memory_type =
+            yaml_str(props, "nvbuf_memory_type", yaml_str(props, "nvbuf-memory-type"));
+        elem.src_crop = yaml_str(props, "src_crop", yaml_str(props, "src-crop"));
+        elem.dest_crop = yaml_str(props, "dest_crop", yaml_str(props, "dest-crop"));
+        elem.queue.max_size_buffers =
+            yaml_int(props, "max_size_buffers", defaults.max_size_buffers);
+        elem.queue.max_size_bytes_mb =
+            yaml_int(props, "max_size_bytes_mb", defaults.max_size_bytes_mb);
+        if (props["max_size_time_sec"]) {
+            elem.queue.max_size_time_sec = props["max_size_time_sec"].as<double>();
+        } else {
+            elem.queue.max_size_time_sec = defaults.max_size_time_sec;
+        }
+        elem.queue.leaky = yaml_int(props, "leaky", defaults.leaky);
+        elem.queue.silent = yaml_bool(props, "silent", defaults.silent);
+        out.elements.push_back(std::move(elem));
+    }
+}
+
+void parse_source_mux(const YAML::Node& mux_node, engine::core::config::SourceMuxConfig& out) {
+    if (!mux_node || !mux_node.IsMap()) {
+        return;
+    }
+
+    using helpers::yaml_bool;
+    using helpers::yaml_int;
+    using helpers::yaml_str;
+
+    out.id = yaml_str(mux_node, "id", out.id);
+    out.implementation = yaml_str(mux_node, "implementation", out.implementation);
+    out.batch_size = yaml_int(mux_node, "batch_size", out.batch_size);
+    out.max_sources = yaml_int(mux_node, "max_sources", out.max_sources);
+    out.batched_push_timeout_us =
+        yaml_int(mux_node, "batched_push_timeout_us",
+                 yaml_int(mux_node, "batched_push_timeout", out.batched_push_timeout_us));
+    out.sync_inputs = yaml_bool(mux_node, "sync_inputs", out.sync_inputs);
+    out.max_latency_ns = static_cast<std::uint64_t>(
+        yaml_int(mux_node, "max_latency_ns", static_cast<int>(out.max_latency_ns)));
+    out.drop_pipeline_eos = yaml_bool(mux_node, "drop_pipeline_eos", out.drop_pipeline_eos);
+    if (mux_node["attach_sys_ts"]) {
+        out.attach_sys_ts = yaml_bool(mux_node, "attach_sys_ts", false);
+    }
+    if (mux_node["frame_duration"]) {
+        out.frame_duration = static_cast<std::int64_t>(yaml_int(mux_node, "frame_duration", 0));
+    }
+    out.config_file_path = yaml_str(mux_node, "config_file_path", out.config_file_path);
+}
+
+}  // namespace
+
 void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config::SourcesConfig& out,
                                      const engine::core::config::QueueConfig& defaults) {
     const auto& node = *static_cast<const YAML::Node*>(node_ptr);
@@ -40,6 +119,9 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
     out.file_loop = yaml_bool(node, "file_loop", false);
     out.disable_audio = yaml_bool(node, "disable_audio", false);
     out.disable_passthrough = yaml_bool(node, "disable_passthrough", false);
+    if (node["drop_on_latency"]) {
+        out.drop_on_latency = yaml_bool(node, "drop_on_latency", false);
+    }
     out.drop_pipeline_eos = yaml_bool(node, "drop_pipeline_eos", true);
     out.async_handling = yaml_bool(node, "async_handling", true);
     out.low_latency_mode = yaml_bool(node, "low_latency_mode", false);
@@ -50,6 +132,29 @@ void YamlConfigParser::parse_sources(const void* node_ptr, engine::core::config:
     out.batched_push_timeout = yaml_int(node, "batched_push_timeout", 40000);
     out.live_source = yaml_bool(node, "live_source", true);
     out.sync_inputs = yaml_bool(node, "sync_inputs", false);
+
+    parse_source_branch(node["branch"], out.branch, defaults);
+    parse_source_mux(node["mux"], out.mux);
+
+    if (out.mux.id.empty()) {
+        out.mux.id = "batch_mux";
+    }
+    if (out.mux.batch_size <= 0) {
+        out.mux.batch_size = out.max_batch_size;
+    }
+    if (out.mux.max_sources <= 0) {
+        out.mux.max_sources = out.mux.batch_size;
+    }
+    if (out.mux.batched_push_timeout_us <= 0) {
+        out.mux.batched_push_timeout_us = out.batched_push_timeout;
+    }
+
+    if (out.type == "nvurisrcbin") {
+        out.max_batch_size = out.mux.batch_size;
+        out.batched_push_timeout = out.mux.batched_push_timeout_us;
+        out.sync_inputs = out.mux.sync_inputs;
+        out.drop_pipeline_eos = out.mux.drop_pipeline_eos;
+    }
 
     // ── Cameras ──
     out.cameras.clear();

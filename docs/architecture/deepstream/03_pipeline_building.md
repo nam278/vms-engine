@@ -66,6 +66,7 @@ tails_["src"] = visuals_bin;
 ```
 
 > 📋 **Tại sao GstBin?** Wrapping mỗi stage trong GstBin giúp:
+>
 > - Isolate internal linking (elements chỉ link trong cùng bin)
 > - DOT graph rõ ràng hơn (group elements theo stage)
 > - Ghost pads cung cấp consistent interface giữa phases
@@ -94,33 +95,38 @@ bool PipelineBuilder::build_processing(const PipelineConfig& config) {
 
 **Block builder**: `SourceBlockBuilder`
 
-Phase 1 tạo `sources_bin` — một `GstBin` chứa `nvmultiurisrcbin`. Expose ghost src pad để downstream bins link.
+Phase 1 tạo đúng **một** `sources_bin` outer wrapper với 2 mode theo `config.sources.type`:
+
+- `nvmultiurisrcbin`: DeepStream tự quản lý `nvurisrcbin + nvstreammux` nội bộ.
+- `nvurisrcbin`: engine tự tạo nhiều `nvurisrcbin_N` và một `nvstreammux` standalone.
+
+Ở cả hai mode, block luôn expose một batched `src` ghost pad để downstream bins link.
 
 ```cpp
 bool SourceBlockBuilder::build(const PipelineConfig& config) {
     // 1. Tạo sources_bin
     GstElement* sources_bin = gst_bin_new("sources_bin");
 
-    // 2. Build nvmultiurisrcbin bên trong
-    builders::SourceBuilder src_builder(sources_bin);
-    GstElement* source = src_builder.build(config, 0);
+    // 2. Build mode tương ứng
+    if (config.sources.type == "nvurisrcbin") {
+        build_manual_sources_block(sources_bin, config);
+    } else {
+        build_multiurisrc_block(sources_bin, config);
+    }
 
-    // 3. Expose ghost src pad
-    GstPad* src_pad = gst_element_get_static_pad(source, "src");
-    GstPad* ghost_src = gst_ghost_pad_new("src", src_pad);
-    gst_element_add_pad(sources_bin, ghost_src);
-
-    // 4. Add sources_bin vào pipeline
+    // 3. Add sources_bin vào pipeline
     gst_bin_add(GST_BIN(pipeline_), sources_bin);
     tails_["src"] = sources_bin;
     return true;
 }
 ```
 
-**SourceBuilder** cấu hình `nvmultiurisrcbin`:
+### 3.1 Legacy mode — `nvmultiurisrcbin`
+
+`NvMultiUriSrcBinBuilder` cấu hình `nvmultiurisrcbin`:
 
 ```cpp
-GstElement* SourceBuilder::build(const PipelineConfig& config, int) {
+GstElement* NvMultiUriSrcBinBuilder::build(const PipelineConfig& config, int) {
     const auto& src = config.sources;
     const std::string id = src.id.empty() ? std::string("sources") : src.id;
     auto elem = make_gst_element("nvmultiurisrcbin", id.c_str());
@@ -153,6 +159,51 @@ GstElement* SourceBuilder::build(const PipelineConfig& config, int) {
 }
 ```
 
+### 3.2 Manual mode — `nvurisrcbin_N -> nvstreammux`
+
+Manual mode attach trực tiếp các element vào `sources_bin`:
+
+- app bật `USE_NEW_NVSTREAMMUX=yes` trước `gst_init()` để standalone mux resolve sang plugin nvstreammux mới
+- `sources.mux.id` được dùng làm element id của `nvstreammux`
+- nhiều `srcbin_<camera_id>` là sibling của mux trong cùng source layer bin
+- request pads `sink_0`, `sink_1`, ... trên mux
+
+```cpp
+bool build_manual_sources_block(GstElement* sources_bin,
+                                const PipelineConfig& config) {
+    GstElement* muxer = builders::MuxerBuilder(sources_bin).build(config, 0);
+
+    RuntimeStreamManager stream_manager(sources_bin, muxer, config.sources);
+    for (const auto& camera : config.sources.cameras) {
+        stream_manager.add_stream(camera);
+    }
+
+    expose_ghost(sources_bin, muxer, "src", "src");
+    return true;
+}
+```
+
+`RuntimeStreamManager` không tự dựng raw `nvurisrcbin` nữa; nó đi qua `NvUriSrcBinBuilder` để path cấu hình của source runtime và source static giữ cùng một contract. Manual source bin có thể được build theo chuỗi `nvurisrcbin -> nvvideoconvert -> capsfilter -> queue` trước khi ghost `src` sang mux.
+
+`RuntimeStreamManager::add_stream()` request một `nvstreammux` sink pad trước khi link source:
+
+```cpp
+const uint32_t source_index = allocate_source_index();
+const std::string sink_pad_name = "sink_" + std::to_string(source_index);
+GstPad* mux_sink_pad = gst_element_request_pad_simple(muxer_, sink_pad_name.c_str());
+
+g_object_set(G_OBJECT(source.get()), "uri", camera.uri.c_str(), nullptr);
+g_signal_connect(source.get(), "pad-added", G_CALLBACK(on_source_pad_added), link_context);
+```
+
+> 📋 **Batching rule**: manual mode dùng `sources.mux.batch_size` làm batch-size thực tế của standalone `nvstreammux`; `sources.max_batch_size` chỉ còn là compatibility fallback. Nếu cần dynamic add/remove, phải pre-size `sources.mux.max_sources` và `sources.mux.batch_size` theo số camera concurrent lớn nhất. Add vượt quá giới hạn đó sẽ không request thêm mux pad được.
+
+> 📋 **Identity rule**: `camera.id` là identity ổn định ở mức config, element name, event payload và runtime API. DeepStream vẫn yêu cầu `frame_meta->source_id` là integer slot index, nên manual mode vẫn giữ một internal `sink_%u` / source slot mapping bên trong `RuntimeStreamManager`.
+
+> ⚠️ **New mux caveat**: nvstreammux mới không còn dùng `width`, `height`, `live-source`, hay `gpu-id` như mux cũ. Nếu cần ép homogeneous caps trước mux mới, phải xử lý ở từng source branch trước khi vào `sink_%u`.
+
+> ⚠️ **Live RTSP caveat**: `sources.mux.config_file_path` có thể override batching và pacing của new `nvstreammux`. Trong case live RTSP của repo này, file mẫu ép `overall-min/max-fps=30` đã gây start chậm, lag và vỡ hình ở `rtspclientsink`. Giữ `config_file_path` tắt mặc định, chỉ bật lại khi file mux được tune đúng theo FPS thực tế của nguồn.
+
 > ⚠️ **DS8 SIGSEGV Bug**: `ip-address` **KHÔNG** được set — gọi `g_object_set("ip-address", ...)` gây crash trong DeepStream 8.0. Server luôn bind `0.0.0.0`. Xem [10_rest_api.md](10_rest_api.md).
 
 ---
@@ -168,11 +219,11 @@ processing:
   elements:
     - id: "pgie"
       role: "primary_inference"
-      queue: {}               # Auto-insert GstQueue
+      queue: {} # Auto-insert GstQueue
       type: "nvinfer"
       config_file_path: "configs/nvinfer/pgie_config.txt"
       unique_id: 1
-      process_mode: 1         # 1=primary
+      process_mode: 1 # 1=primary
       batch_size: 4
 
     - id: "tracker"
@@ -184,7 +235,7 @@ processing:
       role: "secondary_inference"
       queue: {}
       type: "nvinfer"
-      process_mode: 2         # 2=secondary
+      process_mode: 2 # 2=secondary
       operate_on_gie_id: 1
       operate_on_class_ids: "2"
 
@@ -405,22 +456,22 @@ void PipelineBuilder::cleanup() {
 
 ## Tổng hợp 5 Phases
 
-| Phase | Block Builder | Input | Output | Optional? |
-|-------|--------------|-------|--------|-----------|
-| **1. Sources** | `SourceBlockBuilder` | `config.sources` | `tails_["src"]` = sources_bin | ❌ Bắt buộc |
-| **2. Processing** | `ProcessingBuilder` | `config.processing[]` | `tails_["processing_tail"]` | ❌ Bắt buộc |
-| **3. Visuals** | `VisualsBuilder` | `config.visuals` | `tails_["vis_*"]` | ✅ Optional |
-| **4. Outputs** | `OutputsBuilder` | `config.outputs[]` | Sinks (terminal) | ❌ Bắt buộc |
-| **5. Standalone** | `StandaloneBuilder` | `smart_record`, `message_broker` | Side-effects only | ✅ Optional |
+| Phase             | Block Builder        | Input                            | Output                        | Optional?   |
+| ----------------- | -------------------- | -------------------------------- | ----------------------------- | ----------- |
+| **1. Sources**    | `SourceBlockBuilder` | `config.sources`                 | `tails_["src"]` = sources_bin | ❌ Bắt buộc |
+| **2. Processing** | `ProcessingBuilder`  | `config.processing[]`            | `tails_["processing_tail"]`   | ❌ Bắt buộc |
+| **3. Visuals**    | `VisualsBuilder`     | `config.visuals`                 | `tails_["vis_*"]`             | ✅ Optional |
+| **4. Outputs**    | `OutputsBuilder`     | `config.outputs[]`               | Sinks (terminal)              | ❌ Bắt buộc |
+| **5. Standalone** | `StandaloneBuilder`  | `smart_record`, `message_broker` | Side-effects only             | ✅ Optional |
 
 ---
 
 ## Tài liệu liên quan
 
-| Tài liệu | Mô tả |
-|-----------|-------|
-| [02_core_interfaces.md](02_core_interfaces.md) | IPipelineBuilder, IBuilderFactory, IElementBuilder |
-| [04_linking_system.md](04_linking_system.md) | Static/dynamic linking, ghost pads |
-| [05_configuration.md](05_configuration.md) | YAML schema cho processing/outputs/visuals |
-| [09_outputs_smart_record.md](09_outputs_smart_record.md) | Smart Record architecture |
-| [../RAII.md](../RAII.md) | RAII guards cho GstElement* |
+| Tài liệu                                                 | Mô tả                                              |
+| -------------------------------------------------------- | -------------------------------------------------- |
+| [02_core_interfaces.md](02_core_interfaces.md)           | IPipelineBuilder, IBuilderFactory, IElementBuilder |
+| [04_linking_system.md](04_linking_system.md)             | Static/dynamic linking, ghost pads                 |
+| [05_configuration.md](05_configuration.md)               | YAML schema cho processing/outputs/visuals         |
+| [09_outputs_smart_record.md](09_outputs_smart_record.md) | Smart Record architecture                          |
+| [../RAII.md](../RAII.md)                                 | RAII guards cho GstElement\*                       |

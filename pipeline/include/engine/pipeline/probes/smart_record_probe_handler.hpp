@@ -48,15 +48,15 @@ struct SourceRecordingState {
  * @brief Pad probe handler that triggers NvDsSR smart recording on detection.
  *
  * Attaches to the configured probe element's src pad.  When matching objects
- * are found, locates the per-source nvurisrcbin inside the nvmultiurisrcbin
- * and emits the `start-sr` GSignal to begin recording.
+ * are found, locates the per-source nvurisrcbin inside the configured source
+ * root and emits the `start-sr` GSignal to begin recording.
  *
  * ## Key improvements over v1
  * - Uses `GstClockTime` for interval tracking (same clock domain as GStreamer).
  * - `actual_start = current_time - pre_event_ns` so the interval starts from
  *   the true beginning of the recording buffer, not the detection moment.
  * - Stale element cache detection: re-discovers nvurisrcbin if it is no longer
- *   a child of the multiuribin (e.g. after stream hot-swap).
+ *   a child of the source root (e.g. after stream hot-swap).
  * - `cleanup_expired_sessions()` clears sessions that never received sr-done
  *   (guards against missed callbacks).
  * - `shutting_down_` atomic flag prevents data races during teardown.
@@ -71,8 +71,8 @@ struct SourceRecordingState {
  * when the probe is removed.
  *
  * ## DS8 integration
- * Requires `libnvdsgst_smartrecord.so` linked and `smart_record > 0` on
- * the nvmultiurisrcbin source element.
+ * Requires `libnvdsgst_smartrecord.so` linked and `smart_record > 0` on the
+ * source element(s).
  */
 class SmartRecordProbeHandler {
    public:
@@ -90,12 +90,12 @@ class SmartRecordProbeHandler {
      *
      * @param config      Full pipeline config (for pipeline_id, cameras).
      * @param handler     The event_handler YAML entry (trigger=smart_record).
-     * @param multiuribin Pointer to the nvmultiurisrcbin element (owned by
-     *                    pipeline bin — we borrow it).
+     * @param source_root Pointer to the configured source root element (owned
+     *                    by the pipeline bin — we borrow it).
      * @param producer    Optional message producer for publishing events.
      */
     void configure(const engine::core::config::PipelineConfig& config,
-                   const engine::core::config::EventHandlerConfig& handler, GstElement* multiuribin,
+                   const engine::core::config::EventHandlerConfig& handler, GstElement* source_root,
                    engine::core::messaging::IMessageProducer* producer);
 
     /** @brief Static GstPadProbeCallback — user_data is `SmartRecordProbeHandler*`. */
@@ -166,7 +166,8 @@ class SmartRecordProbeHandler {
     std::string broker_channel_;
 
     // ── Element references ────────────────────────────────────────
-    GstElement* multiuribin_ = nullptr;                      ///< Borrowed, not owned
+    GstElement* source_root_ = nullptr;  ///< Borrowed, not owned
+    std::string source_type_;
     std::unordered_map<uint32_t, GstElement*> source_bins_;  ///< Cached nvurisrcbin per source
 
     // ── State ─────────────────────────────────────────────────────

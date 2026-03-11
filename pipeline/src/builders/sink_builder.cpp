@@ -4,6 +4,15 @@
 
 namespace engine::pipeline::builders {
 
+namespace {
+
+bool has_property(GstElement* element, const char* property_name) {
+    return element != nullptr && property_name != nullptr &&
+           g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name) != nullptr;
+}
+
+}  // namespace
+
 SinkBuilder::SinkBuilder(GstElement* bin) : bin_(bin) {}
 
 GstElement* SinkBuilder::build(const engine::core::config::PipelineConfig& config, int index) {
@@ -21,6 +30,14 @@ GstElement* SinkBuilder::build(const engine::core::config::PipelineConfig& confi
         return nullptr;
     }
 
+    if (elem_cfg.sync.has_value() && has_property(elem.get(), "sync")) {
+        g_object_set(G_OBJECT(elem.get()), "sync", static_cast<gboolean>(*elem_cfg.sync), nullptr);
+    }
+    if (elem_cfg.async.has_value() && has_property(elem.get(), "async")) {
+        g_object_set(G_OBJECT(elem.get()), "async", static_cast<gboolean>(*elem_cfg.async),
+                     nullptr);
+    }
+
     if (type == "rtspclientsink") {
         if (!elem_cfg.location.empty()) {
             g_object_set(G_OBJECT(elem.get()), "location", elem_cfg.location.c_str(), nullptr);
@@ -36,7 +53,9 @@ GstElement* SinkBuilder::build(const engine::core::config::PipelineConfig& confi
             g_object_set(G_OBJECT(elem.get()), "location", elem_cfg.location.c_str(), nullptr);
         }
     } else if (type == "fakesink") {
-        g_object_set(G_OBJECT(elem.get()), "sync", static_cast<gboolean>(FALSE), nullptr);
+        if (!elem_cfg.sync.has_value() && has_property(elem.get(), "sync")) {
+            g_object_set(G_OBJECT(elem.get()), "sync", static_cast<gboolean>(FALSE), nullptr);
+        }
     }
 
     if (!gst_bin_add(GST_BIN(bin_), elem.get())) {

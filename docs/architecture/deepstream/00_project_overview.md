@@ -19,32 +19,32 @@
 
 Đây là **phiên bản refactor** của `lantanav2`:
 
-| Mục | lantanav2 (cũ) | vms-engine (mới) |
-|-----|----------------|-------------------|
-| Namespace | `lantana::` | `engine::` |
-| Include prefix | `lantana/core/` | `engine/core/` |
-| DeepStream SDK | 7.1 | **8.0** |
-| Backend | DeepStream + DLStreamer (multi-backend) | **DeepStream-native only** |
-| Config variants | `std::variant` cho backend options | Config struct trực tiếp (không variant) |
-| Pipeline layer | `backends/deepstream/` | `pipeline/` |
-| Executable | `lantana` | `vms_engine` |
+| Mục             | lantanav2 (cũ)                          | vms-engine (mới)                        |
+| --------------- | --------------------------------------- | --------------------------------------- |
+| Namespace       | `lantana::`                             | `engine::`                              |
+| Include prefix  | `lantana/core/`                         | `engine/core/`                          |
+| DeepStream SDK  | 7.1                                     | **8.0**                                 |
+| Backend         | DeepStream + DLStreamer (multi-backend) | **DeepStream-native only**              |
+| Config variants | `std::variant` cho backend options      | Config struct trực tiếp (không variant) |
+| Pipeline layer  | `backends/deepstream/`                  | `pipeline/`                             |
+| Executable      | `lantana`                               | `vms_engine`                            |
 
 ---
 
 ## 2. Tech Stack
 
-| Component | Technology | Phiên bản |
-|-----------|-----------|-----------|
-| Language | C++17 | — |
-| Build System | CMake + vcpkg | 3.16+ |
-| Video Framework | GStreamer | 1.0 |
-| AI Backend | NVIDIA DeepStream SDK | **8.0** |
-| GPU Inference | TensorRT, CUDA | — |
-| Configuration | YAML (yaml-cpp) | — |
-| Logging | spdlog + fmt | — |
-| Messaging | Redis Streams, Kafka | — |
-| Storage | Local FS, S3 (MinIO) | — |
-| REST API | Pistache HTTP | — |
+| Component       | Technology            | Phiên bản |
+| --------------- | --------------------- | --------- |
+| Language        | C++17                 | —         |
+| Build System    | CMake + vcpkg         | 3.16+     |
+| Video Framework | GStreamer             | 1.0       |
+| AI Backend      | NVIDIA DeepStream SDK | **8.0**   |
+| GPU Inference   | TensorRT, CUDA        | —         |
+| Configuration   | YAML (yaml-cpp)       | —         |
+| Logging         | spdlog + fmt          | —         |
+| Messaging       | Redis Streams, Kafka  | —         |
+| Storage         | Local FS, S3 (MinIO)  | —         |
+| REST API        | Pistache HTTP         | —         |
 
 ---
 
@@ -52,28 +52,28 @@
 
 ### 3.1 Video Input
 
-- **Multi-source**: `nvmultiurisrcbin` — xử lý batching nội bộ (không cần `nvstreammux` tách biệt)
-- **Dynamic add/remove**: thêm/bỏ camera qua REST API khi đang chạy
+- **Dual source architecture**: chọn giữa `nvmultiurisrcbin` (DeepStream-managed source + internal mux) hoặc manual `nvurisrcbin_N + nvstreammux`
+- **Dynamic add/remove**: `nvmultiurisrcbin` dùng DeepStream REST API; manual `nvurisrcbin + nvstreammux` dùng `PipelineManager` + `RuntimeStreamManager`
 - **RTSP reconnect**: tự động kết nối lại với các thông số cấu hình
 
 ### 3.2 AI Processing
 
-| Thành phần | Vai trò | GStreamer Element |
-|-----------|---------|-------------------|
-| Primary Inference (PGIE) | Object detection toàn frame | `nvinfer` (TensorRT) / `nvinferserver` (Triton) |
-| Secondary Inference (SGIE) | Classification, LPR, attribute recognition — per-object | `nvinfer` / `nvinferserver` |
-| Tracker | NvDCF, IOU, DeepSORT | `nvtracker` |
-| Analytics | ROI filtering, line crossing, overcrowding, direction detection | `nvdsanalytics` |
+| Thành phần                 | Vai trò                                                         | GStreamer Element                               |
+| -------------------------- | --------------------------------------------------------------- | ----------------------------------------------- |
+| Primary Inference (PGIE)   | Object detection toàn frame                                     | `nvinfer` (TensorRT) / `nvinferserver` (Triton) |
+| Secondary Inference (SGIE) | Classification, LPR, attribute recognition — per-object         | `nvinfer` / `nvinferserver`                     |
+| Tracker                    | NvDCF, IOU, DeepSORT                                            | `nvtracker`                                     |
+| Analytics                  | ROI filtering, line crossing, overcrowding, direction detection | `nvdsanalytics`                                 |
 
 ### 3.3 Output & Recording
 
-| Loại output | Element(s) | Mô tả |
-|-------------|-----------|-------|
-| Display | `nveglglessink` / `nv3dsink` | Hiển thị X11 |
-| File Recording | `nvv4l2h264enc` → `filesink` | MP4/MKV, H.264/H.265 |
-| RTSP Streaming | `nvv4l2h264enc` → `rtspclientsink` | Re-stream qua RTSP |
-| Smart Record | `nvmultiurisrcbin` tích hợp | Pre/post event recording với buffer |
-| Message Broker | `nvmsgconv` → `nvmsgbroker` | Redis Streams, Kafka |
+| Loại output    | Element(s)                         | Mô tả                               |
+| -------------- | ---------------------------------- | ----------------------------------- |
+| Display        | `nveglglessink` / `nv3dsink`       | Hiển thị X11                        |
+| File Recording | `nvv4l2h264enc` → `filesink`       | MP4/MKV, H.264/H.265                |
+| RTSP Streaming | `nvv4l2h264enc` → `rtspclientsink` | Re-stream qua RTSP                  |
+| Smart Record   | `nvmultiurisrcbin` tích hợp        | Pre/post event recording với buffer |
+| Message Broker | `nvmsgconv` → `nvmsgbroker`        | Redis Streams, Kafka                |
 
 ### 3.4 Runtime Control
 
@@ -106,7 +106,7 @@ graph TB
 
     subgraph PHASES["5 Build Phases"]
         direction LR
-        P1["Phase 1<br/>SourceBuilder<br/>nvmultiurisrcbin"]
+        P1["Phase 1<br/>SourceBuilder<br/>nvmultiurisrcbin hoặc<br/>nvurisrcbin + nvstreammux"]
         P2["Phase 2<br/>ProcessingBuilder<br/>nvinfer, nvtracker<br/>nvdsanalytics, demux"]
         P3["Phase 3<br/>VisualsBuilder<br/>nvtiler, nvdsosd"]
         P4["Phase 4<br/>OutputsBuilder<br/>encoders, sinks"]
@@ -126,7 +126,7 @@ graph TB
 
 ```mermaid
 graph LR
-    SRC["nvmultiurisrcbin<br/>(decode + mux<br/>RTSP → batched frames)"]
+    SRC["Sources stage<br/>nvmultiurisrcbin<br/>hoặc<br/>nvurisrcbin_N + nvstreammux"]
     PGIE["queue → nvinfer<br/>(PGIE — primary detection)"]
     TRK["queue → nvtracker"]
     SGIE["queue → nvinfer<br/>(SGIE — secondary, optional)"]
@@ -152,6 +152,8 @@ graph LR
 ```
 
 > ⚠️ **Lưu ý**: Các element trong ngoặc `[]` là optional — bật/tắt qua YAML config.
+
+> 📋 **Source mode rule**: `nvmultiurisrcbin` là đường DeepStream tích hợp, phù hợp khi cần REST add/remove của NVIDIA. Manual `nvurisrcbin + nvstreammux` cho phép engine kiểm soát rõ source branch, mux request pads, và runtime source management trong code C++.
 
 ---
 
@@ -185,13 +187,13 @@ graph TB
 
 ## 7. Namespace convention
 
-| Namespace | Maps to |
-|-----------|---------|
-| `engine::core::pipeline` | `core/include/engine/core/pipeline/` |
-| `engine::core::builders` | `core/include/engine/core/builders/` |
-| `engine::core::config` | `core/include/engine/core/config/` |
-| `engine::pipeline` | `pipeline/include/engine/pipeline/` |
-| `engine::domain` | `domain/include/engine/domain/` |
+| Namespace                | Maps to                                         |
+| ------------------------ | ----------------------------------------------- |
+| `engine::core::pipeline` | `core/include/engine/core/pipeline/`            |
+| `engine::core::builders` | `core/include/engine/core/builders/`            |
+| `engine::core::config`   | `core/include/engine/core/config/`              |
+| `engine::pipeline`       | `pipeline/include/engine/pipeline/`             |
+| `engine::domain`         | `domain/include/engine/domain/`                 |
 | `engine::infrastructure` | `infrastructure/include/engine/infrastructure/` |
 
 ### Logging macros
@@ -213,10 +215,10 @@ LOG_C("Critical: pipeline init failed — aborting");
 
 ## Tài liệu liên quan
 
-| Tài liệu | Mô tả |
-|-----------|-------|
-| [01_directory_structure.md](01_directory_structure.md) | Cấu trúc thư mục chi tiết |
-| [02_core_interfaces.md](02_core_interfaces.md) | Core interfaces & contracts |
-| [03_pipeline_building.md](03_pipeline_building.md) | Quy trình build pipeline theo phases |
-| [../ARCHITECTURE_BLUEPRINT.md](../ARCHITECTURE_BLUEPRINT.md) | Blueprint kiến trúc tổng thể |
-| [../CMAKE.md](../CMAKE.md) | CMake build system |
+| Tài liệu                                                     | Mô tả                                |
+| ------------------------------------------------------------ | ------------------------------------ |
+| [01_directory_structure.md](01_directory_structure.md)       | Cấu trúc thư mục chi tiết            |
+| [02_core_interfaces.md](02_core_interfaces.md)               | Core interfaces & contracts          |
+| [03_pipeline_building.md](03_pipeline_building.md)           | Quy trình build pipeline theo phases |
+| [../ARCHITECTURE_BLUEPRINT.md](../ARCHITECTURE_BLUEPRINT.md) | Blueprint kiến trúc tổng thể         |
+| [../CMAKE.md](../CMAKE.md)                                   | CMake build system                   |

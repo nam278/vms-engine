@@ -358,6 +358,12 @@ int main(int argc, char* argv[]) {
             g_setenv("GST_DEBUG", config.pipeline.gst_log_level.c_str(), TRUE);
         }
 
+        if (config.sources.type == "nvurisrcbin" && config.sources.mux.implementation == "new") {
+            g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
+        } else {
+            g_unsetenv("USE_NEW_NVSTREAMMUX");
+        }
+
         gst_init(&argc, &argv);
 
         // ── 4. Initialize logger ──────────────────────────────────────────────
@@ -375,7 +381,22 @@ int main(int argc, char* argv[]) {
         LOG_I("  Log level  : {}", config.pipeline.log_level);
         LOG_I("  GstDebug   : {}", config.pipeline.gst_log_level);
         LOG_I("  Cameras    : {}", config.sources.cameras.size());
-        LOG_I("  BatchSize  : {}", config.sources.max_batch_size);
+        const bool uses_manual_sources = config.sources.type == "nvurisrcbin";
+        const bool uses_new_mux = uses_manual_sources && config.sources.mux.implementation == "new";
+        const int active_batch_size =
+            uses_manual_sources ? config.sources.mux.batch_size : config.sources.max_batch_size;
+        const bool active_sync_inputs =
+            uses_manual_sources ? config.sources.mux.sync_inputs : config.sources.sync_inputs;
+
+        LOG_I("  Sources    : {}", config.sources.type);
+        LOG_I("  SourceRoot : {}", config.sources.id.empty() ? "sources_bin" : config.sources.id);
+        LOG_I("  BatchMux   : {} (impl={})",
+              config.sources.mux.id.empty() ? "batch_mux" : config.sources.mux.id,
+              config.sources.mux.implementation);
+        LOG_I("  BatchSize  : {}", active_batch_size);
+        LOG_I("  SyncInputs : {}", active_sync_inputs ? "true" : "false");
+        LOG_I("  StreamMux  : {}",
+              uses_new_mux ? "new standalone nvstreammux" : "nvmultiurisrcbin internal mux");
         LOG_I("  SmartRec   : {}", config.sources.smart_record ? "enabled" : "disabled");
         LOG_I("  Processing : {} element(s)", config.processing.elements.size());
         LOG_I("  Visuals    : {}", config.visuals.enable ? "enabled" : "disabled");

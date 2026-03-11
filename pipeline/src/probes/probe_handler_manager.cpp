@@ -42,22 +42,40 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
 
         // ── smart_record ──────────────────────────────────────────
         if (cfg.trigger == "smart_record") {
-            // Resolve the source element (nvmultiurisrcbin)
-            GstElement* multiuribin = nullptr;
+            // Resolve the configured source root. In manual mode the configured
+            // element is the standalone nvstreammux, so SmartRecord needs its
+            // parent bin to find sibling nvurisrcbin elements.
+            GstElement* source_root = nullptr;
+            const std::string default_source_root =
+                config.sources.id.empty() ? std::string("sources_bin") : config.sources.id;
             const std::string configured_source_element =
-                cfg.source_element.empty() ? config.sources.id : cfg.source_element;
+                cfg.source_element.empty() ? default_source_root : cfg.source_element;
             if (!configured_source_element.empty()) {
-                multiuribin = find_element(configured_source_element);
+                source_root = find_element(configured_source_element);
             }
-            if (!multiuribin && !config.sources.id.empty() &&
-                configured_source_element != config.sources.id) {
+            if (!source_root && configured_source_element != default_source_root) {
                 LOG_W(
                     "ProbeHandlerManager: source_element '{}' not found for smart_record '{}' - "
-                    "falling back to sources.id='{}'",
-                    configured_source_element, cfg.id, config.sources.id);
-                multiuribin = find_element(config.sources.id);
+                    "falling back to source root='{}'",
+                    configured_source_element, cfg.id, default_source_root);
+                source_root = find_element(default_source_root);
             }
-            if (!multiuribin) {
+            if (source_root && config.sources.type == "nvurisrcbin" && !GST_IS_BIN(source_root)) {
+                GstObject* parent = gst_object_get_parent(GST_OBJECT(source_root));
+                gst_object_unref(source_root);
+                source_root = nullptr;
+
+                if (parent && GST_IS_ELEMENT(parent)) {
+                    source_root = GST_ELEMENT(parent);
+                } else if (parent) {
+                    gst_object_unref(parent);
+                }
+            }
+            if (!source_root && config.sources.type == "nvurisrcbin" &&
+                default_source_root != "sources_bin") {
+                source_root = find_element("sources_bin");
+            }
+            if (!source_root) {
                 LOG_E("ProbeHandlerManager: source_element '{}' not found for smart_record '{}'",
                       configured_source_element, cfg.id);
                 gst_object_unref(pad);
@@ -65,10 +83,11 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
             }
 
             auto* handler = new SmartRecordProbeHandler();
-            handler->configure(config, cfg, multiuribin, producer);
+            handler->configure(config, cfg, source_root, producer);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, SmartRecordProbeHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<SmartRecordProbeHandler*>(ud); });
+            gst_object_unref(source_root);
 
             // ── crop_objects ──────────────────────────────────────────
         } else if (cfg.trigger == "crop_objects") {
