@@ -63,8 +63,23 @@ HttpResponse make_json_response(int status_code, std::string status_text,
     HttpResponse response;
     response.status_code = status_code;
     response.status_text = std::move(status_text);
-    response.body = body.dump();
+    nlohmann::json normalized_body = body;
+    if (!normalized_body.contains("status_code")) {
+        normalized_body["status_code"] = status_code;
+    }
+    if (!normalized_body.contains("ok")) {
+        normalized_body["ok"] = status_code >= 200 && status_code < 300;
+    }
+    response.body = normalized_body.dump();
     return response;
+}
+
+HttpResponse make_control_json_response(
+    const engine::infrastructure::control::ControlResponse& control_response) {
+    nlohmann::json body = control_response.body;
+    body["status_code"] = control_response.status_code;
+    body["ok"] = control_response.status_code >= 200 && control_response.status_code < 300;
+    return make_json_response(control_response.status_code, control_response.status_text, body);
 }
 
 bool read_http_request(GSocketConnection* connection, HttpRequest& request) {
@@ -171,6 +186,14 @@ bool write_http_response(GSocketConnection* connection, const HttpResponse& resp
     return bytes_written == wire.size();
 }
 
+void close_http_connection(GSocketConnection* connection) {
+    GError* error = nullptr;
+    if (!g_io_stream_close(G_IO_STREAM(connection), nullptr, &error) && error != nullptr) {
+        LOG_D("Control API: failed to close connection cleanly: {}", error->message);
+        g_error_free(error);
+    }
+}
+
 }  // namespace
 
 PistacheServer::PistacheServer(
@@ -258,8 +281,13 @@ void PistacheServer::handle_connection(GSocketConnection* connection) {
     HttpRequest request;
     HttpResponse response =
         make_json_response(400, "Bad Request", nlohmann::json{{"error", "invalid_request"}});
+    const auto send_response = [&](const HttpResponse& http_response) {
+        write_http_response(connection, http_response);
+        close_http_connection(connection);
+    };
+
     if (!read_http_request(connection, request)) {
-        write_http_response(connection, response);
+        send_response(response);
         return;
     }
 
@@ -268,9 +296,8 @@ void PistacheServer::handle_connection(GSocketConnection* connection) {
 
     if (request.method == "GET" && path == "/health") {
         const auto control_response = handler_->get_health();
-        response = make_json_response(control_response.status_code, control_response.status_text,
-                                      control_response.body);
-        write_http_response(connection, response);
+        response = make_control_json_response(control_response);
+        send_response(response);
         return;
     }
 
@@ -278,24 +305,61 @@ void PistacheServer::handle_connection(GSocketConnection* connection) {
         segments[2] != "pipelines") {
         response =
             make_json_response(404, "Not Found", nlohmann::json{{"error", "route_not_found"}});
-        write_http_response(connection, response);
+        send_response(response);
         return;
     }
 
     const std::string& requested_pipeline_id = segments[3];
     if (requested_pipeline_id != handler_->pipeline_id()) {
-        response = make_json_response(404, "Not Found",
-                                      nlohmann::json{{"error", "pipeline_not_found"},
-                                                     {"pipeline_id", requested_pipeline_id}});
-        write_http_response(connection, response);
+        response = make_json_response(
+            404, "Not Found",
+            nlohmann::json{{"error", "pipeline_not_found"},
+                           {"error_code", "SRCCTL_PIPELINE_NOT_FOUND"},
+                           {"message", "requested pipeline id does not match active pipeline"},
+                           {"pipeline_id", requested_pipeline_id}});
+        send_response(response);
         return;
     }
 
     if (request.method == "GET" && segments.size() == 5 && segments[4] == "state") {
         const auto control_response = handler_->get_pipeline_state(requested_pipeline_id);
-        response = make_json_response(control_response.status_code, control_response.status_text,
-                                      control_response.body);
-        write_http_response(connection, response);
+        response = make_control_json_response(control_response);
+        send_response(response);
+        return;
+    }
+
+    if (segments.size() == 5 && segments[4] == "sources") {
+        if (request.method == "GET") {
+            const auto control_response = handler_->list_sources(requested_pipeline_id);
+            response = make_control_json_response(control_response);
+            send_response(response);
+            return;
+        }
+
+        if (request.method == "POST") {
+            try {
+                const auto body = request.body.empty() ? nlohmann::json::object()
+                                                       : nlohmann::json::parse(request.body);
+                const auto control_response = handler_->add_source(requested_pipeline_id, body);
+                response = make_control_json_response(control_response);
+                send_response(response);
+                return;
+            } catch (const std::exception& ex) {
+                response =
+                    make_json_response(400, "Bad Request",
+                                       nlohmann::json{{"error", "invalid_json"},
+                                                      {"error_code", "SRCCTL_INVALID_REQUEST"},
+                                                      {"message", ex.what()}});
+                send_response(response);
+                return;
+            }
+        }
+    }
+
+    if (request.method == "DELETE" && segments.size() == 6 && segments[4] == "sources") {
+        const auto control_response = handler_->remove_source(requested_pipeline_id, segments[5]);
+        response = make_control_json_response(control_response);
+        send_response(response);
         return;
     }
 
@@ -306,9 +370,8 @@ void PistacheServer::handle_connection(GSocketConnection* connection) {
             const std::string property = segments[7];
             const auto control_response =
                 handler_->get_property(requested_pipeline_id, element_id, property);
-            response = make_json_response(control_response.status_code,
-                                          control_response.status_text, control_response.body);
-            write_http_response(connection, response);
+            response = make_control_json_response(control_response);
+            send_response(response);
             return;
         }
 
@@ -319,22 +382,23 @@ void PistacheServer::handle_connection(GSocketConnection* connection) {
                                                        : nlohmann::json::parse(request.body);
                 const auto control_response =
                     handler_->set_properties(requested_pipeline_id, element_id, body);
-                response = make_json_response(control_response.status_code,
-                                              control_response.status_text, control_response.body);
-                write_http_response(connection, response);
+                response = make_control_json_response(control_response);
+                send_response(response);
                 return;
             } catch (const std::exception& ex) {
-                response = make_json_response(
-                    400, "Bad Request",
-                    nlohmann::json{{"error", "invalid_json"}, {"message", ex.what()}});
-                write_http_response(connection, response);
+                response =
+                    make_json_response(400, "Bad Request",
+                                       nlohmann::json{{"error", "invalid_json"},
+                                                      {"error_code", "SRCCTL_INVALID_REQUEST"},
+                                                      {"message", ex.what()}});
+                send_response(response);
                 return;
             }
         }
     }
 
     response = make_json_response(404, "Not Found", nlohmann::json{{"error", "route_not_found"}});
-    write_http_response(connection, response);
+    send_response(response);
 }
 
 }  // namespace engine::infrastructure::rest_api

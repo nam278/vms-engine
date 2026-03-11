@@ -4,6 +4,10 @@
 
 #include <algorithm>
 
+using engine::core::pipeline::RuntimeSourceErrorCode;
+using engine::core::pipeline::RuntimeSourceInfo;
+using engine::core::pipeline::RuntimeSourceMutationResult;
+
 namespace engine::infrastructure::control {
 
 namespace {
@@ -47,6 +51,37 @@ std::string json_value_to_string(const nlohmann::json& value) {
     return value.dump();
 }
 
+std::string http_status_text(int status_code) {
+    switch (status_code) {
+        case 200:
+            return "OK";
+        case 201:
+            return "Created";
+        case 400:
+            return "Bad Request";
+        case 404:
+            return "Not Found";
+        case 409:
+            return "Conflict";
+        case 422:
+            return "Unprocessable Entity";
+        case 500:
+            return "Internal Server Error";
+        case 507:
+            return "Insufficient Storage";
+        default:
+            return "OK";
+    }
+}
+
+nlohmann::json source_info_to_json(const RuntimeSourceInfo& source) {
+    return {{"camera_id", source.camera_id},
+            {"uri", source.uri},
+            {"source_index", source.source_index},
+            {"is_seeded", source.is_seeded},
+            {"state", source.state}};
+}
+
 }  // namespace
 
 RuntimeControlHandler::RuntimeControlHandler(
@@ -79,6 +114,52 @@ ControlResponse RuntimeControlHandler::get_pipeline_state(
     return {200,
             "OK",
             {{"pipeline_id", pipeline_id_}, {"state", state_to_string(manager_->get_state())}}};
+}
+
+ControlResponse RuntimeControlHandler::list_sources(
+    const std::string& requested_pipeline_id) const {
+    if (requested_pipeline_id != pipeline_id_) {
+        return pipeline_not_found(requested_pipeline_id);
+    }
+
+    return source_result_to_response(manager_->list_sources_detailed());
+}
+
+ControlResponse RuntimeControlHandler::add_source(const std::string& requested_pipeline_id,
+                                                  const nlohmann::json& body) const {
+    if (requested_pipeline_id != pipeline_id_) {
+        return pipeline_not_found(requested_pipeline_id);
+    }
+
+    if (!body.contains("camera") || !body["camera"].is_object()) {
+        return invalid_source_request("missing camera object");
+    }
+
+    const auto& camera_body = body["camera"];
+    if (!camera_body.contains("id") || !camera_body["id"].is_string()) {
+        return invalid_source_request("camera.id is required");
+    }
+    if (!camera_body.contains("uri") || !camera_body["uri"].is_string()) {
+        return invalid_source_request("camera.uri is required");
+    }
+
+    engine::core::config::CameraConfig camera;
+    camera.id = camera_body["id"].get<std::string>();
+    camera.uri = camera_body["uri"].get<std::string>();
+    return source_result_to_response(manager_->add_source_detailed(camera));
+}
+
+ControlResponse RuntimeControlHandler::remove_source(const std::string& requested_pipeline_id,
+                                                     const std::string& camera_id) const {
+    if (requested_pipeline_id != pipeline_id_) {
+        return pipeline_not_found(requested_pipeline_id);
+    }
+
+    if (camera_id.empty()) {
+        return invalid_source_request("camera_id is required");
+    }
+
+    return source_result_to_response(manager_->remove_source_detailed(camera_id));
 }
 
 ControlResponse RuntimeControlHandler::get_property(const std::string& requested_pipeline_id,
@@ -163,6 +244,12 @@ ControlResponse RuntimeControlHandler::handle_message(const std::string& payload
             response = get_health();
         } else if (message_type == "get_pipeline_state") {
             response = get_pipeline_state(requested_pipeline_id);
+        } else if (message_type == "list_sources") {
+            response = list_sources(requested_pipeline_id);
+        } else if (message_type == "add_source") {
+            response = add_source(requested_pipeline_id, message);
+        } else if (message_type == "remove_source") {
+            response = remove_source(requested_pipeline_id, message.value("camera_id", ""));
         } else if (message_type == "get_element_property") {
             response = get_property(requested_pipeline_id, message.value("element_id", ""),
                                     message.value("property", ""));
@@ -172,12 +259,21 @@ ControlResponse RuntimeControlHandler::handle_message(const std::string& payload
         } else {
             response = {400,
                         "Bad Request",
-                        {{"error", "unsupported_message_type"}, {"type", message_type}}};
+                        {{"error", "unsupported_message_type"},
+                         {"error_code", engine::core::pipeline::to_string(
+                                            RuntimeSourceErrorCode::InvalidRequest)},
+                         {"message", "unsupported runtime control message type"},
+                         {"type", message_type}}};
         }
 
         return decorate_response(std::move(response), request_id, message_type);
     } catch (const std::exception& ex) {
-        return {400, "Bad Request", {{"error", "invalid_json"}, {"message", ex.what()}}};
+        return {400,
+                "Bad Request",
+                {{"error", "invalid_json"},
+                 {"error_code",
+                  engine::core::pipeline::to_string(RuntimeSourceErrorCode::InvalidRequest)},
+                 {"message", ex.what()}}};
     }
 }
 
@@ -193,11 +289,66 @@ bool RuntimeControlHandler::is_allowed_param(const std::string& element_id,
     return allowed_params_.find(key) != allowed_params_.end();
 }
 
+ControlResponse RuntimeControlHandler::source_result_to_response(
+    const RuntimeSourceMutationResult& result) const {
+    nlohmann::json body = {{"pipeline_id", pipeline_id_},
+                           {"message", result.message},
+                           {"active_source_count", result.active_source_count}};
+
+    if (!result.camera_id.empty()) {
+        body["camera_id"] = result.camera_id;
+    }
+
+    if (result.source_index >= 0) {
+        body["source_index"] = result.source_index;
+    }
+    if (result.source.has_value()) {
+        body["source"] = source_info_to_json(*result.source);
+    }
+    if (!result.sources.empty()) {
+        body["sources"] = nlohmann::json::array();
+        for (const auto& source : result.sources) {
+            body["sources"].push_back(source_info_to_json(source));
+        }
+    } else if (result.success && !result.source.has_value() && result.camera_id.empty()) {
+        body["sources"] = nlohmann::json::array();
+    }
+    if (!result.dot_file_path.empty()) {
+        body["dot_file"] = result.dot_file_path;
+    }
+    if (!result.dot_dump_warning.empty()) {
+        body["warning"] = result.dot_dump_warning;
+        body["warning_code"] =
+            engine::core::pipeline::to_string(RuntimeSourceErrorCode::DotDumpFailed);
+    }
+
+    if (!result.success) {
+        body["error"] = engine::core::pipeline::to_error_name(result.error_code);
+        body["error_code"] = engine::core::pipeline::to_string(result.error_code);
+    }
+
+    return {result.http_status, http_status_text(result.http_status), std::move(body)};
+}
+
+ControlResponse RuntimeControlHandler::invalid_source_request(const std::string& message) const {
+    return {
+        400,
+        "Bad Request",
+        {{"error", engine::core::pipeline::to_error_name(RuntimeSourceErrorCode::InvalidRequest)},
+         {"error_code", engine::core::pipeline::to_string(RuntimeSourceErrorCode::InvalidRequest)},
+         {"message", message},
+         {"pipeline_id", pipeline_id_}}};
+}
+
 ControlResponse RuntimeControlHandler::pipeline_not_found(
     const std::string& requested_pipeline_id) const {
     return {404,
             "Not Found",
-            {{"error", "pipeline_not_found"}, {"pipeline_id", requested_pipeline_id}}};
+            {{"error", "pipeline_not_found"},
+             {"error_code",
+              engine::core::pipeline::to_string(RuntimeSourceErrorCode::PipelineNotFound)},
+             {"message", "requested pipeline id does not match active pipeline"},
+             {"pipeline_id", requested_pipeline_id}}};
 }
 
 ControlResponse RuntimeControlHandler::decorate_response(ControlResponse response,

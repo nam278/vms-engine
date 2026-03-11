@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/core/pipeline/ipipeline_manager.hpp"
+#include "engine/core/pipeline/runtime_source_control_types.hpp"
 #include "engine/core/runtime/iruntime_param_manager.hpp"
 #include "engine/core/builders/ipipeline_builder.hpp"
 #include "engine/core/config/config_types.hpp"
@@ -46,6 +47,12 @@ class PipelineManager : public engine::core::pipeline::IPipelineManager,
     bool stop() override;
     bool pause() override;
     bool resume() override;
+    engine::core::pipeline::RuntimeSourceMutationResult list_sources_detailed() override;
+    engine::core::pipeline::RuntimeSourceMutationResult add_source_detailed(
+        const engine::core::config::CameraConfig& camera) override;
+    engine::core::pipeline::RuntimeSourceMutationResult remove_source_detailed(
+        const std::string& camera_id) override;
+
     bool add_source(const engine::core::config::CameraConfig& camera) override;
     bool remove_source(const std::string& camera_id) override;
     engine::core::pipeline::PipelineState get_state() const override;

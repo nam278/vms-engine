@@ -4,6 +4,8 @@
 >
 > Khi pipeline dùng manual mode `type: nvurisrcbin`, tài liệu này **không áp dụng trực tiếp**; runtime add/remove lúc đó đi qua `RuntimeStreamManager` trong engine thay vì DeepStream REST.
 >
+> Ở manual mode, control plane hiện tại là custom engine transport qua `control_api:` và `control_messaging:` với các route/command `list_sources`, `add_source`, `remove_source`, response JSON có `error_code` typed cho backend Python, và DOT snapshot sau mỗi topology mutation thành công.
+>
 > **Đọc trước**: [05 — Configuration](05_configuration.md) · [06 — Runtime Lifecycle](06_runtime_lifecycle.md)
 
 ---
@@ -82,6 +84,8 @@ sources:
 ## 3. Endpoints
 
 Base URL: `http://<host>:<rest_api_port>`
+
+> 📋 **Không nhầm lẫn với custom engine control API**: các endpoint trong mục này chỉ tồn tại khi dùng `nvmultiurisrcbin` embedded REST. Manual `nvurisrcbin` không dùng `/api/v1/stream/add` hay `/api/v1/stream/remove`; nó dùng `GET/POST/DELETE /api/v1/pipelines/{pipeline_id}/sources` của `control_api` trong engine.
 
 ### 3.1 Stream Add
 

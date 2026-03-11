@@ -27,6 +27,11 @@ class RuntimeControlHandler {
 
     ControlResponse get_health() const;
     ControlResponse get_pipeline_state(const std::string& requested_pipeline_id) const;
+    ControlResponse list_sources(const std::string& requested_pipeline_id) const;
+    ControlResponse add_source(const std::string& requested_pipeline_id,
+                               const nlohmann::json& body) const;
+    ControlResponse remove_source(const std::string& requested_pipeline_id,
+                                  const std::string& camera_id) const;
     ControlResponse get_property(const std::string& requested_pipeline_id,
                                  const std::string& element_id, const std::string& property) const;
     ControlResponse set_properties(const std::string& requested_pipeline_id,
@@ -40,6 +45,9 @@ class RuntimeControlHandler {
     std::unordered_set<std::string> allowed_params_;
 
     bool is_allowed_param(const std::string& element_id, const std::string& property) const;
+    ControlResponse source_result_to_response(
+        const engine::core::pipeline::RuntimeSourceMutationResult& result) const;
+    ControlResponse invalid_source_request(const std::string& message) const;
     ControlResponse pipeline_not_found(const std::string& requested_pipeline_id) const;
     ControlResponse decorate_response(ControlResponse response, const std::string& request_id,
                                       const std::string& message_type) const;

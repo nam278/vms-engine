@@ -420,6 +420,13 @@ int main(int argc, char* argv[]) {
         } else {
             LOG_I("  ControlMsg : disabled");
         }
+        if (uses_manual_sources &&
+            ((config.control_api && config.control_api->enable) ||
+             (config.control_messaging && config.control_messaging->enable))) {
+            LOG_I(
+                "  SourceCtrl  : manual nvurisrcbin runtime control enabled (list/add/remove + dot "
+                "snapshots)");
+        }
         if (config.evidence) {
             LOG_I("  Evidence   : {} request='{}' ready='{}'",
                   config.evidence->enable ? "enabled" : "disabled",

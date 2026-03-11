@@ -10,12 +10,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <filesystem>
 #include <future>
+#include <set>
 #include <sstream>
+
+using engine::core::pipeline::RuntimeSourceErrorCode;
+using engine::core::pipeline::RuntimeSourceMutationResult;
 
 namespace engine::pipeline {
 
 namespace {
+
+namespace fs = std::filesystem;
 
 struct SetParamRequest {
     GstElement* pipeline = nullptr;
@@ -27,14 +34,20 @@ struct SetParamRequest {
 
 struct AddSourceRequest {
     RuntimeStreamManager* manager = nullptr;
+    GstElement* pipeline = nullptr;
+    engine::core::config::SourcesConfig sources_config;
     engine::core::config::CameraConfig camera;
-    std::promise<bool> promise;
+    std::string dot_file_dir;
+    std::promise<RuntimeSourceMutationResult> promise;
 };
 
 struct RemoveSourceRequest {
     RuntimeStreamManager* manager = nullptr;
+    GstElement* pipeline = nullptr;
+    engine::core::config::SourcesConfig sources_config;
     std::string camera_id;
-    std::promise<bool> promise;
+    std::string dot_file_dir;
+    std::promise<RuntimeSourceMutationResult> promise;
 };
 
 struct GetParamRequest {
@@ -43,6 +56,160 @@ struct GetParamRequest {
     std::string property;
     std::promise<std::string> promise;
 };
+
+RuntimeSourceMutationResult make_source_result(bool success, int http_status,
+                                               RuntimeSourceErrorCode error_code,
+                                               const std::string& camera_id,
+                                               const std::string& message) {
+    RuntimeSourceMutationResult result;
+    result.success = success;
+    result.http_status = http_status;
+    result.error_code = error_code;
+    result.camera_id = camera_id;
+    result.message = message;
+    return result;
+}
+
+std::string sanitize_name_component(const std::string& value) {
+    std::string sanitized;
+    sanitized.reserve(value.size());
+    for (unsigned char ch : value) {
+        if (std::isalnum(ch) != 0U) {
+            sanitized.push_back(static_cast<char>(ch));
+        } else {
+            sanitized.push_back('_');
+        }
+    }
+    if (sanitized.empty()) {
+        sanitized = "camera";
+    }
+    return sanitized;
+}
+
+void request_encoder_keyframe(GObject* object, const char* property_name) {
+    GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(object), property_name);
+    if (spec == nullptr || (spec->flags & G_PARAM_WRITABLE) == 0 ||
+        G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_BOOLEAN) {
+        return;
+    }
+
+    g_object_set(object, property_name, static_cast<gboolean>(TRUE), nullptr);
+}
+
+void request_keyframe_on_encoders(GstElement* pipeline) {
+    if (pipeline == nullptr) {
+        return;
+    }
+
+    GstIterator* iterator = gst_bin_iterate_recurse(GST_BIN(pipeline));
+    if (iterator == nullptr) {
+        return;
+    }
+
+    GValue value = G_VALUE_INIT;
+    while (gst_iterator_next(iterator, &value) == GST_ITERATOR_OK) {
+        auto* element = GST_ELEMENT(g_value_get_object(&value));
+        GstElementFactory* factory =
+            element != nullptr ? gst_element_get_factory(element) : nullptr;
+        const gchar* factory_name =
+            factory != nullptr ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : nullptr;
+
+        if (factory_name != nullptr && (std::strcmp(factory_name, "nvv4l2h264enc") == 0 ||
+                                        std::strcmp(factory_name, "nvv4l2h265enc") == 0)) {
+            request_encoder_keyframe(G_OBJECT(element), "force-keyframe");
+            request_encoder_keyframe(G_OBJECT(element), "force-idr");
+            request_encoder_keyframe(G_OBJECT(element), "force-intra");
+        }
+
+        g_value_reset(&value);
+    }
+
+    g_value_unset(&value);
+    gst_iterator_free(iterator);
+}
+
+void refresh_pipeline_after_source_mutation(GstElement* pipeline,
+                                            const engine::core::config::SourcesConfig& sources) {
+    if (pipeline == nullptr) {
+        return;
+    }
+
+    const std::string mux_name = sources.mux.id.empty() ? std::string("batch_mux") : sources.mux.id;
+    GstElement* muxer = gst_bin_get_by_name(GST_BIN(pipeline), mux_name.c_str());
+    if (muxer != nullptr) {
+        gst_element_send_event(muxer, gst_event_new_reconfigure());
+        gst_object_unref(muxer);
+    }
+
+    gst_bin_recalculate_latency(GST_BIN(pipeline));
+    request_keyframe_on_encoders(pipeline);
+}
+
+void dump_pipeline_dot_snapshot(GstElement* pipeline, const std::string& dot_file_dir,
+                                const std::string& prefix, RuntimeSourceMutationResult& result) {
+    if (pipeline == nullptr || dot_file_dir.empty() || !result.success) {
+        return;
+    }
+
+    try {
+        fs::create_directories(dot_file_dir);
+    } catch (const std::exception& ex) {
+        result.dot_dump_warning =
+            std::string("failed to prepare dot output directory: ") + ex.what();
+        return;
+    }
+
+    std::set<std::string> before;
+    try {
+        for (const auto& entry : fs::directory_iterator(dot_file_dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            if (entry.path().extension() == ".dot") {
+                before.insert(entry.path().filename().string());
+            }
+        }
+    } catch (const std::exception& ex) {
+        result.dot_dump_warning = std::string("failed to scan dot output directory: ") + ex.what();
+        return;
+    }
+
+    gst_debug_bin_to_dot_file_with_ts(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, prefix.c_str());
+
+    fs::path newest_path;
+    fs::file_time_type newest_time;
+    bool found_new = false;
+    try {
+        for (const auto& entry : fs::directory_iterator(dot_file_dir)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".dot") {
+                continue;
+            }
+
+            const std::string filename = entry.path().filename().string();
+            if (before.find(filename) != before.end() ||
+                filename.find(prefix) == std::string::npos) {
+                continue;
+            }
+
+            const auto write_time = fs::last_write_time(entry.path());
+            if (!found_new || write_time > newest_time) {
+                newest_time = write_time;
+                newest_path = entry.path();
+                found_new = true;
+            }
+        }
+    } catch (const std::exception& ex) {
+        result.dot_dump_warning = std::string("failed to resolve dot snapshot path: ") + ex.what();
+        return;
+    }
+
+    if (!found_new) {
+        result.dot_dump_warning = "dot snapshot requested but no new .dot file was created";
+        return;
+    }
+
+    result.dot_file_path = newest_path.string();
+}
 
 std::string normalize_property_name(std::string property) {
     std::replace(property.begin(), property.end(), '_', '-');
@@ -217,15 +384,35 @@ gboolean invoke_get_param(gpointer data) {
 
 gboolean invoke_add_source(gpointer data) {
     std::unique_ptr<AddSourceRequest> request(static_cast<AddSourceRequest*>(data));
-    request->promise.set_value(request->manager != nullptr &&
-                               request->manager->add_stream(request->camera));
+    RuntimeSourceMutationResult result =
+        request->manager != nullptr
+            ? request->manager->add_stream_detailed(request->camera)
+            : make_source_result(false, 500, RuntimeSourceErrorCode::InternalError,
+                                 request->camera.id, "runtime stream manager is unavailable");
+    if (result.success) {
+        refresh_pipeline_after_source_mutation(request->pipeline, request->sources_config);
+        dump_pipeline_dot_snapshot(
+            request->pipeline, request->dot_file_dir,
+            std::string("runtime_add_") + sanitize_name_component(request->camera.id), result);
+    }
+    request->promise.set_value(std::move(result));
     return G_SOURCE_REMOVE;
 }
 
 gboolean invoke_remove_source(gpointer data) {
     std::unique_ptr<RemoveSourceRequest> request(static_cast<RemoveSourceRequest*>(data));
-    request->promise.set_value(request->manager != nullptr &&
-                               request->manager->remove_stream(request->camera_id));
+    RuntimeSourceMutationResult result =
+        request->manager != nullptr
+            ? request->manager->remove_stream_detailed(request->camera_id)
+            : make_source_result(false, 500, RuntimeSourceErrorCode::InternalError,
+                                 request->camera_id, "runtime stream manager is unavailable");
+    if (result.success) {
+        refresh_pipeline_after_source_mutation(request->pipeline, request->sources_config);
+        dump_pipeline_dot_snapshot(
+            request->pipeline, request->dot_file_dir,
+            std::string("runtime_remove_") + sanitize_name_component(request->camera_id), result);
+    }
+    request->promise.set_value(std::move(result));
     return G_SOURCE_REMOVE;
 }
 
@@ -447,48 +634,112 @@ bool PipelineManager::resume() {
     return start();
 }
 
-bool PipelineManager::add_source(const engine::core::config::CameraConfig& camera) {
+RuntimeSourceMutationResult PipelineManager::list_sources_detailed() {
+    if (config_.sources.type != "nvurisrcbin") {
+        return make_source_result(
+            false, 422, RuntimeSourceErrorCode::UnsupportedSourceMode, "",
+            "runtime source control is only available for sources.type=nvurisrcbin");
+    }
+
     if (!runtime_stream_manager_) {
+        return make_source_result(false, 500, RuntimeSourceErrorCode::InternalError, "",
+                                  "runtime stream manager is unavailable");
+    }
+
+    RuntimeSourceMutationResult result =
+        make_source_result(true, 200, RuntimeSourceErrorCode::None, "", "active sources listed");
+    result.sources = runtime_stream_manager_->list_streams();
+    result.active_source_count = static_cast<int>(result.sources.size());
+    return result;
+}
+
+RuntimeSourceMutationResult PipelineManager::add_source_detailed(
+    const engine::core::config::CameraConfig& camera) {
+    if (config_.sources.type != "nvurisrcbin") {
         LOG_W("PipelineManager::add_source unavailable for sources.type='{}'",
               config_.sources.type);
-        return false;
+        return make_source_result(
+            false, 422, RuntimeSourceErrorCode::UnsupportedSourceMode, camera.id,
+            "runtime source control is only available for sources.type=nvurisrcbin");
+    }
+
+    if (!runtime_stream_manager_) {
+        LOG_W("PipelineManager::add_source runtime manager unavailable");
+        return make_source_result(false, 500, RuntimeSourceErrorCode::InternalError, camera.id,
+                                  "runtime stream manager is unavailable");
     }
 
     if (loop_ == nullptr || !g_main_loop_is_running(loop_)) {
-        return runtime_stream_manager_->add_stream(camera);
+        RuntimeSourceMutationResult result = runtime_stream_manager_->add_stream_detailed(camera);
+        if (result.success) {
+            refresh_pipeline_after_source_mutation(pipeline_, config_.sources);
+            dump_pipeline_dot_snapshot(
+                pipeline_, config_.pipeline.dot_file_dir,
+                std::string("runtime_add_") + sanitize_name_component(camera.id), result);
+        }
+        return result;
     }
 
-    auto* request = new AddSourceRequest{runtime_stream_manager_.get(), camera};
+    auto* request = new AddSourceRequest{runtime_stream_manager_.get(), pipeline_, config_.sources,
+                                         camera, config_.pipeline.dot_file_dir};
     auto future = request->promise.get_future();
     g_main_context_invoke(g_main_loop_get_context(loop_), invoke_add_source, request);
     if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         LOG_W("PipelineManager::add_source timeout for '{}'", camera.id);
-        return false;
+        return make_source_result(false, 500, RuntimeSourceErrorCode::OperationTimeout, camera.id,
+                                  "timed out while adding runtime camera");
     }
 
     return future.get();
 }
 
-bool PipelineManager::remove_source(const std::string& camera_id) {
-    if (!runtime_stream_manager_) {
+RuntimeSourceMutationResult PipelineManager::remove_source_detailed(const std::string& camera_id) {
+    if (config_.sources.type != "nvurisrcbin") {
         LOG_W("PipelineManager::remove_source unavailable for sources.type='{}'",
               config_.sources.type);
-        return false;
+        return make_source_result(
+            false, 422, RuntimeSourceErrorCode::UnsupportedSourceMode, camera_id,
+            "runtime source control is only available for sources.type=nvurisrcbin");
+    }
+
+    if (!runtime_stream_manager_) {
+        LOG_W("PipelineManager::remove_source runtime manager unavailable");
+        return make_source_result(false, 500, RuntimeSourceErrorCode::InternalError, camera_id,
+                                  "runtime stream manager is unavailable");
     }
 
     if (loop_ == nullptr || !g_main_loop_is_running(loop_)) {
-        return runtime_stream_manager_->remove_stream(camera_id);
+        RuntimeSourceMutationResult result =
+            runtime_stream_manager_->remove_stream_detailed(camera_id);
+        if (result.success) {
+            refresh_pipeline_after_source_mutation(pipeline_, config_.sources);
+            dump_pipeline_dot_snapshot(
+                pipeline_, config_.pipeline.dot_file_dir,
+                std::string("runtime_remove_") + sanitize_name_component(camera_id), result);
+        }
+        return result;
     }
 
-    auto* request = new RemoveSourceRequest{runtime_stream_manager_.get(), camera_id};
+    auto* request =
+        new RemoveSourceRequest{runtime_stream_manager_.get(), pipeline_, config_.sources,
+                                camera_id, config_.pipeline.dot_file_dir};
     auto future = request->promise.get_future();
     g_main_context_invoke(g_main_loop_get_context(loop_), invoke_remove_source, request);
     if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
         LOG_W("PipelineManager::remove_source timeout for '{}'", camera_id);
-        return false;
+        return make_source_result(false, 500, RuntimeSourceErrorCode::OperationTimeout, camera_id,
+                                  "timed out while removing runtime camera");
     }
 
     return future.get();
+}
+
+bool PipelineManager::add_source(const engine::core::config::CameraConfig& camera) {
+    return add_source_detailed(camera).success;
+}
+
+bool PipelineManager::remove_source(const std::string& camera_id) {
+    return remove_source_detailed(camera_id).success;
 }
 
 engine::core::pipeline::PipelineState PipelineManager::get_state() const {

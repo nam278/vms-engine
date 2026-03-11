@@ -195,8 +195,98 @@ Các route đang được implement trong engine:
 
 - `GET /health`
 - `GET /api/v1/pipelines/{pipeline_id}/state`
+- `GET /api/v1/pipelines/{pipeline_id}/sources`
+- `POST /api/v1/pipelines/{pipeline_id}/sources`
+- `DELETE /api/v1/pipelines/{pipeline_id}/sources/{camera_id}`
 - `GET /api/v1/pipelines/{pipeline_id}/elements/{element_id}/properties/{property}`
 - `PATCH /api/v1/pipelines/{pipeline_id}/elements/{element_id}/properties`
+
+Ví dụ `curl` để test nhanh HTTP API:
+
+```bash
+BASE_URL="http://127.0.0.1:8081"
+PIPELINE_ID="de1"
+ELEMENT_ID="osd"
+CAMERA_ID="camera-03"
+```
+
+Health check:
+
+```bash
+curl -sS "${BASE_URL}/health"
+```
+
+Lấy state của pipeline:
+
+```bash
+curl -sS "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/state"
+```
+
+Liệt kê source hiện tại:
+
+```bash
+curl -sS "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/sources"
+```
+
+Thêm source runtime:
+
+```bash
+curl -sS -X POST "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/sources" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "camera": {
+      "id": "camera-03",
+      "uri": "rtsp://192.168.1.103:554/stream"
+    }
+  }'
+```
+
+Xóa source runtime:
+
+```bash
+curl -sS -X DELETE \
+  "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/sources/${CAMERA_ID}"
+```
+
+Đọc một property runtime của element:
+
+```bash
+curl -sS \
+  "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/elements/${ELEMENT_ID}/properties/display_bbox"
+```
+
+Patch nhiều property runtime cùng lúc:
+
+```bash
+curl -sS -X PATCH \
+  "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/elements/${ELEMENT_ID}/properties" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "properties": {
+      "display_bbox": false,
+      "display_text": true
+    }
+  }'
+```
+
+Manual `nvurisrcbin` source control hiện trả JSON typed để backend Python map message ổn định cho client. Field tối thiểu của error response là:
+
+- `error`
+- `error_code`
+- `message`
+- `status_code`
+- `pipeline_id`
+- `camera_id` khi request có target source cụ thể
+
+Field tối thiểu của source-mutation success response là:
+
+- `message`
+- `camera_id`
+- `source_index`
+- `active_source_count`
+- `source`
+- `dot_file` nếu DOT snapshot được tạo
+- `warning` và `warning_code` nếu mutate thành công nhưng DOT snapshot không resolve được
 
 Ở bản hiện tại, allowlist runtime param mặc định đang mở cho:
 
@@ -227,10 +317,64 @@ Engine hiện hỗ trợ cùng một handler chung cho các command type:
 
 - `health`
 - `get_pipeline_state`
+- `list_sources`
+- `add_source`
+- `remove_source`
 - `get_element_property`
 - `set_element_properties`
 
 Response trả về qua broker sẽ giữ `request_id`, `status_code`, `ok`, và payload business tương ứng.
+
+Payload command cho manual source control:
+
+```json
+{
+  "type": "add_source",
+  "request_id": "3c9f4a3f",
+  "pipeline_id": "de1",
+  "camera": {
+    "id": "camera-03",
+    "uri": "rtsp://192.168.1.103:554/stream"
+  },
+  "reply_to": "worker_lsr_runtime_control_reply"
+}
+```
+
+```json
+{
+  "type": "remove_source",
+  "request_id": "3c9f4a40",
+  "pipeline_id": "de1",
+  "camera_id": "camera-03",
+  "reply_to": "worker_lsr_runtime_control_reply"
+}
+```
+
+```json
+{
+  "type": "list_sources",
+  "request_id": "3c9f4a41",
+  "pipeline_id": "de1",
+  "reply_to": "worker_lsr_runtime_control_reply"
+}
+```
+
+Error code typed hiện được dùng cho manual source control:
+
+| error_code                       | Ý nghĩa                                                   |
+| -------------------------------- | --------------------------------------------------------- |
+| `SRCCTL_INVALID_REQUEST`         | Payload thiếu field bắt buộc hoặc JSON không hợp lệ       |
+| `SRCCTL_PIPELINE_NOT_FOUND`      | `pipeline_id` request không match pipeline đang chạy      |
+| `SRCCTL_UNSUPPORTED_SOURCE_MODE` | Pipeline không chạy manual `nvurisrcbin` mode             |
+| `SRCCTL_DUPLICATE_CAMERA_ID`     | `camera_id` đã tồn tại trong active source set            |
+| `SRCCTL_CAMERA_NOT_FOUND`        | Remove target không tồn tại trong active source set       |
+| `SRCCTL_MAX_SOURCES_REACHED`     | Số source active đã chạm trần `max_sources`               |
+| `SRCCTL_BUILD_SOURCE_FAILED`     | Tạo source bin thất bại                                   |
+| `SRCCTL_REQUEST_PAD_FAILED`      | Xin `nvstreammux` sink pad thất bại                       |
+| `SRCCTL_LINK_SOURCE_FAILED`      | Link source pad vào mux thất bại                          |
+| `SRCCTL_OPERATION_TIMEOUT`       | Add/remove bị timeout ở control layer                     |
+| `SRCCTL_DOT_DUMP_FAILED`         | Mutation thành công nhưng DOT snapshot không resolve được |
+| `SRCCTL_INTERNAL_ERROR`          | Lỗi nội bộ còn lại                                        |
 
 ### 6.3 Preset convenience layer
 

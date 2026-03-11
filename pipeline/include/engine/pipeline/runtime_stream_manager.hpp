@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/core/config/config_types.hpp"
+#include "engine/core/pipeline/runtime_source_control_types.hpp"
 
 #include <gst/gst.h>
 
@@ -31,12 +32,20 @@ class RuntimeStreamManager {
      */
     bool add_stream(const engine::core::config::CameraConfig& camera);
 
+    engine::core::pipeline::RuntimeSourceMutationResult add_stream_detailed(
+        const engine::core::config::CameraConfig& camera);
+
     /**
      * @brief Remove a camera stream by id.
      * @param camera_id Unique camera id.
      * @return true if the stream was removed.
      */
     bool remove_stream(const std::string& camera_id);
+
+    engine::core::pipeline::RuntimeSourceMutationResult remove_stream_detailed(
+        const std::string& camera_id);
+
+    std::vector<engine::core::pipeline::RuntimeSourceInfo> list_streams() const;
 
     /**
      * @brief Get the current number of active streams.
@@ -46,6 +55,10 @@ class RuntimeStreamManager {
    private:
     struct StreamSlot {
         uint32_t source_index = 0;
+        std::string camera_id;
+        std::string camera_uri;
+        bool is_seeded = false;
+        std::string state = "active";
         GstElement* source = nullptr;
         GstElement* pad_signal_source = nullptr;
         GstPad* mux_sink_pad = nullptr;

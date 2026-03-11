@@ -137,7 +137,7 @@ sources:
 
   # --- Section 2: per-source nvurisrcbin properties ---
   gpu_id: 0
-  num_extra_surfaces: 9 # extra decoder surfaces for stability
+  num_extra_surfaces: 2 # extra decoder surfaces for stability
   cudadec_memtype: 0 # 0=device(GPU)  1=pinned  2=unified
   dec_skip_frames: 0 # 0=decode all  1=non-ref only  2=key-only
   drop_frame_interval: 0 # drop every N frames at source (0=none)
@@ -145,7 +145,7 @@ sources:
   rtsp_reconnect_interval: 10 # seconds between RTSP reconnects (0=disable)
   rtsp_reconnect_attempts: -1 # number of reconnect attempts (-1=infinite)
   latency: 400 # RTSP jitter buffer latency in ms (default: 100)
-  udp_buffer_size: 4194304 # UDP receive buffer bytes = 4MB (default: 524288)
+  udp_buffer_size: 524288 # UDP receive buffer bytes = 4MB (default: 524288)
   disable_audio: true # keep audio for smart record; true = skip audio decode
   disable_passthrough: false
   drop_on_latency: false # keep jitterbuffer from dropping late RTP packets too aggressively
@@ -178,11 +178,11 @@ sources:
       - id: pre_mux_queue
         type: queue
         enabled: true
-        max_size_buffers: 10
-        max_size_bytes_mb: 20
-        max_size_time_sec: 0.5
-        leaky: 2
-        silent: true
+        # max_size_buffers: 10
+        # max_size_bytes_mb: 20
+        # max_size_time_sec: 0.5
+        # leaky: 2
+        # silent: true
 
   mux:
     id: batch_mux
@@ -354,7 +354,7 @@ outputs:
         type: rtspclientsink
         location: rtsp://192.168.1.99:8554/de1
         protocols: tcp # tcp | udp
-        # latency: 150 # plugin default is 2000ms; keep this low for runtime source churn
+        latency: 150 # plugin default is 2000ms; keep this low for runtime source churn
         async: false # NVIDIA recommends async=false on sinks with new nvstreammux
         queue: {}
 
