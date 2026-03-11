@@ -42,20 +42,6 @@ bool RuntimeParamRules::requires_restart(const std::string& param_name) const {
 RuntimeParamRules RuntimeParamRules::create_default() {
     RuntimeParamRules rules;
 
-    rules.register_rule("confidence_threshold",
-                        {"confidence_threshold", "Minimum detection confidence (0.0 – 1.0)", 0.5f,
-                         0.0f, 1.0f, false});
-
-    rules.register_rule("tracker_enabled", {"tracker_enabled", "Enable/disable object tracker",
-                                            true, false, true, true});  // requires restart
-
-    rules.register_rule("inference_interval",
-                        {"inference_interval",
-                         "Skip N batches between inferences (0 = every frame)", 0, 0, 30, false});
-
-    rules.register_rule("bitrate",
-                        {"bitrate", "Encoder bitrate in bps", 4000000, 500000, 20000000, false});
-
     rules.register_rule(
         "osd.display_bbox",
         {"osd.display_bbox", "Enable/disable OSD bounding boxes", true, false, true, false});

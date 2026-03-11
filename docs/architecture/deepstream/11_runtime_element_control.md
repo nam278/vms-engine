@@ -203,6 +203,10 @@ Các route đang được implement trong engine:
 - `osd.display_bbox`
 - `osd.display_text`
 
+Các param generic cũ như `confidence_threshold`, `tracker_enabled`, `inference_interval`,
+và `bitrate` hiện đã bị gỡ khỏi default allowlist để giữ runtime control scope nhỏ và ổn định.
+Khi cần mở rộng, thêm lại từng rule một cách tường minh trong `RuntimeParamRules::create_default()`.
+
 ### 6.2 Redis Streams hoặc Kafka command tổng quát
 
 ```json
@@ -248,7 +252,9 @@ Thêm `sources.id` vào config schema và dùng nó làm element name thực cho
 
 ### Bước 2 — Mở rộng runtime rules
 
-`RuntimeParamRules` nên khai báo các field runtime-safe, ví dụ:
+Hiện tại `RuntimeParamRules` chỉ nên giữ hai field runtime-safe cho OSD. Về sau nếu cần
+thêm tracker, inference, hoặc encoder properties thì thêm từng rule riêng sau khi xác nhận
+semantics runtime của từng element. Default allowlist lúc này là:
 
 ```cpp
 rules.register_rule("osd.display_bbox",
