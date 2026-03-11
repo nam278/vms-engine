@@ -24,6 +24,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
+constexpr const char* kRuntimeStreamManagerDataKey = "engine-runtime-stream-manager";
+
 struct SetParamRequest {
     GstElement* pipeline = nullptr;
     std::string element_id;
@@ -504,13 +506,19 @@ bool PipelineManager::initialize(const engine::core::config::PipelineConfig& con
         GstElement* source_root = gst_bin_get_by_name(GST_BIN(pipeline_), source_root_name.c_str());
         GstElement* muxer = gst_bin_get_by_name(GST_BIN(pipeline_), mux_name.c_str());
         if (source_root != nullptr && muxer != nullptr) {
-            auto sources_config = config.sources;
-            if (!config.pipeline.id.empty()) {
-                sources_config.smart_rec_file_prefix = config.pipeline.id;
-            }
+            auto* existing_manager = static_cast<RuntimeStreamManager*>(
+                g_object_steal_data(G_OBJECT(source_root), kRuntimeStreamManagerDataKey));
+            if (existing_manager != nullptr) {
+                runtime_stream_manager_.reset(existing_manager);
+            } else {
+                auto sources_config = config.sources;
+                if (!config.pipeline.id.empty()) {
+                    sources_config.smart_rec_file_prefix = config.pipeline.id;
+                }
 
-            runtime_stream_manager_ =
-                std::make_unique<RuntimeStreamManager>(source_root, muxer, sources_config);
+                runtime_stream_manager_ =
+                    std::make_unique<RuntimeStreamManager>(source_root, muxer, sources_config);
+            }
             LOG_I("PipelineManager: runtime stream manager enabled for manual sources");
         } else {
             LOG_W(

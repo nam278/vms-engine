@@ -5,6 +5,7 @@
 #include "engine/core/utils/logger.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 using engine::core::pipeline::RuntimeSourceErrorCode;
 using engine::core::pipeline::RuntimeSourceInfo;
@@ -14,13 +15,16 @@ namespace engine::pipeline {
 
 namespace {
 
-constexpr const char* kLinkContextDataKey = "engine_mux_link_context";
-
-struct SourceLinkContext {
-    GstPad* mux_sink_pad = nullptr;
-    std::string camera_id;
-    bool linked = false;
-};
+constexpr const char* kSlotBinPrefix = "source_slot_";
+constexpr const char* kSlotSelectorPrefix = "source_slot_selector_";
+constexpr const char* kSlotPlaceholderSrcPrefix = "source_slot_placeholder_src_";
+constexpr const char* kSlotPlaceholderCapsPrefix = "source_slot_placeholder_caps_";
+constexpr const char* kSlotPlaceholderConvertPrefix = "source_slot_placeholder_convert_";
+constexpr const char* kSlotPlaceholderNvmmCapsPrefix = "source_slot_placeholder_nvmm_caps_";
+constexpr int kPlaceholderWidth = 1920;
+constexpr int kPlaceholderHeight = 1080;
+constexpr int kPlaceholderFramerateNum = 25;
+constexpr int kPlaceholderFramerateDen = 1;
 
 RuntimeSourceMutationResult make_result(bool success, int http_status,
                                         RuntimeSourceErrorCode error_code,
@@ -50,47 +54,122 @@ bool wait_for_element_state(GstElement* element, GstState target, GstClockTime t
     return current == target || pending == target || state_result == GST_STATE_CHANGE_SUCCESS;
 }
 
-void destroy_link_context(gpointer data) {
-    auto* context = static_cast<SourceLinkContext*>(data);
-    if (context != nullptr && context->mux_sink_pad != nullptr) {
-        gst_object_unref(context->mux_sink_pad);
+uint32_t max_slots_from_config(const engine::core::config::SourcesConfig& sources_config) {
+    if (sources_config.mux.max_sources > 0) {
+        return static_cast<uint32_t>(sources_config.mux.max_sources);
     }
-    delete context;
+    if (sources_config.mux.batch_size > 0) {
+        return static_cast<uint32_t>(sources_config.mux.batch_size);
+    }
+    return static_cast<uint32_t>(std::max(1, sources_config.max_batch_size));
 }
 
-bool link_source_pad_to_mux(GstPad* source_pad, SourceLinkContext* context) {
-    if (source_pad == nullptr || context == nullptr || context->mux_sink_pad == nullptr) {
+std::string make_slot_bin_name(uint32_t source_index) {
+    return std::string(kSlotBinPrefix) + std::to_string(source_index);
+}
+
+std::string make_slot_selector_name(uint32_t source_index) {
+    return std::string(kSlotSelectorPrefix) + std::to_string(source_index);
+}
+
+std::string make_slot_placeholder_src_name(uint32_t source_index) {
+    return std::string(kSlotPlaceholderSrcPrefix) + std::to_string(source_index);
+}
+
+std::string make_slot_placeholder_caps_name(uint32_t source_index) {
+    return std::string(kSlotPlaceholderCapsPrefix) + std::to_string(source_index);
+}
+
+std::string make_slot_placeholder_convert_name(uint32_t source_index) {
+    return std::string(kSlotPlaceholderConvertPrefix) + std::to_string(source_index);
+}
+
+std::string make_slot_placeholder_nvmm_caps_name(uint32_t source_index) {
+    return std::string(kSlotPlaceholderNvmmCapsPrefix) + std::to_string(source_index);
+}
+
+bool parse_slot_index_from_name(const std::string& element_name, uint32_t& source_index) {
+    if (element_name.rfind(kSlotBinPrefix, 0) != 0) {
         return false;
     }
 
-    if (context->linked || gst_pad_is_linked(context->mux_sink_pad)) {
-        context->linked = true;
+    try {
+        source_index =
+            static_cast<uint32_t>(std::stoul(element_name.substr(std::strlen(kSlotBinPrefix))));
         return true;
+    } catch (const std::exception&) {
+        return false;
     }
+}
 
-    const GstPadLinkReturn link_result = gst_pad_link(source_pad, context->mux_sink_pad);
-    if (link_result != GST_PAD_LINK_OK) {
-        LOG_E("RuntimeStreamManager: failed to link '{}' to mux for camera '{}' ({})",
-              GST_PAD_NAME(source_pad), context->camera_id, gst_pad_link_get_name(link_result));
+bool add_ghost_pad(GstElement* bin, const char* ghost_name, GstPad* target_pad) {
+    if (bin == nullptr || ghost_name == nullptr || target_pad == nullptr) {
         return false;
     }
 
-    context->linked = true;
-    LOG_I("RuntimeStreamManager: linked camera '{}' into nvstreammux", context->camera_id);
+    GstPad* ghost_pad = gst_ghost_pad_new(ghost_name, target_pad);
+    if (ghost_pad == nullptr) {
+        return false;
+    }
+
+    gst_pad_set_active(ghost_pad, TRUE);
+    if (!gst_element_add_pad(bin, ghost_pad)) {
+        gst_object_unref(ghost_pad);
+        return false;
+    }
+
     return true;
 }
 
-void on_source_pad_added(GstElement* source, GstPad* new_pad, gpointer user_data) {
-    auto* context = static_cast<SourceLinkContext*>(user_data);
-    if (context == nullptr || gst_pad_get_direction(new_pad) != GST_PAD_SRC) {
-        return;
+std::string make_placeholder_caps_string(bool nvmm, int width, int height) {
+    std::string caps = nvmm ? "video/x-raw(memory:NVMM),format=NV12" : "video/x-raw,format=NV12";
+    caps += ",width=" + std::to_string(width);
+    caps += ",height=" + std::to_string(height);
+    caps += ",framerate=" + std::to_string(kPlaceholderFramerateNum) + "/" +
+            std::to_string(kPlaceholderFramerateDen);
+    return caps;
+}
+
+GstPad* find_element_pad_by_name(GstElement* element, GstPadDirection direction,
+                                 const std::string& pad_name) {
+    if (element == nullptr) {
+        return nullptr;
     }
 
-    link_source_pad_to_mux(new_pad, context);
+    GstIterator* iterator = direction == GST_PAD_SRC ? gst_element_iterate_src_pads(element)
+                                                     : gst_element_iterate_sink_pads(element);
+    if (iterator == nullptr) {
+        return nullptr;
+    }
 
-    const gchar* element_name = source != nullptr ? GST_ELEMENT_NAME(source) : "unknown";
-    LOG_D("RuntimeStreamManager: pad-added handled for '{}': {}", element_name,
-          GST_PAD_NAME(new_pad));
+    GstPad* matched_pad = nullptr;
+    GValue value = G_VALUE_INIT;
+    bool done = false;
+
+    while (!done) {
+        switch (gst_iterator_next(iterator, &value)) {
+            case GST_ITERATOR_OK: {
+                auto* pad = GST_PAD(g_value_get_object(&value));
+                if (pad != nullptr && std::strcmp(GST_PAD_NAME(pad), pad_name.c_str()) == 0) {
+                    matched_pad = GST_PAD(gst_object_ref(pad));
+                    done = true;
+                }
+                g_value_reset(&value);
+                break;
+            }
+            case GST_ITERATOR_RESYNC:
+                gst_iterator_resync(iterator);
+                g_value_reset(&value);
+                break;
+            default:
+                done = true;
+                break;
+        }
+    }
+
+    g_value_unset(&value);
+    gst_iterator_free(iterator);
+    return matched_pad;
 }
 
 }  // namespace
@@ -100,6 +179,7 @@ RuntimeStreamManager::RuntimeStreamManager(GstElement* source_root, GstElement* 
     : source_root_(source_root != nullptr ? GST_ELEMENT(gst_object_ref(source_root)) : nullptr),
       muxer_(muxer != nullptr ? GST_ELEMENT(gst_object_ref(muxer)) : nullptr),
       sources_config_(std::move(sources_config)) {
+    ensure_fixed_slots();
     seed_existing_streams();
 }
 
@@ -108,14 +188,27 @@ RuntimeStreamManager::~RuntimeStreamManager() {
         if (slot.source != nullptr) {
             gst_object_unref(slot.source);
         }
-        if (slot.pad_signal_source != nullptr) {
-            gst_object_unref(slot.pad_signal_source);
+    }
+    streams_.clear();
+
+    for (auto& [source_index, slot] : fixed_slots_) {
+        if (slot.slot_bin != nullptr) {
+            gst_object_unref(slot.slot_bin);
+        }
+        if (slot.selector != nullptr) {
+            gst_object_unref(slot.selector);
+        }
+        if (slot.placeholder_sink_pad != nullptr) {
+            gst_object_unref(slot.placeholder_sink_pad);
+        }
+        if (slot.live_sink_pad != nullptr) {
+            gst_object_unref(slot.live_sink_pad);
         }
         if (slot.mux_sink_pad != nullptr) {
             gst_object_unref(slot.mux_sink_pad);
         }
     }
-    streams_.clear();
+    fixed_slots_.clear();
 
     if (source_root_ != nullptr) {
         gst_object_unref(source_root_);
@@ -127,6 +220,295 @@ RuntimeStreamManager::~RuntimeStreamManager() {
 
 bool RuntimeStreamManager::add_stream(const engine::core::config::CameraConfig& camera) {
     return add_stream_detailed(camera).success;
+}
+
+bool RuntimeStreamManager::ensure_fixed_slots() {
+    if (source_root_ == nullptr || muxer_ == nullptr) {
+        return false;
+    }
+
+    const uint32_t max_slots = max_slots_from_config(sources_config_);
+    for (uint32_t source_index = 0; source_index < max_slots; ++source_index) {
+        if (fixed_slots_.find(source_index) != fixed_slots_.end()) {
+            continue;
+        }
+
+        if (!discover_fixed_slot(source_index) && !create_fixed_slot(source_index)) {
+            LOG_E("RuntimeStreamManager: failed to prepare fixed slot {}", source_index);
+            return false;
+        }
+    }
+
+    next_source_index_ = max_slots;
+    return true;
+}
+
+bool RuntimeStreamManager::create_fixed_slot(uint32_t source_index) {
+    auto slot_bin = engine::core::utils::GstElementPtr(
+        gst_bin_new(make_slot_bin_name(source_index).c_str()), gst_object_unref);
+    auto selector = engine::core::utils::make_gst_element(
+        "input-selector", make_slot_selector_name(source_index).c_str());
+    auto placeholder_src = engine::core::utils::make_gst_element(
+        "videotestsrc", make_slot_placeholder_src_name(source_index).c_str());
+    auto placeholder_caps = engine::core::utils::make_gst_element(
+        "capsfilter", make_slot_placeholder_caps_name(source_index).c_str());
+    auto placeholder_convert = engine::core::utils::make_gst_element(
+        "nvvideoconvert", make_slot_placeholder_convert_name(source_index).c_str());
+    auto placeholder_nvmm_caps = engine::core::utils::make_gst_element(
+        "capsfilter", make_slot_placeholder_nvmm_caps_name(source_index).c_str());
+
+    if (!slot_bin || !selector || !placeholder_src || !placeholder_caps || !placeholder_convert ||
+        !placeholder_nvmm_caps) {
+        LOG_E("RuntimeStreamManager: failed to create fixed-slot elements for source {}",
+              source_index);
+        return false;
+    }
+
+    const int width = sources_config_.width > 0 ? sources_config_.width : kPlaceholderWidth;
+    const int height = sources_config_.height > 0 ? sources_config_.height : kPlaceholderHeight;
+
+    gst_util_set_object_arg(G_OBJECT(placeholder_src.get()), "pattern", "black");
+    g_object_set(G_OBJECT(placeholder_src.get()), "is-live", static_cast<gboolean>(TRUE),
+                 "do-timestamp", static_cast<gboolean>(TRUE), nullptr);
+    g_object_set(G_OBJECT(placeholder_convert.get()), "gpu-id",
+                 static_cast<gint>(sources_config_.gpu_id), nullptr);
+
+    engine::core::utils::GstCapsPtr system_caps(
+        gst_caps_from_string(make_placeholder_caps_string(false, width, height).c_str()),
+        gst_caps_unref);
+    engine::core::utils::GstCapsPtr nvmm_caps(
+        gst_caps_from_string(make_placeholder_caps_string(true, width, height).c_str()),
+        gst_caps_unref);
+    if (!system_caps || !nvmm_caps) {
+        LOG_E("RuntimeStreamManager: failed to create placeholder caps for source {}",
+              source_index);
+        return false;
+    }
+
+    g_object_set(G_OBJECT(placeholder_caps.get()), "caps", system_caps.get(), nullptr);
+    g_object_set(G_OBJECT(placeholder_nvmm_caps.get()), "caps", nvmm_caps.get(), nullptr);
+
+    gst_bin_add_many(GST_BIN(slot_bin.get()), selector.get(), placeholder_src.get(),
+                     placeholder_caps.get(), placeholder_convert.get(), placeholder_nvmm_caps.get(),
+                     nullptr);
+
+    selector.release();
+    placeholder_src.release();
+    placeholder_caps.release();
+    placeholder_convert.release();
+    placeholder_nvmm_caps.release();
+
+    GstElement* slot_selector =
+        gst_bin_get_by_name(GST_BIN(slot_bin.get()), make_slot_selector_name(source_index).c_str());
+    GstElement* slot_placeholder_nvmm_caps = gst_bin_get_by_name(
+        GST_BIN(slot_bin.get()), make_slot_placeholder_nvmm_caps_name(source_index).c_str());
+    if (slot_selector == nullptr || slot_placeholder_nvmm_caps == nullptr) {
+        if (slot_selector != nullptr) {
+            gst_object_unref(slot_selector);
+        }
+        if (slot_placeholder_nvmm_caps != nullptr) {
+            gst_object_unref(slot_placeholder_nvmm_caps);
+        }
+        LOG_E("RuntimeStreamManager: failed to recover fixed-slot elements for source {}",
+              source_index);
+        return false;
+    }
+
+    GstPad* placeholder_sink_pad = gst_element_request_pad_simple(slot_selector, "sink_%u");
+    GstPad* live_sink_pad = gst_element_request_pad_simple(slot_selector, "sink_%u");
+    if (placeholder_sink_pad == nullptr || live_sink_pad == nullptr) {
+        if (placeholder_sink_pad != nullptr) {
+            gst_object_unref(placeholder_sink_pad);
+        }
+        if (live_sink_pad != nullptr) {
+            gst_object_unref(live_sink_pad);
+        }
+        gst_object_unref(slot_selector);
+        gst_object_unref(slot_placeholder_nvmm_caps);
+        LOG_E("RuntimeStreamManager: failed to request selector pads for slot {}", source_index);
+        return false;
+    }
+
+    GstElement* slot_placeholder_src = gst_bin_get_by_name(
+        GST_BIN(slot_bin.get()), make_slot_placeholder_src_name(source_index).c_str());
+    GstElement* slot_placeholder_caps = gst_bin_get_by_name(
+        GST_BIN(slot_bin.get()), make_slot_placeholder_caps_name(source_index).c_str());
+    GstElement* slot_placeholder_convert = gst_bin_get_by_name(
+        GST_BIN(slot_bin.get()), make_slot_placeholder_convert_name(source_index).c_str());
+    if (slot_placeholder_src == nullptr || slot_placeholder_caps == nullptr ||
+        slot_placeholder_convert == nullptr) {
+        if (slot_placeholder_src != nullptr) {
+            gst_object_unref(slot_placeholder_src);
+        }
+        if (slot_placeholder_caps != nullptr) {
+            gst_object_unref(slot_placeholder_caps);
+        }
+        if (slot_placeholder_convert != nullptr) {
+            gst_object_unref(slot_placeholder_convert);
+        }
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(slot_selector);
+        gst_object_unref(slot_placeholder_nvmm_caps);
+        LOG_E("RuntimeStreamManager: failed to recover placeholder chain for slot {}",
+              source_index);
+        return false;
+    }
+
+    if (!gst_element_link_many(slot_placeholder_src, slot_placeholder_caps,
+                               slot_placeholder_convert, slot_placeholder_nvmm_caps, nullptr)) {
+        gst_object_unref(slot_placeholder_src);
+        gst_object_unref(slot_placeholder_caps);
+        gst_object_unref(slot_placeholder_convert);
+        LOG_E("RuntimeStreamManager: failed to link placeholder chain for slot {}", source_index);
+        return false;
+    }
+
+    engine::core::utils::GstPadPtr placeholder_src_pad(
+        gst_element_get_static_pad(slot_placeholder_nvmm_caps, "src"), gst_object_unref);
+    gst_object_unref(slot_placeholder_src);
+    gst_object_unref(slot_placeholder_caps);
+    gst_object_unref(slot_placeholder_convert);
+    gst_object_unref(slot_placeholder_nvmm_caps);
+    if (!placeholder_src_pad ||
+        gst_pad_link(placeholder_src_pad.get(), placeholder_sink_pad) != GST_PAD_LINK_OK) {
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(slot_selector);
+        LOG_E("RuntimeStreamManager: failed to connect placeholder output to selector for slot {}",
+              source_index);
+        return false;
+    }
+
+    engine::core::utils::GstPadPtr selector_src_pad(
+        gst_element_get_static_pad(slot_selector, "src"), gst_object_unref);
+    if (!selector_src_pad || !add_ghost_pad(slot_bin.get(), "src", selector_src_pad.get()) ||
+        !add_ghost_pad(slot_bin.get(), "sink", live_sink_pad)) {
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(slot_selector);
+        LOG_E("RuntimeStreamManager: failed to expose fixed-slot ghost pads for slot {}",
+              source_index);
+        return false;
+    }
+
+    if (!gst_bin_add(GST_BIN(source_root_), slot_bin.get())) {
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(slot_selector);
+        LOG_E("RuntimeStreamManager: failed to add fixed slot {} to source root", source_index);
+        return false;
+    }
+
+    GstPad* mux_sink_pad =
+        gst_element_request_pad_simple(muxer_, ("sink_" + std::to_string(source_index)).c_str());
+    if (mux_sink_pad == nullptr) {
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(slot_selector);
+        LOG_E("RuntimeStreamManager: failed to request mux sink pad for slot {}", source_index);
+        return false;
+    }
+
+    engine::core::utils::GstPadPtr slot_src_pad(gst_element_get_static_pad(slot_bin.get(), "src"),
+                                                gst_object_unref);
+    if (!slot_src_pad || gst_pad_link(slot_src_pad.get(), mux_sink_pad) != GST_PAD_LINK_OK) {
+        gst_object_unref(placeholder_sink_pad);
+        gst_object_unref(live_sink_pad);
+        gst_object_unref(mux_sink_pad);
+        gst_object_unref(slot_selector);
+        LOG_E("RuntimeStreamManager: failed to link fixed slot {} to nvstreammux", source_index);
+        return false;
+    }
+
+    if (GST_OBJECT_PARENT(source_root_) != nullptr) {
+        gst_element_sync_state_with_parent(slot_bin.get());
+    }
+
+    g_object_set(G_OBJECT(slot_selector), "active-pad", placeholder_sink_pad, nullptr);
+
+    FixedSlot slot;
+    slot.source_index = source_index;
+    slot.slot_bin = GST_ELEMENT(gst_object_ref(slot_bin.get()));
+    slot.selector = slot_selector;
+    slot.placeholder_sink_pad = placeholder_sink_pad;
+    slot.live_sink_pad = live_sink_pad;
+    slot.mux_sink_pad = mux_sink_pad;
+    fixed_slots_.emplace(source_index, slot);
+
+    LOG_I("RuntimeStreamManager: created fixed slot {} with stable mux pad sink_{}", source_index,
+          source_index);
+    return true;
+}
+
+bool RuntimeStreamManager::discover_fixed_slot(uint32_t source_index) {
+    GstElement* slot_bin =
+        gst_bin_get_by_name(GST_BIN(source_root_), make_slot_bin_name(source_index).c_str());
+    if (slot_bin == nullptr) {
+        return false;
+    }
+
+    GstElement* selector =
+        gst_bin_get_by_name(GST_BIN(slot_bin), make_slot_selector_name(source_index).c_str());
+    GstPad* placeholder_sink_pad =
+        selector != nullptr ? find_element_pad_by_name(selector, GST_PAD_SINK, "sink_0") : nullptr;
+    GstPad* live_sink_pad =
+        selector != nullptr ? find_element_pad_by_name(selector, GST_PAD_SINK, "sink_1") : nullptr;
+    GstPad* mux_sink_pad =
+        find_element_pad_by_name(muxer_, GST_PAD_SINK, "sink_" + std::to_string(source_index));
+
+    if (selector == nullptr || placeholder_sink_pad == nullptr || live_sink_pad == nullptr ||
+        mux_sink_pad == nullptr) {
+        if (slot_bin != nullptr) {
+            gst_object_unref(slot_bin);
+        }
+        if (selector != nullptr) {
+            gst_object_unref(selector);
+        }
+        if (placeholder_sink_pad != nullptr) {
+            gst_object_unref(placeholder_sink_pad);
+        }
+        if (live_sink_pad != nullptr) {
+            gst_object_unref(live_sink_pad);
+        }
+        if (mux_sink_pad != nullptr) {
+            gst_object_unref(mux_sink_pad);
+        }
+        return false;
+    }
+
+    FixedSlot slot;
+    slot.source_index = source_index;
+    slot.slot_bin = slot_bin;
+    slot.selector = selector;
+    slot.placeholder_sink_pad = placeholder_sink_pad;
+    slot.live_sink_pad = live_sink_pad;
+    slot.mux_sink_pad = mux_sink_pad;
+    fixed_slots_.emplace(source_index, slot);
+    return true;
+}
+
+bool RuntimeStreamManager::switch_slot_to_live(uint32_t source_index) {
+    const auto it = fixed_slots_.find(source_index);
+    if (it == fixed_slots_.end() || it->second.selector == nullptr ||
+        it->second.live_sink_pad == nullptr) {
+        return false;
+    }
+
+    g_object_set(G_OBJECT(it->second.selector), "active-pad", it->second.live_sink_pad, nullptr);
+    return true;
+}
+
+bool RuntimeStreamManager::switch_slot_to_placeholder(uint32_t source_index) {
+    const auto it = fixed_slots_.find(source_index);
+    if (it == fixed_slots_.end() || it->second.selector == nullptr ||
+        it->second.placeholder_sink_pad == nullptr) {
+        return false;
+    }
+
+    g_object_set(G_OBJECT(it->second.selector), "active-pad", it->second.placeholder_sink_pad,
+                 nullptr);
+    return true;
 }
 
 RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
@@ -161,96 +543,41 @@ RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
     }
 
     const uint32_t source_index = allocate_source_index();
-    const std::string source_bin_name = make_source_bin_name(camera.id);
-    const bool has_branch = std::any_of(
-        sources_config_.branch.elements.begin(), sources_config_.branch.elements.end(),
-        [](const engine::core::config::SourceBranchElementConfig& cfg) { return cfg.enabled; });
-
-    const std::string sink_pad_name = "sink_" + std::to_string(source_index);
-    GstPad* mux_sink_pad = gst_element_request_pad_simple(muxer_, sink_pad_name.c_str());
-    if (mux_sink_pad == nullptr) {
+    const auto fixed_slot_it = fixed_slots_.find(source_index);
+    if (fixed_slot_it == fixed_slots_.end() || fixed_slot_it->second.slot_bin == nullptr) {
         release_source_index(source_index);
-        LOG_E("RuntimeStreamManager: failed to request nvstreammux pad '{}'", sink_pad_name);
-        return make_result(false, 500, RuntimeSourceErrorCode::RequestPadFailed, camera.id,
-                           "failed to request nvstreammux sink pad");
+        LOG_E("RuntimeStreamManager: fixed slot {} is unavailable for '{}'", source_index,
+              camera.id);
+        return make_result(false, 500, RuntimeSourceErrorCode::InternalError, camera.id,
+                           "fixed source slot is unavailable");
     }
+
+    const std::string source_bin_name = make_source_bin_name(camera.id);
 
     builders::NvUriSrcBinBuilder source_builder(source_root_);
     GstElement* source = source_builder.build(sources_config_, camera, source_index);
     if (source == nullptr) {
-        gst_element_release_request_pad(muxer_, mux_sink_pad);
-        gst_object_unref(mux_sink_pad);
         release_source_index(source_index);
         LOG_E("RuntimeStreamManager: failed to build source bin '{}'", source_bin_name);
         return make_result(false, 500, RuntimeSourceErrorCode::BuildSourceFailed, camera.id,
                            "failed to build source bin");
     }
 
-    GstElement* pad_signal_source = nullptr;
-    gulong pad_added_handler_id = 0;
-    auto* link_context =
-        new SourceLinkContext{GST_PAD(gst_object_ref(mux_sink_pad)), camera.id, false};
-    bool link_context_attached = false;
-
     const auto cleanup_failed_add = [&](RuntimeSourceErrorCode error_code,
                                         const std::string& message) {
-        if (pad_signal_source != nullptr) {
-            gst_object_unref(pad_signal_source);
-            pad_signal_source = nullptr;
-        }
-        if (!link_context_attached) {
-            delete link_context;
-        }
+        gst_element_unlink(source, fixed_slot_it->second.slot_bin);
         if (source != nullptr && GST_OBJECT_PARENT(source) == GST_OBJECT(source_root_)) {
             gst_bin_remove(GST_BIN(source_root_), source);
         }
-        gst_element_release_request_pad(muxer_, mux_sink_pad);
-        gst_object_unref(mux_sink_pad);
         release_source_index(source_index);
         return make_result(false, 500, error_code, camera.id, message);
     };
 
-    if (has_branch) {
-        GObject* source_obj = G_OBJECT(source);
-        g_object_set_data_full(source_obj, kLinkContextDataKey, link_context, destroy_link_context);
-        link_context_attached = true;
-        GstPad* source_pad = gst_element_get_static_pad(source, "src");
-        if (source_pad != nullptr) {
-            if (!link_source_pad_to_mux(source_pad, link_context)) {
-                gst_object_unref(source_pad);
-                LOG_E("RuntimeStreamManager: failed to link source-bin '{}' to mux",
-                      source_bin_name);
-                return cleanup_failed_add(RuntimeSourceErrorCode::LinkSourceFailed,
-                                          "failed to link source bin to mux");
-            }
-            gst_object_unref(source_pad);
-        }
-    } else {
-        pad_signal_source =
-            gst_bin_get_by_name(GST_BIN(source), make_source_element_name(camera.id).c_str());
-        if (pad_signal_source == nullptr) {
-            LOG_E("RuntimeStreamManager: failed to resolve raw nvurisrcbin inside '{}'",
-                  source_bin_name);
-            return cleanup_failed_add(RuntimeSourceErrorCode::BuildSourceFailed,
-                                      "failed to resolve nvurisrcbin inside source bin");
-        }
-
-        g_object_set_data_full(G_OBJECT(pad_signal_source), kLinkContextDataKey, link_context,
-                               destroy_link_context);
-        link_context_attached = true;
-        pad_added_handler_id = g_signal_connect(pad_signal_source, "pad-added",
-                                                G_CALLBACK(on_source_pad_added), link_context);
-
-        GstPad* source_pad = gst_element_get_static_pad(pad_signal_source, "src");
-        if (source_pad != nullptr) {
-            if (!link_source_pad_to_mux(source_pad, link_context)) {
-                gst_object_unref(source_pad);
-                LOG_E("RuntimeStreamManager: failed to link raw source '{}' to mux", camera.id);
-                return cleanup_failed_add(RuntimeSourceErrorCode::LinkSourceFailed,
-                                          "failed to link source pad to mux");
-            }
-            gst_object_unref(source_pad);
-        }
+    if (!gst_element_link(source, fixed_slot_it->second.slot_bin)) {
+        LOG_E("RuntimeStreamManager: failed to link source '{}' into fixed slot {}", camera.id,
+              source_index);
+        return cleanup_failed_add(RuntimeSourceErrorCode::LinkSourceFailed,
+                                  "failed to link source bin into fixed slot");
     }
 
     if (GST_OBJECT_PARENT(source_root_) != nullptr) {
@@ -265,6 +592,12 @@ RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
         }
     }
 
+    if (!switch_slot_to_live(source_index)) {
+        LOG_E("RuntimeStreamManager: failed to activate live pad for slot {}", source_index);
+        return cleanup_failed_add(RuntimeSourceErrorCode::InternalError,
+                                  "failed to activate fixed source slot");
+    }
+
     StreamSlot slot;
     slot.source_index = source_index;
     slot.camera_id = camera.id;
@@ -272,16 +605,9 @@ RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
     slot.is_seeded = false;
     slot.state = "active";
     slot.source = GST_ELEMENT(gst_object_ref(source));
-    slot.pad_signal_source =
-        pad_signal_source != nullptr ? GST_ELEMENT(gst_object_ref(pad_signal_source)) : nullptr;
-    slot.mux_sink_pad = mux_sink_pad;
-    slot.pad_added_handler_id = pad_added_handler_id;
     streams_.emplace(camera.id, slot);
-    if (pad_signal_source != nullptr) {
-        gst_object_unref(pad_signal_source);
-    }
-    LOG_I("RuntimeStreamManager: added camera '{}' on mux pad '{}', uri='{}'", camera.id,
-          sink_pad_name, camera.uri);
+    LOG_I("RuntimeStreamManager: added camera '{}' into fixed slot {} (uri='{}')", camera.id,
+          source_index, camera.uri);
 
     RuntimeSourceMutationResult result =
         make_result(true, 201, RuntimeSourceErrorCode::None, camera.id, "camera added");
@@ -315,29 +641,24 @@ RuntimeSourceMutationResult RuntimeStreamManager::remove_stream_detailed(
     StreamSlot slot = it->second;
     RuntimeSourceInfo removed_source{slot.camera_id, slot.camera_uri, slot.source_index,
                                      slot.is_seeded, slot.state};
+    const auto fixed_slot_it = fixed_slots_.find(slot.source_index);
+    if (fixed_slot_it == fixed_slots_.end()) {
+        return make_result(false, 500, RuntimeSourceErrorCode::InternalError, camera_id,
+                           "fixed source slot is unavailable");
+    }
 
-    if (slot.pad_signal_source != nullptr && slot.pad_added_handler_id != 0) {
-        g_signal_handler_disconnect(slot.pad_signal_source, slot.pad_added_handler_id);
+    if (!switch_slot_to_placeholder(slot.source_index)) {
+        LOG_W("RuntimeStreamManager: failed to switch slot {} to placeholder", slot.source_index);
     }
 
     if (slot.source != nullptr) {
+        gst_element_unlink(slot.source, fixed_slot_it->second.slot_bin);
+
         gst_element_set_state(slot.source, GST_STATE_READY);
         if (!wait_for_element_state(slot.source, GST_STATE_READY, 5 * GST_SECOND)) {
             LOG_W("RuntimeStreamManager: source '{}' did not settle in READY within timeout",
                   camera_id);
         }
-    }
-
-    if (slot.mux_sink_pad != nullptr) {
-        GstPad* peer_pad = gst_pad_get_peer(slot.mux_sink_pad);
-        if (peer_pad != nullptr) {
-            gst_pad_unlink(peer_pad, slot.mux_sink_pad);
-            gst_object_unref(peer_pad);
-        }
-
-        gst_element_release_request_pad(muxer_, slot.mux_sink_pad);
-        gst_object_unref(slot.mux_sink_pad);
-        slot.mux_sink_pad = nullptr;
     }
 
     if (slot.source != nullptr) {
@@ -352,11 +673,6 @@ RuntimeSourceMutationResult RuntimeStreamManager::remove_stream_detailed(
         gst_bin_remove(GST_BIN(source_root_), slot.source);
         gst_object_unref(slot.source);
         slot.source = nullptr;
-    }
-
-    if (slot.pad_signal_source != nullptr) {
-        gst_object_unref(slot.pad_signal_source);
-        slot.pad_signal_source = nullptr;
     }
 
     release_source_index(it->second.source_index);
@@ -404,6 +720,10 @@ uint32_t RuntimeStreamManager::allocate_source_index() {
         return source_index;
     }
 
+    if (next_source_index_ < max_slots_from_config(sources_config_)) {
+        return next_source_index_++;
+    }
+
     return next_source_index_++;
 }
 
@@ -417,11 +737,11 @@ void RuntimeStreamManager::seed_existing_streams() {
         return;
     }
 
-    uint32_t max_existing_index = 0;
-    bool found_existing = false;
+    const uint32_t max_slots = max_slots_from_config(sources_config_);
+    std::vector<bool> occupied(max_slots, false);
+    streams_.clear();
 
-    for (std::size_t index = 0; index < sources_config_.cameras.size(); ++index) {
-        const auto& camera = sources_config_.cameras[index];
+    for (const auto& camera : sources_config_.cameras) {
         if (camera.id.empty()) {
             continue;
         }
@@ -432,27 +752,52 @@ void RuntimeStreamManager::seed_existing_streams() {
             continue;
         }
 
-        GstPad* mux_sink_pad =
-            gst_element_get_static_pad(muxer_, ("sink_" + std::to_string(index)).c_str());
-        GstElement* pad_signal_source =
-            gst_bin_get_by_name(GST_BIN(source), make_source_element_name(camera.id).c_str());
+        uint32_t source_index = 0;
+        bool resolved_slot = false;
+        engine::core::utils::GstPadPtr source_src_pad(gst_element_get_static_pad(source, "src"),
+                                                      gst_object_unref);
+        if (source_src_pad) {
+            GstPad* peer_pad = gst_pad_get_peer(source_src_pad.get());
+            if (peer_pad != nullptr) {
+                GstObject* parent = gst_pad_get_parent(peer_pad);
+                if (parent != nullptr && GST_IS_ELEMENT(parent)) {
+                    resolved_slot =
+                        parse_slot_index_from_name(GST_ELEMENT_NAME(parent), source_index);
+                }
+                if (parent != nullptr) {
+                    gst_object_unref(parent);
+                }
+                gst_object_unref(peer_pad);
+            }
+        }
+
+        if (!resolved_slot || source_index >= max_slots) {
+            gst_object_unref(source);
+            continue;
+        }
+
+        switch_slot_to_live(source_index);
 
         StreamSlot slot;
-        slot.source_index = static_cast<uint32_t>(index);
+        slot.source_index = source_index;
         slot.camera_id = camera.id;
         slot.camera_uri = camera.uri;
         slot.is_seeded = true;
         slot.state = "active";
         slot.source = source;
-        slot.mux_sink_pad = mux_sink_pad;
-        slot.pad_signal_source = pad_signal_source;
         streams_[camera.id] = slot;
-
-        max_existing_index = std::max(max_existing_index, static_cast<uint32_t>(index));
-        found_existing = true;
+        occupied[source_index] = true;
     }
 
-    next_source_index_ = found_existing ? (max_existing_index + 1U) : 0U;
+    free_source_indexes_.clear();
+    for (uint32_t source_index = 0; source_index < max_slots; ++source_index) {
+        if (!occupied[source_index]) {
+            switch_slot_to_placeholder(source_index);
+            free_source_indexes_.push_back(source_index);
+        }
+    }
+    std::sort(free_source_indexes_.begin(), free_source_indexes_.end(), std::greater<uint32_t>());
+    next_source_index_ = max_slots;
 }
 
 }  // namespace engine::pipeline

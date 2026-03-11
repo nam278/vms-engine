@@ -53,6 +53,15 @@ class RuntimeStreamManager {
     int get_active_stream_count() const;
 
    private:
+    struct FixedSlot {
+        uint32_t source_index = 0;
+        GstElement* slot_bin = nullptr;
+        GstElement* selector = nullptr;
+        GstPad* placeholder_sink_pad = nullptr;
+        GstPad* live_sink_pad = nullptr;
+        GstPad* mux_sink_pad = nullptr;
+    };
+
     struct StreamSlot {
         uint32_t source_index = 0;
         std::string camera_id;
@@ -60,19 +69,22 @@ class RuntimeStreamManager {
         bool is_seeded = false;
         std::string state = "active";
         GstElement* source = nullptr;
-        GstElement* pad_signal_source = nullptr;
-        GstPad* mux_sink_pad = nullptr;
-        gulong pad_added_handler_id = 0;
     };
 
     GstElement* source_root_ = nullptr;
     GstElement* muxer_ = nullptr;
     engine::core::config::SourcesConfig sources_config_;
     mutable std::mutex mtx_;
+    std::unordered_map<uint32_t, FixedSlot> fixed_slots_;
     std::unordered_map<std::string, StreamSlot> streams_;
     std::vector<uint32_t> free_source_indexes_;
     uint32_t next_source_index_ = 0;
 
+    bool ensure_fixed_slots();
+    bool create_fixed_slot(uint32_t source_index);
+    bool discover_fixed_slot(uint32_t source_index);
+    bool switch_slot_to_live(uint32_t source_index);
+    bool switch_slot_to_placeholder(uint32_t source_index);
     uint32_t allocate_source_index();
     void release_source_index(uint32_t source_index);
     void seed_existing_streams();

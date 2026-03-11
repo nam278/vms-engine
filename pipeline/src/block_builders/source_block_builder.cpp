@@ -9,6 +9,12 @@ namespace engine::pipeline::block_builders {
 
 namespace {
 
+constexpr const char* kRuntimeStreamManagerDataKey = "engine-runtime-stream-manager";
+
+void destroy_runtime_stream_manager(gpointer data) {
+    delete static_cast<engine::pipeline::RuntimeStreamManager*>(data);
+}
+
 bool expose_ghost(GstElement* bin, GstElement* target_elem, const char* pad_name,
                   const char* ghost_name) {
     engine::core::utils::GstPadPtr pad(gst_element_get_static_pad(target_elem, pad_name),
@@ -58,13 +64,17 @@ bool build_manual_sources_block(GstElement* sources_bin,
             sources_config.smart_rec_file_prefix = config.pipeline.id;
         }
 
-        engine::pipeline::RuntimeStreamManager stream_manager(sources_bin, muxer, sources_config);
+        auto stream_manager = std::make_unique<engine::pipeline::RuntimeStreamManager>(
+            sources_bin, muxer, sources_config);
         for (const auto& camera : config.sources.cameras) {
-            if (!stream_manager.add_stream(camera)) {
+            if (!stream_manager->add_stream(camera)) {
                 LOG_E("SourceBlockBuilder: failed to add manual source '{}'", camera.id);
                 return false;
             }
         }
+
+        g_object_set_data_full(G_OBJECT(sources_bin), kRuntimeStreamManagerDataKey,
+                               stream_manager.release(), destroy_runtime_stream_manager);
     }
 
     if (!expose_ghost(sources_bin, muxer, "src", "src")) {
