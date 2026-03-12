@@ -210,8 +210,11 @@ sources:
       uri: rtsp://192.168.1.99:18554/traffic2
   # Keep initial cameras <= mux.max_sources. Runtime add/remove reuses those
   # preallocated mux slots but cannot grow beyond mux.max_sources.
-  # Camera id is the stable external identity; DeepStream still uses an integer
+  # camera.id is the stable external identity for publish paths and downstream
+  # routing, including runtime-added cameras. DeepStream still uses an integer
   # internal source slot for frame_meta->source_id and nvstreammux sink_%u pads.
+  # In manual nvurisrcbin mode, handlers resolve sname/source_name from the
+  # live source registry first, then fall back to the startup camera list.
   # Smart-record filenames use pipeline.id as the effective prefix.
   # In manual nvurisrcbin mode, the engine also sets source-id explicitly so
   # filenames become de1_0_00000_... instead of lsr_-1_00000_....
@@ -408,7 +411,7 @@ event_handlers:
     probe_element: tracker # attach pad probe to tracker's src pad
     source_element: sources # stable source element id from sources.id
     trigger: smart_record
-    channel: worker_lsr # Redis Stream / Kafka topic to publish smart-record events
+    channel: worker_lsr_video # Redis Stream / Kafka topic to publish smart-record events
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2 # seconds from cache before detection
     post_event_sec: 13

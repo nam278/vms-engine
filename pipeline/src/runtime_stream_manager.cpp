@@ -1,5 +1,6 @@
 #include "engine/pipeline/runtime_stream_manager.hpp"
 #include "engine/pipeline/builders/nvurisrcbin_builder.hpp"
+#include "engine/pipeline/source_identity_registry.hpp"
 #include "engine/pipeline/source_naming.hpp"
 #include "engine/core/utils/gst_utils.hpp"
 #include "engine/core/utils/logger.hpp"
@@ -606,6 +607,7 @@ RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
     slot.state = "active";
     slot.source = GST_ELEMENT(gst_object_ref(source));
     streams_.emplace(camera.id, slot);
+    register_runtime_source_name(source_root_, static_cast<int>(source_index), camera.id);
     LOG_I("RuntimeStreamManager: added camera '{}' into fixed slot {} (uri='{}')", camera.id,
           source_index, camera.uri);
 
@@ -675,6 +677,7 @@ RuntimeSourceMutationResult RuntimeStreamManager::remove_stream_detailed(
         slot.source = nullptr;
     }
 
+    unregister_runtime_source_name(source_root_, static_cast<int>(slot.source_index));
     release_source_index(it->second.source_index);
     streams_.erase(it);
     LOG_I("RuntimeStreamManager: removed camera '{}'", camera_id);
@@ -786,6 +789,7 @@ void RuntimeStreamManager::seed_existing_streams() {
         slot.state = "active";
         slot.source = source;
         streams_[camera.id] = slot;
+        register_runtime_source_name(source_root_, static_cast<int>(source_index), camera.id);
         occupied[source_index] = true;
     }
 
@@ -793,6 +797,7 @@ void RuntimeStreamManager::seed_existing_streams() {
     for (uint32_t source_index = 0; source_index < max_slots; ++source_index) {
         if (!occupied[source_index]) {
             switch_slot_to_placeholder(source_index);
+            unregister_runtime_source_name(source_root_, static_cast<int>(source_index));
             free_source_indexes_.push_back(source_index);
         }
     }

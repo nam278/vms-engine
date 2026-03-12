@@ -4,6 +4,7 @@
 #include "engine/core/utils/logger.hpp"
 #include "engine/pipeline/evidence/frame_evidence_cache.hpp"
 #include "engine/pipeline/extproc/frame_events_ext_proc_service.hpp"
+#include "engine/pipeline/source_identity_registry.hpp"
 
 #include <gstnvdsmeta.h>
 #include <nlohmann/json.hpp>
@@ -159,6 +160,7 @@ FrameEventsProbeHandler::~FrameEventsProbeHandler() = default;
 
 void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConfig& config,
                                         const engine::core::config::EventHandlerConfig& handler,
+                                        GstElement* source_root,
                                         engine::core::messaging::IMessageProducer* producer,
                                         engine::pipeline::evidence::FrameEvidenceCache* cache) {
     pipeline_id_ = config.pipeline.id;
@@ -169,6 +171,7 @@ void FrameEventsProbeHandler::configure(const engine::core::config::PipelineConf
     label_filter_ = handler.label_filter;
     producer_ = producer;
     cache_ = cache;
+    source_root_ = source_root;
     ext_proc_service_.reset();
     if (handler.frame_events) {
         config_ = *handler.frame_events;
@@ -231,9 +234,7 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
         }
 
         const int source_id = static_cast<int>(frame_meta->source_id);
-        const std::string source_name = self->source_id_to_name_.count(source_id)
-                                            ? self->source_id_to_name_.at(source_id)
-                                            : ("source_" + std::to_string(source_id));
+        const std::string source_name = self->resolve_source_name(source_id);
         const int64_t emitted_at_ms = now_epoch_ms();
         // Export wall-clock epoch milliseconds so downstream can compare frame_ts_ms
         // directly with emitted_at_ms and use frame_key across services without
@@ -550,6 +551,21 @@ void FrameEventsProbeHandler::dispatch_ext_proc_for_frame(
             object.object_id, object.tracker_id, object.class_id, object.object_type,
             object.confidence, object_meta, frame_meta, batch_surface);
     }
+}
+
+std::string FrameEventsProbeHandler::resolve_source_name(int source_id) const {
+    const std::string runtime_source_name =
+        engine::pipeline::lookup_runtime_source_name(source_root_, source_id);
+    if (!runtime_source_name.empty()) {
+        return runtime_source_name;
+    }
+
+    const auto source_name_it = source_id_to_name_.find(source_id);
+    if (source_name_it != source_id_to_name_.end() && !source_name_it->second.empty()) {
+        return source_name_it->second;
+    }
+
+    return "source_" + std::to_string(source_id);
 }
 
 void FrameEventsProbeHandler::reset_source_state(int source_id) {

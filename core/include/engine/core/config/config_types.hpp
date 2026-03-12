@@ -399,7 +399,7 @@ struct EventHandlerConfig {
         source_element;  ///< for smart_record: source element id/name (defaults to sources.id)
     std::string
         trigger;  ///< "smart_record" | "crop_objects" | "class_id_offset" | "class_id_restore"
-    std::string channel;  ///< message broker channel/topic to publish to (e.g. "worker_lsr")
+    std::string channel;  ///< message broker channel/topic to publish to (e.g. "worker_lsr_video")
     std::vector<std::string> label_filter;
 
     // Smart record specific

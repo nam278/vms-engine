@@ -138,10 +138,11 @@ class CropObjectHandler {
      *
      * @param config    Full pipeline configuration.
      * @param handler   The specific event handler config for this probe.
+     * @param source_root Borrowed source-root bin used for runtime source identity lookups.
      * @param producer  Optional message producer for publishing (nullable).
      */
     void configure(const engine::core::config::PipelineConfig& config,
-                   const engine::core::config::EventHandlerConfig& handler,
+                   const engine::core::config::EventHandlerConfig& handler, GstElement* source_root,
                    engine::core::messaging::IMessageProducer* producer = nullptr);
 
     /** @brief Static probe callback. user_data -> CropObjectHandler*. */
@@ -175,6 +176,7 @@ class CropObjectHandler {
 
     // Camera name lookup: source_id -> camera name
     std::unordered_map<int, std::string> source_id_to_name_;
+    GstElement* source_root_ = nullptr;
 
     // -- Encoder Context -----------------------------------------------------
     NvDsObjEncCtxHandle enc_ctx_ = nullptr;

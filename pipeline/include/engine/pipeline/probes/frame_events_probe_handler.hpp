@@ -95,7 +95,7 @@ class FrameEventsProbeHandler {
     ~FrameEventsProbeHandler();
 
     void configure(const engine::core::config::PipelineConfig& config,
-                   const engine::core::config::EventHandlerConfig& handler,
+                   const engine::core::config::EventHandlerConfig& handler, GstElement* source_root,
                    engine::core::messaging::IMessageProducer* eproducer,
                    engine::pipeline::evidence::FrameEvidenceCache* cache);
 
@@ -119,6 +119,7 @@ class FrameEventsProbeHandler {
     void dispatch_ext_proc_for_frame(NvDsFrameMeta* frame_meta, NvBufSurface* batch_surface,
                                      const engine::pipeline::evidence::FrameCaptureMetadata& meta,
                                      const std::vector<FrameEventObject>& objects) const;
+    std::string resolve_source_name(int source_id) const;
     void reset_source_state(int source_id);
     double compute_iou(const LastEmittedObjectState& previous,
                        const FrameEventObject& current) const;
@@ -129,6 +130,7 @@ class FrameEventsProbeHandler {
     std::vector<std::string> label_filter_;
     std::unordered_map<int, std::string> source_id_to_name_;
     std::unordered_map<int, PerSourceEmitState> emit_state_;
+    GstElement* source_root_ = nullptr;
     int source_width_ = 0;
     int source_height_ = 0;
     std::string handler_id_;

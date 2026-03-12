@@ -216,16 +216,16 @@ std::thread([impl_ref = std::move(impl_ref), jpeg = std::move(jpeg_data), ...] {
 }
 ```
 
-| Trường          | Nguồn                                      |
-| --------------- | ------------------------------------------ |
-| `event`         | Constant `"ext_proc"`                      |
-| `pid`           | `config.pipeline.id`                       |
-| `sid` / `sname` | `frame_meta->source_id` / camera name map  |
-| `oid`           | `obj_meta->object_id` (tracker ID)         |
-| `labels`        | `result \| display` (lantanav2-compatible) |
-| `result`        | Parse từ `result_path`                     |
-| `display`       | Parse từ `display_path`                    |
-| `event_ts`      | `system_clock` epoch ms (string)           |
+| Trường          | Nguồn                                              |
+| --------------- | -------------------------------------------------- |
+| `event`         | Constant `"ext_proc"`                              |
+| `pid`           | `config.pipeline.id`                               |
+| `sid` / `sname` | `frame_meta->source_id` / live `camera.id` mapping |
+| `oid`           | `obj_meta->object_id` (tracker ID)                 |
+| `labels`        | `result \| display` (lantanav2-compatible)         |
+| `result`        | Parse từ `result_path`                             |
+| `display`       | Parse từ `display_path`                            |
+| `event_ts`      | `system_clock` epoch ms (string)                   |
 
 > 📋 **Tương thích lantanav2**: JSON giữ nguyên tất cả fields — downstream consumers không cần thay đổi.
 

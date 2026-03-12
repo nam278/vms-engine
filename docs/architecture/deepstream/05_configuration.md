@@ -202,7 +202,9 @@ sources:
 
 > ⚠️ **`config_file_path` cho live RTSP**: không nên bật mặc định. Trong repo này, file mẫu `nvstreammux_live_adaptive.txt` ép `overall-min/max-fps=30` và đã gây slow start, lag và broken frames ở RTSP output khi nguồn live không ổn định đúng 30 FPS. Chỉ dùng `config_file_path` khi đã tune file mux đúng theo FPS ingress thực tế.
 >
-> `camera.id` là source identity phía ứng dụng. DeepStream vẫn giữ `frame_meta->source_id` dạng integer để match `nvstreammux sink_%u` pads.
+> `camera.id` là source identity phía ứng dụng và là tên camera canonical cho publish path, kể cả camera được add ở runtime. DeepStream vẫn giữ `frame_meta->source_id` dạng integer để match `nvstreammux sink_%u` pads và slot này có thể được reuse sau remove/add.
+
+> Với `type: nvurisrcbin`, các probe handler ưu tiên resolve `sname` / `source_name` từ runtime source registry gắn trên source root; startup camera list chỉ còn là fallback cho seed cameras hoặc khi registry chưa có entry.
 >
 > `sources.branch.elements` mô tả pre-mux branch của từng camera theo kiểu element list. Hiện implementation support `nvvideoconvert`, `capsfilter`, và `queue`, đều có thể bật/tắt bằng `enabled`.
 >
@@ -366,7 +368,7 @@ event_handlers:
     probe_element: tracker
     source_element: sources
     trigger: smart_record
-    channel: worker_lsr
+    channel: worker_lsr_video
     label_filter: [bike, bus, car, person, truck]
     pre_event_sec: 2
     post_event_sec: 20

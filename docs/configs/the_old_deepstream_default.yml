@@ -13,7 +13,7 @@ application:
   log_file: "/opt/lantana/logs/app.log"
   # gst_log_level: "*:4,GST_PADS:6,GST_ELEMENT_PADS:6"
   gst_log_level: "*:1"
-  log_level: "DEBUG"  # Bật DEBUG
+  log_level: "DEBUG" # Bật DEBUG
   gst_dot_file_dir: "/opt/lantana/logs"
 
   backend:
@@ -63,7 +63,7 @@ sources:
       deepstream: # Thuộc tính cho nvmultiurisrcbin
         gpu_id: 0
         udp_buffer_size: 4194304
-        num_extra_surfaces: 9     # Extra decode surfaces for stability (was 3)
+        num_extra_surfaces: 9 # Extra decode surfaces for stability (was 3)
         dec_skip_frames: 0
         smart_record: 2
         smart_rec_dir_path: "/opt/lantana/rec"
@@ -72,10 +72,10 @@ sources:
         smart_rec_container: 0
         smart_rec_mode: 0 # 0=audio+video, 1=video only, 2=audio only
         smart_rec_default_duration: 20
-        disable_audio: false  # Enable audio for smart recording (no impact on inference)
+        disable_audio: false # Enable audio for smart recording (no impact on inference)
         # width & height là kích thước output của mỗi stream SAU KHI decode và TRƯỚC KHI mux bởi nvmultiurisrcbin (nếu nó scale),
         # hoặc kích thước mà PGIEn sẽ nhận được cho mỗi frame trong batch.
-        width: 1920  # Ví dụ: 1920
+        width: 1920 # Ví dụ: 1920
         height: 1080 # Ví dụ: 1080
         # max-batch-size của nvmultiurisrcbin. Nên bằng số lượng camera thực tế.
         max_batch_size: 4
@@ -88,9 +88,9 @@ sources:
         rtsp_reconnect_interval: 10
         rtsp_reconnect_attempts: -1
         # Thêm các thuộc tính khác từ cam_params nếu chúng được hỗ trợ bởi nvmultiurisrcbin
-        #         
+        #
         select_rtp_protocol: 4 # (4: ép TCP ở source, 0: auto)
-        sync_inputs: false        # Đồng bộ hóa các input (0: không, 1: có)
+        sync_inputs: false # Đồng bộ hóa các input (0: không, 1: có)
 
 # --- Luồng Xử Lý Chính (Processing Flow) ---
 # nvstreammux không còn cần thiết ở đây nếu nvmultiurisrcbin đã làm nhiệm vụ mux.
@@ -108,7 +108,7 @@ processing_flow:
         config_file_path: "/opt/lantana/pipeline_components/pgie_phat-hien-khoi-lua_DETECTION/package_content/config_infer_engine_placeholder.yml"
         process_mode: 1
         # batch_size: 4
-        #         # 
+        #         #
 
   - id: "pgie_phat-hien-nguoi-xe_DETECTION"
     role: "primary_inference"
@@ -121,7 +121,7 @@ processing_flow:
         config_file_path: "/opt/lantana/pipeline_components/pgie_phat-hien-nguoi-xe_DETECTION/package_content/config_infer_engine_placeholder.yml"
         process_mode: 1
         # batch_size: 4
-        #         # 
+        #         #
 
   - id: "tracker_main"
     role: "tracker"
@@ -150,7 +150,7 @@ processing_flow:
         operate_on_class_ids: "3"
         process_mode: 2
         # batch_size: 9
-        #         # 
+        #         #
 
   - id: "demuxer_after_tracker"
     role: "demuxer"
@@ -158,7 +158,6 @@ processing_flow:
     input_from: "tracker_main"
     backend_config:
       deepstream: {}
-
 
 # --- Các Thành Phần Hiển Thị (Visuals) ---
 visuals:
@@ -202,30 +201,30 @@ outputs:
       # - 4000-6000: 1080p quality tốt
       # - 8000-15000: 4K quality tốt
       # Giá trị cao hơn = quality tốt hơn nhưng tốn bandwidth và storage
-      bitrate_kbps: 5000  # 3 Mbps cho 1080p - optimized for multi-camera (was 5000)
+      bitrate_kbps: 5000 # 3 Mbps cho 1080p - optimized for multi-camera (was 5000)
       backend_config:
         deepstream:
           # Control Rate: Kiểm soát bitrate
           # 0 = VBR (Variable): Bitrate thay đổi theo độ phức tạp - quality tốt nhất
           # 1 = CBR (Constant): Bitrate cố định - ổn định cho streaming (KHUYẾN NGHỊ)
           # CBR giúp tránh spikes gây backpressure trong pipeline
-          control_rate: 1         # CBR mode for stable streaming
-          
+          control_rate: 1 # CBR mode for stable streaming
+
           # Profile: Mức độ nén và tính năng H.264
           # 0 = Baseline: Tương thích rộng, quality thấp nhất, dùng cho thiết bị yếu
           # 1 = Main: Cân bằng giữa quality và tương thích
           # 2 = High: Quality tốt nhất, hỗ trợ CABAC và 8x8 transform
           # Nên dùng High (2) trừ khi client không hỗ trợ
-          profile: 1              # H.264 Main Profile
-          
+          profile: 1 # H.264 Main Profile
+
           # Preset: Tốc độ encode vs hiệu quả nén
           # 0 = UltraFast: Encode nhanh nhất, nén kém, bitrate cao
           # 1 = Fast: Cân bằng tốt cho real-time (KHUYẾN NGHỊ cho live streaming)
           # 2 = Medium: Chậm hơn, nén tốt hơn
           # 3 = Slow/HQ: Chậm nhất, nén tốt nhất, dùng cho offline encoding
           # Fast (1) là optimal cho live streaming với GPU
-          preset: 1               # Fast preset - optimal cho real-time
-          
+          preset: 1 # Fast preset - optimal cho real-time
+
           # Iframeinterval: Số frames giữa 2 I-frame (keyframe)
           # I-frame = full frame, P/B-frame = delta từ I-frame
           # - 15: Keyframe mỗi 0.5s (@30fps) - seek nhanh, bitrate cao hơn
@@ -276,11 +275,9 @@ outputs:
   #   - No appsink needed - probe intercepts buffers earlier in pipeline
   #   - Saves 40MB memory + reduces latency by 18ms per pipeline
   #   - Smart record handlers now use "source_from" field to find multiuribin
-  # 
+  #
   # For more details, see: docs/SMART_RECORD_MIGRATION.md
   # ========================================================================
-  
-
 
 # --- Event Handlers (Dynamic or Static) ---
 # ========================================================================
@@ -310,13 +307,13 @@ outputs:
 # ========================================================================
 event_handlers:
   - id: "detect_handler_1"
-    source_from: "multi_rtsp_source"  # CRITICAL for Smart Record: must match sources.id
+    source_from: "multi_rtsp_source" # CRITICAL for Smart Record: must match sources.id
     enable: true
     type: "on_detect"
     label_filter:
-    - fire
-    - person
-    - smoke
+      - fire
+      - person
+      - smoke
     evidence_from: "tracker_main"
     record: true
 
@@ -325,17 +322,16 @@ event_handlers:
     post_event_sec: 13 # Post-event recording time (13 seconds after detection)
     min_interval_sec: 2 # Minimum 2 seconds between recordings
 
-
     mbroker_host: 192.168.1.99
     mbroker_port: 6979
-    mbroker_channel: "worker_lsr"
+    mbroker_channel: "worker_lsr_video"
   - id: "detect_handler_2"
     enable: true
     type: "on_detect"
     label_filter:
-    - fire
-    - person
-    - smoke
+      - fire
+      - person
+      - smoke
     evidence_from: "sgie_nhan-dien-nguoi_MULTILABEL_CLASSIFICATION"
     snapshot_type: 1 # Enable object cropping
 
@@ -367,4 +363,3 @@ event_handlers:
     mbroker_host: 192.168.1.99
     mbroker_port: 6979
     mbroker_channel: "worker_lsr_snap"
-

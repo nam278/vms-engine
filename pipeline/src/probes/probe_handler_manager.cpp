@@ -12,6 +12,42 @@ ProbeHandlerManager::ProbeHandlerManager(GstElement* pipeline) : pipeline_(pipel
 bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConfig& config,
                                         engine::core::messaging::IMessageProducer* producer,
                                         engine::pipeline::evidence::FrameEvidenceCache* cache) {
+    const auto resolve_source_root =
+        [&](const engine::core::config::EventHandlerConfig& cfg) -> GstElement* {
+        GstElement* source_root = nullptr;
+        const std::string default_source_root =
+            config.sources.id.empty() ? std::string("sources_bin") : config.sources.id;
+        const std::string configured_source_element =
+            cfg.source_element.empty() ? default_source_root : cfg.source_element;
+        if (!configured_source_element.empty()) {
+            source_root = find_element(configured_source_element);
+        }
+        if (!source_root && configured_source_element != default_source_root) {
+            LOG_W(
+                "ProbeHandlerManager: source_element '{}' not found for handler '{}' - falling "
+                "back to source root='{}'",
+                configured_source_element, cfg.id, default_source_root);
+            source_root = find_element(default_source_root);
+        }
+        if (source_root && config.sources.type == "nvurisrcbin" && !GST_IS_BIN(source_root)) {
+            GstObject* parent = gst_object_get_parent(GST_OBJECT(source_root));
+            gst_object_unref(source_root);
+            source_root = nullptr;
+
+            if (parent && GST_IS_ELEMENT(parent)) {
+                source_root = GST_ELEMENT(parent);
+            } else if (parent) {
+                gst_object_unref(parent);
+            }
+        }
+        if (!source_root && config.sources.type == "nvurisrcbin" &&
+            default_source_root != "sources_bin") {
+            source_root = find_element("sources_bin");
+        }
+
+        return source_root;
+    };
+
     for (const auto& cfg : config.event_handlers) {
         if (!cfg.enable) {
             LOG_D("ProbeHandlerManager: handler '{}' disabled, skipping", cfg.id);
@@ -42,42 +78,11 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
 
         // ── smart_record ──────────────────────────────────────────
         if (cfg.trigger == "smart_record") {
-            // Resolve the configured source root. In manual mode the configured
-            // element is the standalone nvstreammux, so SmartRecord needs its
-            // parent bin to find sibling nvurisrcbin elements.
-            GstElement* source_root = nullptr;
-            const std::string default_source_root =
-                config.sources.id.empty() ? std::string("sources_bin") : config.sources.id;
-            const std::string configured_source_element =
-                cfg.source_element.empty() ? default_source_root : cfg.source_element;
-            if (!configured_source_element.empty()) {
-                source_root = find_element(configured_source_element);
-            }
-            if (!source_root && configured_source_element != default_source_root) {
-                LOG_W(
-                    "ProbeHandlerManager: source_element '{}' not found for smart_record '{}' - "
-                    "falling back to source root='{}'",
-                    configured_source_element, cfg.id, default_source_root);
-                source_root = find_element(default_source_root);
-            }
-            if (source_root && config.sources.type == "nvurisrcbin" && !GST_IS_BIN(source_root)) {
-                GstObject* parent = gst_object_get_parent(GST_OBJECT(source_root));
-                gst_object_unref(source_root);
-                source_root = nullptr;
-
-                if (parent && GST_IS_ELEMENT(parent)) {
-                    source_root = GST_ELEMENT(parent);
-                } else if (parent) {
-                    gst_object_unref(parent);
-                }
-            }
-            if (!source_root && config.sources.type == "nvurisrcbin" &&
-                default_source_root != "sources_bin") {
-                source_root = find_element("sources_bin");
-            }
+            // In manual mode the configured element may be the standalone
+            // nvstreammux, so the handlers need the sibling source bin root.
+            GstElement* source_root = resolve_source_root(cfg);
             if (!source_root) {
-                LOG_E("ProbeHandlerManager: source_element '{}' not found for smart_record '{}'",
-                      configured_source_element, cfg.id);
+                LOG_E("ProbeHandlerManager: source root not found for handler '{}'", cfg.id);
                 gst_object_unref(pad);
                 return false;
             }
@@ -91,19 +96,33 @@ bool ProbeHandlerManager::attach_probes(const engine::core::config::PipelineConf
 
             // ── crop_objects ──────────────────────────────────────────
         } else if (cfg.trigger == "crop_objects") {
+            GstElement* source_root = resolve_source_root(cfg);
+            if (!source_root) {
+                LOG_E("ProbeHandlerManager: source root not found for handler '{}'", cfg.id);
+                gst_object_unref(pad);
+                return false;
+            }
             auto* handler = new CropObjectHandler();
-            handler->configure(config, cfg, producer);
+            handler->configure(config, cfg, source_root, producer);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, CropObjectHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<CropObjectHandler*>(ud); });
+            gst_object_unref(source_root);
 
             // ── frame_events ───────────────────────────────────────────
         } else if (cfg.trigger == "frame_events") {
+            GstElement* source_root = resolve_source_root(cfg);
+            if (!source_root) {
+                LOG_E("ProbeHandlerManager: source root not found for handler '{}'", cfg.id);
+                gst_object_unref(pad);
+                return false;
+            }
             auto* handler = new FrameEventsProbeHandler();
-            handler->configure(config, cfg, producer, cache);
+            handler->configure(config, cfg, source_root, producer, cache);
             probe_id = gst_pad_add_probe(
                 pad, GST_PAD_PROBE_TYPE_BUFFER, FrameEventsProbeHandler::on_buffer, handler,
                 [](gpointer ud) { delete static_cast<FrameEventsProbeHandler*>(ud); });
+            gst_object_unref(source_root);
 
             // ── class_id_offset ───────────────────────────────────────
         } else if (cfg.trigger == "class_id_offset") {

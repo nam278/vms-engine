@@ -1,4 +1,5 @@
 #include "engine/pipeline/probes/smart_record_probe_handler.hpp"
+#include "engine/pipeline/source_identity_registry.hpp"
 #include "engine/pipeline/source_naming.hpp"
 #include "engine/core/utils/logger.hpp"
 
@@ -527,6 +528,12 @@ void SmartRecordProbeHandler::publish_record_done(uint32_t source_id,
 // ── Helpers ────────────────────────────────────────────────────────
 
 std::string SmartRecordProbeHandler::get_source_name(uint32_t source_id) const {
+    const std::string runtime_source_name =
+        engine::pipeline::lookup_runtime_source_name(source_root_, static_cast<int>(source_id));
+    if (!runtime_source_name.empty()) {
+        return runtime_source_name;
+    }
+
     auto it = source_id_to_name_.find(static_cast<int>(source_id));
     if (it != source_id_to_name_.end())
         return it->second;

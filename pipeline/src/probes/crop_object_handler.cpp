@@ -1,5 +1,6 @@
 #include "engine/pipeline/probes/crop_object_handler.hpp"
 #include "engine/core/utils/logger.hpp"
+#include "engine/pipeline/source_identity_registry.hpp"
 
 #include <gstnvdsmeta.h>
 #include <nvbufsurface.h>
@@ -61,6 +62,7 @@ CropObjectHandler::~CropObjectHandler() {
 
 void CropObjectHandler::configure(const engine::core::config::PipelineConfig& config,
                                   const engine::core::config::EventHandlerConfig& handler,
+                                  GstElement* source_root,
                                   engine::core::messaging::IMessageProducer* producer) {
     pipeline_id_ = config.pipeline.id;
     label_filter_ = handler.label_filter;
@@ -68,6 +70,7 @@ void CropObjectHandler::configure(const engine::core::config::PipelineConfig& co
     image_quality_ = handler.image_quality;
     save_full_frame_ = handler.save_full_frame;
     producer_ = producer;
+    source_root_ = source_root;
 
     // Convert capture_interval_sec to nanoseconds for PTS-based comparison
     capture_interval_ns_ = static_cast<uint64_t>(handler.capture_interval_sec) * GST_SECOND;
@@ -258,6 +261,12 @@ GstPadProbeReturn CropObjectHandler::process_batch(GstBuffer* buf) {
 }
 
 std::string CropObjectHandler::resolve_source_name(int source_id) const {
+    const std::string runtime_source_name =
+        engine::pipeline::lookup_runtime_source_name(source_root_, source_id);
+    if (!runtime_source_name.empty()) {
+        return runtime_source_name;
+    }
+
     auto it = source_id_to_name_.find(source_id);
     return (it != source_id_to_name_.end()) ? it->second : fmt::format("source_{}", source_id);
 }
@@ -919,13 +928,7 @@ std::vector<CropObjectHandler::PendingMessage> CropObjectHandler::cleanup_stale_
             }
 
             // Look up source name
-            std::string exit_source_name;
-            auto name_it = source_id_to_name_.find(exit_src_id);
-            if (name_it != source_id_to_name_.end()) {
-                exit_source_name = name_it->second;
-            } else {
-                exit_source_name = fmt::format("source_{}", exit_src_id);
-            }
+            const std::string exit_source_name = resolve_source_name(exit_src_id);
 
             // Get prev_mid from pub state before clearing
             std::string exit_prev_mid;
