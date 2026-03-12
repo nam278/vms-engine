@@ -21,6 +21,7 @@
 | 10  | [10_rest_api.md](10_rest_api.md)                                             | DeepStream REST API — quản lý stream động (add/remove camera lúc runtime)                 |
 | 11  | [11_runtime_element_control.md](11_runtime_element_control.md)               | Runtime control tổng quát cho element properties; use case đầu tiên là `nvdsosd`          |
 | 12  | [12_kafka_deepstream_compatibility.md](12_kafka_deepstream_compatibility.md) | Kafka integration strategy để tương thích với DeepStream REST trong cùng process          |
+| 13  | [13_business_apps_probe_strategy.md](13_business_apps_probe_strategy.md)     | FE-first rendering strategy: DeepStream giữ semantic feed tối giản, frontend lo overlays  |
 
 ---
 
