@@ -31,6 +31,8 @@
 4. Ngay trong cùng probe callback, handler duyệt toàn bộ object vừa emit.
 5. Object nào có `object_type` khớp `rules[].label` thì service encode crop ngay trên live `NvBufSurface`.
 6. JPEG bytes được chuyển sang detached thread để gọi HTTP API và publish `ext_proc`.
+7. Nếu response có `display_path` hoặc fallback `result_path`, service cache text đó theo `(handler_id, source_id, tracker_id)`.
+8. Ở các buffer kế tiếp của cùng track, probe gọi lại service trước `nvdsosd` để ghi đè `NvDsObjectMeta::text_params.display_text`.
 
 ```mermaid
 flowchart LR
@@ -89,6 +91,7 @@ event_handlers:
         request_timeout_ms: 10000
         emit_empty_result: false
         include_overview_ref: true
+        override_osd_text: true
         rules:
           - label: face
             endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
@@ -106,20 +109,21 @@ event_handlers:
 
 ### 3.2 Field reference
 
-| Field                  | Default | Ý nghĩa                                                    |
-| ---------------------- | ------- | ---------------------------------------------------------- |
-| `enable`               | `false` | Bật sidecar ext-proc cho handler `frame_events`            |
-| `publish_channel`      | `""`    | Stream/topic riêng để publish message `ext_proc`           |
-| `jpeg_quality`         | `85`    | JPEG quality khi encode crop ngay trên live surface        |
-| `connect_timeout_ms`   | `5000`  | Timeout kết nối HTTP                                       |
-| `request_timeout_ms`   | `10000` | Timeout tổng request                                       |
-| `emit_empty_result`    | `false` | Nếu `result_path` rỗng thì có publish `ext_proc` hay không |
-| `include_overview_ref` | `true`  | Có echo `overview_ref` vào payload `ext_proc` hay không    |
-| `rules[].label`        | none    | Label object cần enrich, ví dụ `face`                      |
-| `rules[].endpoint`     | none    | HTTP endpoint URL                                          |
-| `rules[].result_path`  | none    | Dot-path tới kết quả chính trong JSON response             |
-| `rules[].display_path` | none    | Dot-path tới text hiển thị trong JSON response             |
-| `rules[].params`       | `{}`    | Query parameters được append vào URL                       |
+| Field                  | Default | Ý nghĩa                                                                  |
+| ---------------------- | ------- | ------------------------------------------------------------------------ |
+| `enable`               | `false` | Bật sidecar ext-proc cho handler `frame_events`                          |
+| `publish_channel`      | `""`    | Stream/topic riêng để publish message `ext_proc`                         |
+| `jpeg_quality`         | `85`    | JPEG quality khi encode crop ngay trên live surface                      |
+| `connect_timeout_ms`   | `5000`  | Timeout kết nối HTTP                                                     |
+| `request_timeout_ms`   | `10000` | Timeout tổng request                                                     |
+| `emit_empty_result`    | `false` | Nếu `result_path` rỗng thì có publish `ext_proc` hay không               |
+| `include_overview_ref` | `true`  | Có echo `overview_ref` vào payload `ext_proc` hay không                  |
+| `override_osd_text`    | `true`  | Có ghi đè OSD text của track bằng `display_path`/`result_path` hay không |
+| `rules[].label`        | none    | Label object cần enrich, ví dụ `face`                                    |
+| `rules[].endpoint`     | none    | HTTP endpoint URL                                                        |
+| `rules[].result_path`  | none    | Dot-path tới kết quả chính trong JSON response                           |
+| `rules[].display_path` | none    | Dot-path tới text hiển thị trong JSON response                           |
+| `rules[].params`       | `{}`    | Query parameters được append vào URL                                     |
 
 ---
 
@@ -133,7 +137,7 @@ event_handlers:
 
 Nếu một bước fail thì handler chỉ log warning và tắt ext-proc sidecar của chính nó; semantic `frame_events` vẫn chạy bình thường.
 
-`ProbeHandlerManager` giờ chỉ truyền `producer` và `cache` vào `FrameEventsProbeHandler`. Trong `on_buffer(...)`, sau khi `publish_frame_message(...)` hoàn tất, handler map emitted objects trở lại `NvDsObjectMeta` tương ứng của frame hiện tại rồi gọi `process_object(...)` cho từng object.
+`ProbeHandlerManager` giờ chỉ truyền `producer` và `cache` vào `FrameEventsProbeHandler`. Trong `on_buffer(...)`, handler trước hết apply mọi display-text override đã có cho frame hiện tại, rồi sau khi `publish_frame_message(...)` hoàn tất mới map emitted objects trở lại `NvDsObjectMeta` tương ứng để gọi `process_object(...)` cho từng object.
 
 ---
 
@@ -175,7 +179,19 @@ Async boundary nằm sau bước encode crop. Điều đó có nghĩa là:
 - network, JSON parse, và broker publish chạy ở detached thread
 - ext-proc này vẫn phụ thuộc live surface để encode crop, nhưng không phụ thuộc live surface cho phần HTTP
 
-### 5.4 Không còn queue/throttle riêng
+Kết quả OSD cũng đi theo boundary này: service không giữ `NvDsObjectMeta*` qua thread. Detached worker chỉ ghi text đã parse vào cache nội bộ; probe của các frame sau sẽ đọc cache đó và áp lại lên object metadata hiện tại nếu tracker vẫn còn sống.
+
+### 5.4 OSD display override
+
+OSD override chỉ chạy khi `override_osd_text = true`. Khi bật, service dùng `display_path` làm text ưu tiên. Nếu `display_path` rỗng nhưng `result_path` có giá trị, service sẽ fallback sang `result_path` để vẫn có text hiển thị.
+
+Thiết kế này khác nhánh `lantanav2` ở chỗ `vms-engine` không add user meta riêng chỉ để chở text. Thay vào đó, service cache text theo track và probe ghi đè trực tiếp `obj_meta->text_params.display_text` trước `nvdsosd`. Lợi ích của cách này:
+
+- không phải giữ hay copy DeepStream meta qua thread
+- text được render lại trên mọi frame tiếp theo của cùng track, không chỉ một frame duy nhất
+- có stale cleanup để tránh dính text cũ khi tracker id bị reuse sau khi object biến mất
+
+### 5.5 Không còn queue/throttle riêng
 
 Phiên bản hiện tại cố ý **không có**:
 

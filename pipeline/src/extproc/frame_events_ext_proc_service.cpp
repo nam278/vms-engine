@@ -21,6 +21,9 @@ namespace engine::pipeline::extproc {
 
 namespace {
 
+constexpr int64_t kMinimumOsdOverrideRetentionMs = 5000;
+constexpr int64_t kDefaultOsdOverrideRetentionMs = 30000;
+
 size_t curl_write_callback(void* contents, size_t size, size_t nmemb, std::string* out) noexcept {
     out->append(static_cast<char*>(contents), size * nmemb);
     return size * nmemb;
@@ -29,6 +32,12 @@ size_t curl_write_callback(void* contents, size_t size, size_t nmemb, std::strin
 int64_t epoch_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+int64_t monotonic_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
@@ -62,6 +71,28 @@ const engine::core::config::FrameEventsExtProcRule* find_rule(
     return nullptr;
 }
 
+std::string make_osd_override_key(const std::string& handler_id, int source_id,
+                                  uint64_t tracker_id) {
+    return handler_id + ":" + std::to_string(source_id) + ":" + std::to_string(tracker_id);
+}
+
+void apply_object_display_text(NvDsObjectMeta* obj_meta, const std::string& text) {
+    if (!obj_meta || text.empty()) {
+        return;
+    }
+
+    const char* current_text = obj_meta->text_params.display_text;
+    if (current_text && text == current_text) {
+        return;
+    }
+
+    if (obj_meta->text_params.display_text) {
+        g_free(obj_meta->text_params.display_text);
+    }
+
+    obj_meta->text_params.display_text = g_strdup(text.c_str());
+}
+
 }  // namespace
 
 struct FrameEventsExtProcService::Impl {
@@ -70,11 +101,32 @@ struct FrameEventsExtProcService::Impl {
         engine::core::config::FrameEventsExtProcConfig config;
     };
 
+    struct OsdOverrideEntry {
+        std::string text;
+        std::string object_type;
+        int64_t updated_at_ms = 0;
+        int64_t last_seen_at_ms = 0;
+        int64_t stale_after_ms = kDefaultOsdOverrideRetentionMs;
+    };
+
     engine::core::messaging::IMessageProducer* producer = nullptr;
     std::mutex mutex;
     std::unordered_map<std::string, RegisteredHandler> handlers;
+    std::unordered_map<std::string, OsdOverrideEntry> osd_overrides;
     NvDsObjEncCtxHandle obj_enc_ctx = nullptr;
     bool started = false;
+
+    void cleanup_stale_osd_overrides_locked(int64_t now_ms) {
+        for (auto it = osd_overrides.begin(); it != osd_overrides.end();) {
+            const int64_t last_touch_ms =
+                std::max(it->second.updated_at_ms, it->second.last_seen_at_ms);
+            if (last_touch_ms <= 0 || (now_ms - last_touch_ms) > it->second.stale_after_ms) {
+                it = osd_overrides.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 
     void init_encoder() {
         if (obj_enc_ctx) {
@@ -124,17 +176,14 @@ struct FrameEventsExtProcService::Impl {
         return {};
     }
 
-    void perform_api_call(const RegisteredHandler& handler, std::vector<unsigned char> jpeg_bytes,
+    void perform_api_call(const std::string& handler_id, const RegisteredHandler& handler,
+                          std::vector<unsigned char> jpeg_bytes,
                           engine::core::config::FrameEventsExtProcRule rule, int source_id,
                           const std::string& source_name, const std::string& frame_key,
                           int64_t frame_ts_ms, const std::string& overview_ref,
                           const std::string& crop_ref, const std::string& object_key,
                           const std::string& instance_key, uint64_t tracker_id, int class_id,
                           const std::string& object_type, double confidence) {
-        if (!producer || handler.config.publish_channel.empty()) {
-            return;
-        }
-
         CURL* curl = curl_easy_init();
         if (!curl) {
             LOG_W("FrameEventsExtProcService: curl_easy_init failed for publish_channel='{}'",
@@ -211,6 +260,26 @@ struct FrameEventsExtProcService::Impl {
         }
         if (result.result.empty()) {
             result.status = "empty_result";
+        }
+
+        const std::string osd_text = result.display.empty() ? result.result : result.display;
+        if (handler.config.override_osd_text && !osd_text.empty()) {
+            const int64_t now_ms = monotonic_ms();
+            std::lock_guard<std::mutex> lk(mutex);
+            auto& entry = osd_overrides[make_osd_override_key(handler_id, source_id, tracker_id)];
+            entry.text = osd_text;
+            entry.object_type = object_type;
+            entry.updated_at_ms = now_ms;
+            entry.last_seen_at_ms = now_ms;
+            entry.stale_after_ms = std::max<int64_t>(
+                kMinimumOsdOverrideRetentionMs,
+                std::max<int64_t>(kDefaultOsdOverrideRetentionMs,
+                                  static_cast<int64_t>(handler.config.request_timeout_ms) * 3));
+            cleanup_stale_osd_overrides_locked(now_ms);
+        }
+
+        if (!producer || handler.config.publish_channel.empty()) {
+            return;
         }
 
         json message = json::object();
@@ -301,6 +370,48 @@ bool FrameEventsExtProcService::is_running() const {
     return pimpl_->started && pimpl_->obj_enc_ctx != nullptr;
 }
 
+void FrameEventsExtProcService::apply_cached_display_text(const std::string& handler_id,
+                                                          int source_id,
+                                                          NvDsFrameMeta* frame_meta) {
+    if (!frame_meta) {
+        return;
+    }
+
+    const int64_t now_ms = monotonic_ms();
+    std::lock_guard<std::mutex> lk(pimpl_->mutex);
+    const auto handler_it = pimpl_->handlers.find(handler_id);
+    if (handler_it == pimpl_->handlers.end() || !handler_it->second.config.override_osd_text) {
+        return;
+    }
+
+    pimpl_->cleanup_stale_osd_overrides_locked(now_ms);
+
+    for (NvDsMetaList* object_iter = frame_meta->obj_meta_list; object_iter;
+         object_iter = object_iter->next) {
+        auto* object_meta = static_cast<NvDsObjectMeta*>(object_iter->data);
+        if (!object_meta) {
+            continue;
+        }
+
+        const uint64_t tracker_id = static_cast<uint64_t>(object_meta->object_id);
+        const auto override_it =
+            pimpl_->osd_overrides.find(make_osd_override_key(handler_id, source_id, tracker_id));
+        if (override_it == pimpl_->osd_overrides.end()) {
+            continue;
+        }
+
+        const std::string current_object_type =
+            object_meta->obj_label ? object_meta->obj_label : "";
+        if (!override_it->second.object_type.empty() && !current_object_type.empty() &&
+            override_it->second.object_type != current_object_type) {
+            continue;
+        }
+
+        override_it->second.last_seen_at_ms = now_ms;
+        apply_object_display_text(object_meta, override_it->second.text);
+    }
+}
+
 void FrameEventsExtProcService::process_object(
     const std::string& handler_id, int source_id, const std::string& source_name,
     const std::string& frame_key, int64_t frame_ts_ms, const std::string& overview_ref,
@@ -343,12 +454,14 @@ void FrameEventsExtProcService::process_object(
     auto impl_ref = pimpl_;
     // Copy the matched rule into the detached worker thread; the local handler copy dies when
     // process_object() returns, so handing off a raw pointer here would dangle.
-    std::thread([impl_ref = std::move(impl_ref), handler, rule, jpeg = std::move(jpeg_bytes),
-                 source_id, source_name, frame_key, frame_ts_ms, overview_ref, crop_ref, object_key,
-                 instance_key, tracker_id, class_id, object_type, confidence]() mutable {
-        impl_ref->perform_api_call(handler, std::move(jpeg), rule, source_id, source_name,
-                                   frame_key, frame_ts_ms, overview_ref, crop_ref, object_key,
-                                   instance_key, tracker_id, class_id, object_type, confidence);
+    std::thread([impl_ref = std::move(impl_ref), handler_id, handler, rule,
+                 jpeg = std::move(jpeg_bytes), source_id, source_name, frame_key, frame_ts_ms,
+                 overview_ref, crop_ref, object_key, instance_key, tracker_id, class_id,
+                 object_type, confidence]() mutable {
+        impl_ref->perform_api_call(handler_id, handler, std::move(jpeg), rule, source_id,
+                                   source_name, frame_key, frame_ts_ms, overview_ref, crop_ref,
+                                   object_key, instance_key, tracker_id, class_id, object_type,
+                                   confidence);
     }).detach();
 }
 

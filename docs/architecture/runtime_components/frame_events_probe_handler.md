@@ -291,17 +291,18 @@ Nó không tạo state detect mới; `emit_state_` chỉ được populate dần
 1. lấy `NvDsBatchMeta` từ `GstBuffer`
 2. map `NvBufSurface` để sau đó có thể snapshot đúng batch item nếu frame được emit
 3. iterate từng `NvDsFrameMeta`
-4. lấy wall-clock epoch milliseconds cho `frame_ts_ms`, rồi dựng `frame_key`
-5. gọi `collect_frame_objects(...)`
-6. gọi `should_emit_message(...)`
-7. nếu phải emit, build `FrameCaptureMetadata`, gán `overview_ref`, gán `crop_ref` cho từng object
-8. nếu evidence cache bật, handoff cùng metadata/snapshot sang `FrameEvidenceCache::store_frame(...)`
-9. publish JSON qua `publish_frame_message(...)`
-10. nếu `frame_events.ext_processor.enable = true`, map emitted objects trở lại `NvDsObjectMeta` tương ứng và gọi ext-proc trực tiếp cho từng object khớp rule
+4. nếu `frame_events.ext_processor` đang chạy và `override_osd_text = true`, apply mọi display-text override đã có cho frame hiện tại trước khi đi tiếp xuống OSD
+5. lấy wall-clock epoch milliseconds cho `frame_ts_ms`, rồi dựng `frame_key`
+6. gọi `collect_frame_objects(...)`
+7. gọi `should_emit_message(...)`
+8. nếu phải emit, build `FrameCaptureMetadata`, gán `overview_ref`, gán `crop_ref` cho từng object
+9. nếu evidence cache bật, handoff cùng metadata/snapshot sang `FrameEvidenceCache::store_frame(...)`
+10. publish JSON qua `publish_frame_message(...)`
+11. nếu `frame_events.ext_processor.enable = true`, map emitted objects trở lại `NvDsObjectMeta` tương ứng và gọi ext-proc trực tiếp cho từng object khớp rule
 
 Điểm quan trọng là naming contract được chốt ngay tại bước 7, và cache phải xong trước khi downstream nhìn thấy `frame_events` để tránh race khi Python bắn `evidence_request` ngay lập tức. Ref hiện không tạo folder lồng; nó là một filename phẳng prefix bởi `pipeline_id` và `source_name`.
 
-Ext-proc sidecar mới cũng bám vào ordering này. Semantic publish luôn xảy ra trước; ext-proc encode crop ngay trên live mapped `NvBufSurface` của pad probe, nhưng HTTP request và JSON parse vẫn được đẩy sang detached thread nên không chặn semantic publish bởi network latency.
+Ext-proc sidecar mới cũng bám vào ordering này. Semantic publish luôn xảy ra trước; ext-proc encode crop ngay trên live mapped `NvBufSurface` của pad probe, nhưng HTTP request và JSON parse vẫn được đẩy sang detached thread nên không chặn semantic publish bởi network latency. Khi `override_osd_text = true`, display text trả về từ API được cache theo track và được apply lại ngay ở đầu `on_buffer(...)` của các frame sau, nên OSD có thể đổi label mà không cần giữ pointer metadata qua thread.
 
 Phần chi tiết về HTTP request shape, payload `ext_proc`, và failure semantics của sidecar được tách riêng trong [frame_events_ext_proc_service.md](frame_events_ext_proc_service.md). Legacy `ExternalProcessorService` dùng bởi `crop_objects` hiện cũng đã được gom về module `pipeline/extproc/`, nhưng vẫn là nhánh runtime riêng và cũng là probe-owned service.
 

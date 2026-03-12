@@ -120,6 +120,7 @@ void YamlConfigParser::parse_handlers(const void* node_ptr,
                 ext.request_timeout_ms = yaml_int(ep, "request_timeout_ms", 10000);
                 ext.emit_empty_result = yaml_bool(ep, "emit_empty_result", false);
                 ext.include_overview_ref = yaml_bool(ep, "include_overview_ref", true);
+                ext.override_osd_text = yaml_bool(ep, "override_osd_text", true);
 
                 if (ep["rules"] && ep["rules"].IsSequence()) {
                     for (const auto& r : ep["rules"]) {

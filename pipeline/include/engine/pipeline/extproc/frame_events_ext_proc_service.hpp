@@ -46,6 +46,17 @@ class FrameEventsExtProcService {
     void stop();
     bool is_running() const;
 
+    /**
+     * @brief Applies any cached ext-proc display override to the current frame.
+     *
+     * HTTP enrichment runs asynchronously, so a result usually arrives after the
+     * source frame that triggered it has already passed downstream. The probe
+     * calls this method on subsequent frames before `nvdsosd` so the matching
+     * tracked object can render the API-provided display text.
+     */
+    void apply_cached_display_text(const std::string& handler_id, int source_id,
+                                   NvDsFrameMeta* frame_meta);
+
     void process_object(const std::string& handler_id, int source_id,
                         const std::string& source_name, const std::string& frame_key,
                         int64_t frame_ts_ms, const std::string& overview_ref,

@@ -235,6 +235,10 @@ GstPadProbeReturn FrameEventsProbeHandler::on_buffer(GstPad* /*pad*/, GstPadProb
 
         const int source_id = static_cast<int>(frame_meta->source_id);
         const std::string source_name = self->resolve_source_name(source_id);
+        if (self->ext_proc_service_) {
+            self->ext_proc_service_->apply_cached_display_text(self->handler_id_, source_id,
+                                                               frame_meta);
+        }
         const int64_t emitted_at_ms = now_epoch_ms();
         // Export wall-clock epoch milliseconds so downstream can compare frame_ts_ms
         // directly with emitted_at_ms and use frame_key across services without

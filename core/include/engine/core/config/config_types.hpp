@@ -319,6 +319,7 @@ struct FrameEventsExtProcConfig {
     int request_timeout_ms = 10000;
     bool emit_empty_result = false;
     bool include_overview_ref = true;
+    bool override_osd_text = true;
     std::vector<FrameEventsExtProcRule> rules;
 };
 

@@ -460,11 +460,12 @@ event_handlers:
         request_timeout_ms: 10000
         emit_empty_result: false
         include_overview_ref: true
+        override_osd_text: true # set false to keep the original DeepStream label on OSD while still publishing ext_proc
         rules:
           - label: face
             endpoint: "http://192.168.1.99:8765/api/v1/face/recognize/upload"
             result_path: "match.external_id"
-            display_path: "match.face_name"
+            display_path: "match.face_name" # used for ext_proc payload and live OSD override on the same track when response arrives
             params:
               threshold: "0.65"
               skip_detection: "true"
