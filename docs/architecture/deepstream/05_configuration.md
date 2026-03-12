@@ -135,10 +135,13 @@ sources:
   udp_buffer_size: 4194304
   disable_audio: false
   disable_passthrough: false
-  drop_on_latency: false # giữ jitterbuffer không drop late RTP quá gắt
+  drop_on_latency: false # giữ playback mượt cho source khỏe; source stall được cô lập ở fixed-slot selector
   drop_pipeline_eos: true
 
   # Group 3 — source-bin branch + standalone mux
+  # RuntimeStreamManager preallocate fixed slots tới max_sources. Slot trống để
+  # idle, source mới add sẽ đứng ở placeholder cho tới buffer đầu tiên, còn
+  # source active bị stall sẽ tạm quay về placeholder để không block cả mux.
   width: 1920 # nvmultiurisrcbin legacy/internal mux path only
   height: 1080 # nvmultiurisrcbin legacy/internal mux path only
   batched_push_timeout: 40000 # compatibility fallback; prefer mux.batched_push_timeout_us
@@ -170,7 +173,7 @@ sources:
     batch_size: 4
     max_sources: 4
     batched_push_timeout_us: 40000
-    sync_inputs: true
+    sync_inputs: true # giữ steady-state output mượt; stalled source được shunt sang placeholder bởi RuntimeStreamManager
     max_latency_ns: 100000000
     attach_sys_ts: true
     frame_duration: -1 # milliseconds; -1 = disable frame-rate correction
@@ -199,6 +202,8 @@ sources:
 > - `type: nvurisrcbin` → map sang `sources.mux.batch_size` của mux standalone, với mux element id lấy từ `sources.mux.id`.
 >
 > Nếu pipeline hỗ trợ dynamic add/remove camera, hãy set giá trị này theo số camera đồng thời lớn nhất cần support ngay từ lúc build pipeline. Add camera vượt quá giới hạn đó sẽ bị từ chối.
+
+> 📋 **Manual fixed-slot behavior**: với `type: nvurisrcbin`, `sources.mux.max_sources` không chỉ là capacity rule mà còn là số fixed slots được tạo trong `sources_bin`. Implementation hiện tại không fill đen mọi slot rỗng: slot chưa dùng để idle, source mới add đi qua trạng thái `warming_up` sau placeholder, và source đang active nhưng mất buffer quá lâu sẽ chuyển sang `recovering` trên placeholder cho tới khi frame quay lại.
 
 > ⚠️ **`config_file_path` cho live RTSP**: không nên bật mặc định. Trong repo này, file mẫu `nvstreammux_live_adaptive.txt` ép `overall-min/max-fps=30` và đã gây slow start, lag và broken frames ở RTSP output khi nguồn live không ổn định đúng 30 FPS. Chỉ dùng `config_file_path` khi đã tune file mux đúng theo FPS ingress thực tế.
 >

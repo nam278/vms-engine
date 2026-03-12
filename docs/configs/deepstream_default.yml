@@ -142,13 +142,13 @@ sources:
   dec_skip_frames: 0 # 0=decode all  1=non-ref only  2=key-only
   drop_frame_interval: 0 # drop every N frames at source (0=none)
   select_rtp_protocol: 4 # 0=multi(UDP+TCP)  4=TCP-only (forced, recommended)
-  rtsp_reconnect_interval: 10 # seconds between RTSP reconnects (0=disable)
+  rtsp_reconnect_interval: 10 # seconds between RTSP reconnects (0=disable); RuntimeStreamManager now masks a stalled source before reconnect completes
   rtsp_reconnect_attempts: -1 # number of reconnect attempts (-1=infinite)
   latency: 400 # RTSP jitter buffer latency in ms (default: 100)
   udp_buffer_size: 524288 # UDP receive buffer bytes = 4MB (default: 524288)
   disable_audio: true # keep audio for smart record; true = skip audio decode
   disable_passthrough: false
-  drop_on_latency: false # keep jitterbuffer from dropping late RTP packets too aggressively
+  drop_on_latency: true # keep smoother playback for healthy sources; stalled sources are isolated at the fixed-slot selector instead
   drop_pipeline_eos: true # prevent a single-source EOS from killing the pipeline
 
   # --- Section 3: standalone source-bin branch + nvstreammux (new) ---
@@ -159,6 +159,11 @@ sources:
   # height, and live_source on the embedded nvstreammux.
   # If you plan to add cameras at runtime, set mux.max_sources to the maximum
   # concurrent source count up front.
+  # RuntimeStreamManager keeps those mux request pads fixed for the life of the
+  # pipeline. Unused slots stay idle, while an active source that stops
+  # producing buffers is temporarily switched to a black placeholder until
+  # frames resume. That lets us keep sync_inputs=true without letting one dead
+  # RTSP feed stall every other stream forever.
   width: 1920 # legacy/internal mux only; ignored by standalone new nvstreammux
   height: 1080 # legacy/internal mux only; ignored by standalone new nvstreammux
   batched_push_timeout: 40000 # compatibility fallback; prefer sources.mux below
@@ -190,7 +195,7 @@ sources:
     batch_size: 4
     max_sources: 4
     batched_push_timeout_us: 40000
-    sync_inputs: true
+    sync_inputs: true # keep steady-state output smooth; stalled sources are shunted to placeholder by RuntimeStreamManager
     max_latency_ns: 100000000
     attach_sys_ts: true # whether to attach a system timestamp to the batch meta (nvstreammux attach-sys-ts property)
     frame_duration: -1 # 33 if 30 FPS in milliseconds; -1 disables frame-rate correction
@@ -210,6 +215,12 @@ sources:
       uri: rtsp://192.168.1.99:18554/traffic2
   # Keep initial cameras <= mux.max_sources. Runtime add/remove reuses those
   # preallocated mux slots but cannot grow beyond mux.max_sources.
+  # Startup/live behavior in manual nvurisrcbin mode:
+  # - Empty slots stay idle instead of filling the tiler with black frames.
+  # - Newly added sources start behind a placeholder and switch live after the
+  #   first decoded buffer arrives, avoiding whole-pipeline stalls during warm-up.
+  # - If an active source stops producing buffers for too long, its slot is
+  #   switched back to placeholder until frames resume.
   # camera.id is the stable external identity for publish paths and downstream
   # routing, including runtime-added cameras. DeepStream still uses an integer
   # internal source slot for frame_meta->source_id and nvstreammux sink_%u pads.

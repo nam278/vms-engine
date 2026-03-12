@@ -132,26 +132,39 @@ Trong mode manual, `sources_bin` chứa:
 
 - một `nvstreammux` standalone do `MuxerBuilder` tạo,
 - nhiều `source_bin_<camera_id>` do `RuntimeStreamManager` thêm vào,
+- nhiều `source_slot_<index>` cố định, mỗi slot chứa một `input-selector` trước mux sink pad tương ứng,
 - mỗi source bin có thể chứa `nvurisrcbin` và optional branch elements như `nvvideoconvert`, `capsfilter`, `queue`.
 
 ```mermaid
 flowchart LR
     subgraph SB2["sources_bin"]
-        C1["source_bin_cam_1"] --> MUX["nvstreammux"]
-        C2["source_bin_cam_2"] --> MUX
-        C3["source_bin_cam_n"] --> MUX
+        C1["source_bin_cam_1"] --> S1["source_slot_0\ninput-selector"]
+        C2["source_bin_cam_2"] --> S2["source_slot_1\ninput-selector"]
+        C3["source_bin_cam_n"] --> SN["source_slot_n\ninput-selector"]
+        S1 --> MUX["nvstreammux"]
+        S2 --> MUX
+        SN --> MUX
     end
     MUX --> G2["ghost src"]
 ```
 
 `SourceBlockBuilder` không tự link từng camera vào mux. Việc đó được giao cho `RuntimeStreamManager`, nơi mỗi camera:
 
-1. request một mux sink pad `sink_N`,
+1. preallocate `source_slot_<index>` và request đúng một `nvstreammux.sink_%u` cố định cho slot đó,
 2. build `source_bin_<camera_id>`,
-3. link source branch vào mux,
-4. sync state với parent nếu pipeline đã có parent.
+3. link source branch vào slot tương ứng thay vì link thẳng vào mux,
+4. giữ source mới ở placeholder cho tới khi có decoded buffer đầu tiên rồi mới switch selector sang live,
+5. nếu source active bị đứng hình quá lâu, switch selector về placeholder để không giữ cả batch,
+6. khi source hồi lại và có buffer mới, switch selector trở lại live,
+7. slot trống thật sự để `active-pad = nullptr` (idle) thay vì lấp đen toàn bộ tiler.
 
 Ở cuối phase, top-level chỉ nhìn thấy một block `sources_bin` với đúng một ghost `src` batched pad.
+
+Điểm quan trọng của kiến trúc fixed-slot này:
+
+- `nvstreammux sink_%u` pads sống suốt vòng đời pipeline, nên runtime add/remove không phải churn request pads.
+- `sync_inputs=true` vẫn dùng được trong steady-state, vì source bị stall sẽ bị cô lập ở selector thay vì kéo cả mux chờ vô hạn.
+- visual layout phía sau không còn bị ép đầy bởi slot rỗng; chỉ source active hoặc source đang ở placeholder-recovery mới chiếm ô hiển thị.
 
 ---
 

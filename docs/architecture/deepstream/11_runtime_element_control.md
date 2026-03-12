@@ -228,6 +228,13 @@ Liệt kê source hiện tại:
 curl -sS "${BASE_URL}/api/v1/pipelines/${PIPELINE_ID}/sources"
 ```
 
+Với manual `sources.type: nvurisrcbin`, `list_sources` có thể trả các state runtime ngoài `active`:
+
+- `warming_up`: source đã được add vào fixed slot nhưng vẫn đứng sau placeholder cho tới buffer đầu tiên.
+- `recovering`: source đang active nhưng bị stall quá ngưỡng, nên slot tạm thời quay về placeholder cho tới khi frame resume.
+
+Các state này phản ánh cơ chế stall isolation của `RuntimeStreamManager`, cho phép giữ `sources.mux.sync_inputs=true` mà không để một source đứt kéo cả pipeline đứng theo.
+
 Thêm source runtime:
 
 ```bash

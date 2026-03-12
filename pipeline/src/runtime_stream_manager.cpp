@@ -16,6 +16,11 @@ namespace engine::pipeline {
 
 namespace {
 
+struct StreamProbeContext {
+    engine::pipeline::RuntimeStreamManager* manager = nullptr;
+    uint32_t source_index = 0;
+};
+
 constexpr const char* kSlotBinPrefix = "source_slot_";
 constexpr const char* kSlotSelectorPrefix = "source_slot_selector_";
 constexpr const char* kSlotPlaceholderSrcPrefix = "source_slot_placeholder_src_";
@@ -26,6 +31,7 @@ constexpr int kPlaceholderWidth = 1920;
 constexpr int kPlaceholderHeight = 1080;
 constexpr int kPlaceholderFramerateNum = 25;
 constexpr int kPlaceholderFramerateDen = 1;
+constexpr gint64 kMinimumStallTimeoutUs = 1500 * G_TIME_SPAN_MILLISECOND;
 
 RuntimeSourceMutationResult make_result(bool success, int http_status,
                                         RuntimeSourceErrorCode error_code,
@@ -53,6 +59,12 @@ bool wait_for_element_state(GstElement* element, GstState target, GstClockTime t
     }
 
     return current == target || pending == target || state_result == GST_STATE_CHANGE_SUCCESS;
+}
+
+gint64 stream_stall_timeout_us(const engine::core::config::SourcesConfig& sources_config) {
+    const gint64 latency_timeout =
+        static_cast<gint64>(std::max(1, sources_config.latency)) * 4 * G_TIME_SPAN_MILLISECOND;
+    return std::max(kMinimumStallTimeoutUs, latency_timeout);
 }
 
 uint32_t max_slots_from_config(const engine::core::config::SourcesConfig& sources_config) {
@@ -173,6 +185,10 @@ GstPad* find_element_pad_by_name(GstElement* element, GstPadDirection direction,
     return matched_pad;
 }
 
+void destroy_stream_probe_context(gpointer data) {
+    delete static_cast<StreamProbeContext*>(data);
+}
+
 }  // namespace
 
 RuntimeStreamManager::RuntimeStreamManager(GstElement* source_root, GstElement* muxer,
@@ -182,10 +198,18 @@ RuntimeStreamManager::RuntimeStreamManager(GstElement* source_root, GstElement* 
       sources_config_(std::move(sources_config)) {
     ensure_fixed_slots();
     seed_existing_streams();
+    health_check_source_id_ =
+        g_timeout_add(500, RuntimeStreamManager::on_stream_health_check, this);
 }
 
 RuntimeStreamManager::~RuntimeStreamManager() {
+    if (health_check_source_id_ != 0) {
+        g_source_remove(health_check_source_id_);
+        health_check_source_id_ = 0;
+    }
+
     for (auto& [camera_id, slot] : streams_) {
+        detach_stream_probe(slot);
         if (slot.source != nullptr) {
             gst_object_unref(slot.source);
         }
@@ -512,6 +536,16 @@ bool RuntimeStreamManager::switch_slot_to_placeholder(uint32_t source_index) {
     return true;
 }
 
+bool RuntimeStreamManager::switch_slot_to_idle(uint32_t source_index) {
+    const auto it = fixed_slots_.find(source_index);
+    if (it == fixed_slots_.end() || it->second.selector == nullptr) {
+        return false;
+    }
+
+    g_object_set(G_OBJECT(it->second.selector), "active-pad", nullptr, nullptr);
+    return true;
+}
+
 RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
     const engine::core::config::CameraConfig& camera) {
     std::lock_guard<std::mutex> lock(mtx_);
@@ -593,23 +627,32 @@ RuntimeSourceMutationResult RuntimeStreamManager::add_stream_detailed(
         }
     }
 
-    if (!switch_slot_to_live(source_index)) {
-        LOG_E("RuntimeStreamManager: failed to activate live pad for slot {}", source_index);
-        return cleanup_failed_add(RuntimeSourceErrorCode::InternalError,
-                                  "failed to activate fixed source slot");
-    }
-
     StreamSlot slot;
     slot.source_index = source_index;
     slot.camera_id = camera.id;
     slot.camera_uri = camera.uri;
     slot.is_seeded = false;
-    slot.state = "active";
+    slot.state = "warming_up";
     slot.source = GST_ELEMENT(gst_object_ref(source));
+    slot.last_buffer_time_us = g_get_monotonic_time();
+    slot.using_placeholder = true;
+    attach_stream_probe(slot);
+
+    if (!switch_slot_to_placeholder(source_index)) {
+        detach_stream_probe(slot);
+        gst_object_unref(slot.source);
+        slot.source = nullptr;
+        LOG_E("RuntimeStreamManager: failed to activate placeholder pad for slot {}", source_index);
+        return cleanup_failed_add(RuntimeSourceErrorCode::InternalError,
+                                  "failed to activate placeholder source slot");
+    }
+
     streams_.emplace(camera.id, slot);
     register_runtime_source_name(source_root_, static_cast<int>(source_index), camera.id);
-    LOG_I("RuntimeStreamManager: added camera '{}' into fixed slot {} (uri='{}')", camera.id,
-          source_index, camera.uri);
+    LOG_I(
+        "RuntimeStreamManager: added camera '{}' into fixed slot {} (uri='{}'), waiting for first "
+        "buffer before switching live",
+        camera.id, source_index, camera.uri);
 
     RuntimeSourceMutationResult result =
         make_result(true, 201, RuntimeSourceErrorCode::None, camera.id, "camera added");
@@ -652,6 +695,8 @@ RuntimeSourceMutationResult RuntimeStreamManager::remove_stream_detailed(
     if (!switch_slot_to_placeholder(slot.source_index)) {
         LOG_W("RuntimeStreamManager: failed to switch slot {} to placeholder", slot.source_index);
     }
+
+    detach_stream_probe(slot);
 
     if (slot.source != nullptr) {
         gst_element_unlink(slot.source, fixed_slot_it->second.slot_bin);
@@ -714,6 +759,132 @@ std::vector<RuntimeSourceInfo> RuntimeStreamManager::list_streams() const {
 int RuntimeStreamManager::get_active_stream_count() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return static_cast<int>(streams_.size());
+}
+
+RuntimeStreamManager::StreamSlot* RuntimeStreamManager::find_stream_by_source_index_locked(
+    uint32_t source_index) {
+    for (auto& [camera_id, slot] : streams_) {
+        if (slot.source_index == source_index) {
+            return &slot;
+        }
+    }
+
+    return nullptr;
+}
+
+void RuntimeStreamManager::attach_stream_probe(StreamSlot& slot) {
+    if (slot.source == nullptr || slot.source_src_pad != nullptr || slot.buffer_probe_id != 0) {
+        return;
+    }
+
+    GstPad* source_src_pad = gst_element_get_static_pad(slot.source, "src");
+    if (source_src_pad == nullptr) {
+        LOG_W("RuntimeStreamManager: source '{}' has no static src pad for activity probe",
+              slot.camera_id);
+        return;
+    }
+
+    auto* context = new StreamProbeContext{this, slot.source_index};
+    const gulong probe_id = gst_pad_add_probe(source_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                                              RuntimeStreamManager::on_stream_buffer_probe, context,
+                                              destroy_stream_probe_context);
+    if (probe_id == 0) {
+        gst_object_unref(source_src_pad);
+        delete context;
+        LOG_W("RuntimeStreamManager: failed to attach activity probe for '{}'", slot.camera_id);
+        return;
+    }
+
+    slot.source_src_pad = source_src_pad;
+    slot.buffer_probe_id = probe_id;
+}
+
+GstPadProbeReturn RuntimeStreamManager::on_stream_buffer_probe(GstPad* /*pad*/,
+                                                               GstPadProbeInfo* info,
+                                                               gpointer user_data) {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0) {
+        return GST_PAD_PROBE_OK;
+    }
+
+    auto* context = static_cast<StreamProbeContext*>(user_data);
+    if (context != nullptr && context->manager != nullptr) {
+        context->manager->note_stream_activity(context->source_index);
+    }
+
+    return GST_PAD_PROBE_OK;
+}
+
+gboolean RuntimeStreamManager::on_stream_health_check(gpointer data) {
+    auto* manager = static_cast<RuntimeStreamManager*>(data);
+    if (manager == nullptr) {
+        return G_SOURCE_REMOVE;
+    }
+
+    return manager->poll_stream_health();
+}
+
+void RuntimeStreamManager::detach_stream_probe(StreamSlot& slot) {
+    if (slot.source_src_pad != nullptr && slot.buffer_probe_id != 0) {
+        gst_pad_remove_probe(slot.source_src_pad, slot.buffer_probe_id);
+        slot.buffer_probe_id = 0;
+    }
+
+    if (slot.source_src_pad != nullptr) {
+        gst_object_unref(slot.source_src_pad);
+        slot.source_src_pad = nullptr;
+    }
+}
+
+void RuntimeStreamManager::note_stream_activity(uint32_t source_index) {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    StreamSlot* slot = find_stream_by_source_index_locked(source_index);
+    if (slot == nullptr) {
+        return;
+    }
+
+    slot->last_buffer_time_us = g_get_monotonic_time();
+    if (slot->using_placeholder) {
+        if (switch_slot_to_live(source_index)) {
+            slot->using_placeholder = false;
+            slot->state = "active";
+            LOG_I("RuntimeStreamManager: restored camera '{}' to live after buffer activity",
+                  slot->camera_id);
+        }
+    }
+}
+
+gboolean RuntimeStreamManager::poll_stream_health() {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    const gint64 now_us = g_get_monotonic_time();
+    const gint64 stale_after_us = stream_stall_timeout_us(sources_config_);
+
+    for (auto& [camera_id, slot] : streams_) {
+        if (slot.source == nullptr || slot.using_placeholder) {
+            continue;
+        }
+
+        if (slot.last_buffer_time_us <= 0) {
+            continue;
+        }
+
+        if (now_us - slot.last_buffer_time_us < stale_after_us) {
+            continue;
+        }
+
+        if (switch_slot_to_placeholder(slot.source_index)) {
+            slot.using_placeholder = true;
+            slot.state = "recovering";
+            LOG_W(
+                "RuntimeStreamManager: camera '{}' stalled for {} ms, switching slot {} to "
+                "placeholder until frames resume",
+                camera_id, (now_us - slot.last_buffer_time_us) / G_TIME_SPAN_MILLISECOND,
+                slot.source_index);
+        }
+    }
+
+    return G_SOURCE_CONTINUE;
 }
 
 uint32_t RuntimeStreamManager::allocate_source_index() {
@@ -788,6 +959,9 @@ void RuntimeStreamManager::seed_existing_streams() {
         slot.is_seeded = true;
         slot.state = "active";
         slot.source = source;
+        slot.last_buffer_time_us = g_get_monotonic_time();
+        slot.using_placeholder = false;
+        attach_stream_probe(slot);
         streams_[camera.id] = slot;
         register_runtime_source_name(source_root_, static_cast<int>(source_index), camera.id);
         occupied[source_index] = true;
@@ -796,7 +970,7 @@ void RuntimeStreamManager::seed_existing_streams() {
     free_source_indexes_.clear();
     for (uint32_t source_index = 0; source_index < max_slots; ++source_index) {
         if (!occupied[source_index]) {
-            switch_slot_to_placeholder(source_index);
+            switch_slot_to_idle(source_index);
             unregister_runtime_source_name(source_root_, static_cast<int>(source_index));
             free_source_indexes_.push_back(source_index);
         }

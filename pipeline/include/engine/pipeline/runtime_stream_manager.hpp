@@ -69,6 +69,10 @@ class RuntimeStreamManager {
         bool is_seeded = false;
         std::string state = "active";
         GstElement* source = nullptr;
+        GstPad* source_src_pad = nullptr;
+        gulong buffer_probe_id = 0;
+        gint64 last_buffer_time_us = 0;
+        bool using_placeholder = false;
     };
 
     GstElement* source_root_ = nullptr;
@@ -79,15 +83,25 @@ class RuntimeStreamManager {
     std::unordered_map<std::string, StreamSlot> streams_;
     std::vector<uint32_t> free_source_indexes_;
     uint32_t next_source_index_ = 0;
+    guint health_check_source_id_ = 0;
 
     bool ensure_fixed_slots();
     bool create_fixed_slot(uint32_t source_index);
     bool discover_fixed_slot(uint32_t source_index);
     bool switch_slot_to_live(uint32_t source_index);
     bool switch_slot_to_placeholder(uint32_t source_index);
+    bool switch_slot_to_idle(uint32_t source_index);
     uint32_t allocate_source_index();
     void release_source_index(uint32_t source_index);
     void seed_existing_streams();
+    void attach_stream_probe(StreamSlot& slot);
+    void detach_stream_probe(StreamSlot& slot);
+    static GstPadProbeReturn on_stream_buffer_probe(GstPad* pad, GstPadProbeInfo* info,
+                                                    gpointer user_data);
+    static gboolean on_stream_health_check(gpointer data);
+    void note_stream_activity(uint32_t source_index);
+    gboolean poll_stream_health();
+    StreamSlot* find_stream_by_source_index_locked(uint32_t source_index);
 };
 
 }  // namespace engine::pipeline

@@ -57,14 +57,14 @@ stateDiagram-v2
     Error --> Stopped : max_retries exceeded
 ```
 
-| State | Meaning | GStreamer State |
-|-------|---------|----------------|
-| `Uninitialized` | Trước `initialize()` | — |
-| `Ready` | Build thành công, chưa play | `GST_STATE_READY` |
-| `Playing` | Pipeline đang xử lý video | `GST_STATE_PLAYING` |
-| `Paused` | Tạm dừng (buffer giữ nguyên) | `GST_STATE_PAUSED` |
-| `Stopped` | `set_state(NULL)` đã gọi | `GST_STATE_NULL` |
-| `Error` | Không recover được | — |
+| State           | Meaning                      | GStreamer State     |
+| --------------- | ---------------------------- | ------------------- |
+| `Uninitialized` | Trước `initialize()`         | —                   |
+| `Ready`         | Build thành công, chưa play  | `GST_STATE_READY`   |
+| `Playing`       | Pipeline đang xử lý video    | `GST_STATE_PLAYING` |
+| `Paused`        | Tạm dừng (buffer giữ nguyên) | `GST_STATE_PAUSED`  |
+| `Stopped`       | `set_state(NULL)` đã gọi     | `GST_STATE_NULL`    |
+| `Error`         | Không recover được           | —                   |
 
 ### State Transitions
 
@@ -260,8 +260,8 @@ static void setup_signal_handlers(PipelineManager* mgr, GMainLoop* loop) {
 
 ```yaml
 sources:
-  rtsp_reconnect_interval: 10   # Retry sau 10 giây
-  rtsp_reconnect_attempts: -1   # -1 = retry forever
+  rtsp_reconnect_interval: 10 # Retry sau 10 giây
+  rtsp_reconnect_attempts: -1 # -1 = retry forever
 ```
 
 **Luồng**: Camera mất kết nối → `nvmultiurisrcbin` phát GstMessage lên bus → `PipelineManager` log warning → auto reconnect sau interval.
@@ -281,9 +281,9 @@ VMS Engine hiện có **2 đường runtime source management**:
 
 ```yaml
 sources:
-  rest_api_port: 9000        # 0=disable, >0=enable
-  drop_pipeline_eos: true    # BẮT BUỘC khi dynamic add/remove
-  max_batch_size: 8          # ≥ tổng cameras tối đa
+  rest_api_port: 9000 # 0=disable, >0=enable
+  drop_pipeline_eos: true # BẮT BUỘC khi dynamic add/remove
+  max_batch_size: 8 # ≥ tổng cameras tối đa
 ```
 
 ```bash
@@ -309,9 +309,10 @@ curl -XPOST 'http://localhost:9000/api/v1/stream/remove' \
 Manual mode không dùng DeepStream REST của `nvmultiurisrcbin`. Thay vào đó, `PipelineManager` gọi `RuntimeStreamManager` để:
 
 - tạo `srcbin_<camera_id>` bằng cùng builder contract như source static
-- request `nvstreammux.sink_%u`
-- link/unlink source ghost pad vào mux
+- giữ `nvstreammux.sink_%u` cố định qua một `source_slot_<index>` trung gian
+- link/unlink source ghost pad vào slot thay vì chạm trực tiếp mux request pad
 - giữ mapping `camera.id <-> source slot index`
+- theo dõi buffer activity của từng source active để cô lập source bị stall
 
 ```cpp
 bool PipelineManager::add_source(const CameraConfig& camera) {
@@ -323,7 +324,27 @@ bool PipelineManager::remove_source(const std::string& camera_id) {
 }
 ```
 
+Lifecycle chi tiết của manual path hiện tại:
+
+1. Startup tạo fixed slots tới `sources.mux.max_sources` hoặc `sources.mux.batch_size`.
+2. Slot không có camera thật để `idle` bằng `active-pad = nullptr`.
+3. Add camera mới:
+   - build `srcbin_<camera_id>` và link vào slot,
+   - giữ selector ở placeholder trước,
+   - attach buffer probe lên source src pad,
+   - khi có decoded buffer đầu tiên thì mới switch selector sang live.
+4. Poll health định kỳ trong `RuntimeStreamManager`:
+   - nếu source active không ra buffer quá lâu, switch slot về placeholder và mark state `recovering`,
+   - khi buffer quay lại, source tự được restore sang live mà không cần restart pipeline.
+5. Remove camera:
+   - switch slot về placeholder,
+   - unlink source khỏi slot,
+   - đưa source về `GST_STATE_NULL`, remove khỏi bin, release runtime registry entry,
+   - giữ lại fixed slot và mux request pad cho reuse lần sau.
+
 > 📋 **Capacity rule**: manual runtime add/remove vẫn bị chặn bởi `sources.mux.max_sources` và `sources.mux.batch_size` đã allocate lúc build pipeline. Không có auto-grow cho standalone mux sau khi pipeline đã chạy.
+
+> 📋 **Head-of-line blocking mitigation**: với `sources.mux.sync_inputs=true`, steady-state output thường mượt hơn khi mọi source khỏe. Để tránh một RTSP source bị đứt/lag kéo cả pipeline, manual path hiện cô lập source stall ở `source_slot_<index>` bằng placeholder tạm thời thay vì để mux chờ vô hạn. Cách này giữ được lợi ích của `sync_inputs=true` nhưng giảm blast radius của một source lỗi.
 
 > 📋 **Operational rule**: nếu đang dùng live RTSP ở manual mode, hãy ưu tiên giữ `sources.mux.config_file_path` tắt cho tới khi file mux được tune đúng theo FPS thực tế. Runtime add/remove vẫn hoạt động khi không dùng file config ngoài cho mux.
 
@@ -387,23 +408,23 @@ GST_DEBUG="nvinfer:5,nvtracker:4,nvmultiurisrcbin:3,nvurisrcbin:4,nvstreammux:4"
 
 ### Common Runtime Errors
 
-| GStreamer Message | Nguyên nhân | Fix |
-|---|---|---|
-| `Could not decode stream` | Codec không supported | Check CUDA/codec, GPU driver |
-| `Internal data stream error` | Buffer overflow / decode fail | Giảm `batch_size`, tăng queue buffers |
-| `Failed to connect to RTSP` | Camera offline | Kiểm tra `rtsp_reconnect_interval` |
-| `nvdsinfer: Failed to init model` | TensorRT engine fail | Check TRT version, `.engine` file |
-| `nvtracker: Failed to init` | Tracker `.so` không tương thích | Check `DEEPSTREAM_DIR` + tracker path |
+| GStreamer Message                 | Nguyên nhân                     | Fix                                   |
+| --------------------------------- | ------------------------------- | ------------------------------------- |
+| `Could not decode stream`         | Codec không supported           | Check CUDA/codec, GPU driver          |
+| `Internal data stream error`      | Buffer overflow / decode fail   | Giảm `batch_size`, tăng queue buffers |
+| `Failed to connect to RTSP`       | Camera offline                  | Kiểm tra `rtsp_reconnect_interval`    |
+| `nvdsinfer: Failed to init model` | TensorRT engine fail            | Check TRT version, `.engine` file     |
+| `nvtracker: Failed to init`       | Tracker `.so` không tương thích | Check `DEEPSTREAM_DIR` + tracker path |
 
 ---
 
 ## Tham chiếu chéo
 
-| Tài liệu | Liên quan |
-|-----------|-----------|
-| [02_core_interfaces.md](02_core_interfaces.md) | IPipelineManager interface, PipelineState enum |
-| [03_pipeline_building.md](03_pipeline_building.md) | Pipeline phải build xong trước runtime |
-| [05_configuration.md](05_configuration.md) | `pipeline.retry_on_error`, `pipeline.max_retries` config |
-| [07_event_handlers_probes.md](07_event_handlers_probes.md) | SmartRecord messages trên GstBus |
-| [10_rest_api.md](10_rest_api.md) | CivetWeb REST API chi tiết |
-| [../RAII.md](../RAII.md) | GstBus cleanup patterns |
+| Tài liệu                                                   | Liên quan                                                |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| [02_core_interfaces.md](02_core_interfaces.md)             | IPipelineManager interface, PipelineState enum           |
+| [03_pipeline_building.md](03_pipeline_building.md)         | Pipeline phải build xong trước runtime                   |
+| [05_configuration.md](05_configuration.md)                 | `pipeline.retry_on_error`, `pipeline.max_retries` config |
+| [07_event_handlers_probes.md](07_event_handlers_probes.md) | SmartRecord messages trên GstBus                         |
+| [10_rest_api.md](10_rest_api.md)                           | CivetWeb REST API chi tiết                               |
+| [../RAII.md](../RAII.md)                                   | GstBus cleanup patterns                                  |
